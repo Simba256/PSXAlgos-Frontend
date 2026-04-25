@@ -21,7 +21,11 @@ const securityHeaders = [
 const isDev = process.env.NODE_ENV !== "production";
 
 const nextConfig: NextConfig = {
-  reactCompiler: true,
+  // Prod-only. The compiler's Babel pass leaks memory across HMR cycles in
+  // long dev sessions (observed: 10 GB RSS). It's an optimization pass, not a
+  // correctness pass, so dev parity is unaffected — `npm run build` still
+  // applies it.
+  reactCompiler: !isDev,
   turbopack: {
     root: path.resolve(__dirname),
   },
