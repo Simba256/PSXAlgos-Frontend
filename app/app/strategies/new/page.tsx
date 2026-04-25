@@ -1,12 +1,22 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useState, useTransition } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT, type Tokens } from "@/components/theme";
 import { Btn, DotRow, EditorialHeader, Kicker, Ribbon } from "@/components/atoms";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
+import type {
+  StrategyCreateBody,
+  StrategyCreateResponse,
+  EntryRules,
+  ExitRules,
+  PositionSizing,
+  StockFilters,
+  SingleCondition,
+} from "@/lib/api/strategies";
 
 type PresetKey =
   | "mean_reversion"
@@ -133,17 +143,143 @@ const UNIVERSES: Universe[] = [
   { key: "custom", label: "Custom", count: "—", desc: "Pick specific symbols", summary: "Custom selection" },
 ];
 
+// Each preset maps to a minimal valid backend `StrategyCreate.entry_rules`.
+// These are STARTER conditions — users are expected to refine them in the
+// editor afterwards. Mismatches between the preset's `baseRule` text (which
+// is human copy) and the actual condition we send are intentional: the copy
+// describes the *spirit* of the preset, the conditions are the simplest
+// possible realization the backend's indicator/operator vocabulary allows.
+function presetToEntryRules(key: PresetKey): EntryRules {
+  let conditions: SingleCondition[];
+  switch (key) {
+    case "mean_reversion":
+      conditions = [
+        { indicator: "rsi", operator: "<", value: { type: "constant", value: 30 } },
+      ];
+      break;
+    case "momentum_breakout":
+      // Backend doesn't have a "20-day high" indicator — closest stand-in is
+      // close > sma_20. Editor lets users tighten this once they're in.
+      conditions = [
+        { indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "sma_20" } },
+      ];
+      break;
+    case "golden_cross":
+      conditions = [
+        { indicator: "sma_50", operator: "crosses_above", value: { type: "indicator", indicator: "sma_200" } },
+      ];
+      break;
+    case "bollinger_squeeze":
+      conditions = [
+        { indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "bb_upper" } },
+      ];
+      break;
+    case "macd_cross":
+      conditions = [
+        { indicator: "macd", operator: "crosses_above", value: { type: "indicator", indicator: "macd_signal" } },
+      ];
+      break;
+    case "blank":
+      // Backend requires at least one condition. Pick a deliberately mild one
+      // so the user *will* want to edit it.
+      conditions = [
+        { indicator: "rsi", operator: "<", value: { type: "constant", value: 50 } },
+      ];
+      break;
+  }
+  return { conditions: { logic: "AND", conditions } };
+}
+
+function universeToFilters(key: UniverseKey): {
+  stock_symbols: string[] | null;
+  stock_filters: StockFilters | null;
+} {
+  switch (key) {
+    case "kse100":
+    case "kse30":
+      // No backend universe shortcut — leave both null and let the strategy
+      // run against all active stocks. Real KSE-100/30 membership filtering
+      // belongs in a dedicated index-membership feature.
+      return { stock_symbols: null, stock_filters: null };
+    case "banks":
+      return { stock_symbols: null, stock_filters: { sectors: ["Commercial Banks"] } };
+    case "oil_gas":
+      return { stock_symbols: null, stock_filters: { sectors: ["Oil & Gas Exploration Companies"] } };
+    case "custom":
+      // User refines in the editor.
+      return { stock_symbols: null, stock_filters: null };
+  }
+}
+
+function buildCreateBody(preset: Preset, universeKey: UniverseKey): StrategyCreateBody {
+  const exit: ExitRules = {
+    stop_loss_pct: 3.0,
+    take_profit_pct: 8.0,
+  };
+  const sizing: PositionSizing = {
+    type: "fixed_percent",
+    value: 2.0,
+    max_position_size_pct: 20.0,
+  };
+  const { stock_symbols, stock_filters } = universeToFilters(universeKey);
+  return {
+    name: preset.defaultName,
+    description: `${preset.desc}.`,
+    entry_rules: presetToEntryRules(preset.key),
+    exit_rules: exit,
+    position_sizing: sizing,
+    stock_symbols,
+    stock_filters,
+    max_positions: 5,
+  };
+}
+
 export default function WizardPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [presetKey, setPresetKey] = useState<PresetKey>("mean_reversion");
   const [universeKey, setUniverseKey] = useState<UniverseKey>("kse100");
   const [afterKey, setAfterKey] = useState<AfterKey>("editor");
+  const [submitErr, setSubmitErr] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+  const router = useRouter();
   const T = useT();
   const { bp, isMobile } = useBreakpoint();
   const padX = pick(bp, PAD.page);
 
   const preset = PRESETS.find((p) => p.key === presetKey) ?? PRESETS[0];
   const universe = UNIVERSES.find((u) => u.key === universeKey) ?? UNIVERSES[0];
+
+  async function onCreate() {
+    setSubmitErr(null);
+    const body = buildCreateBody(preset, universeKey);
+    let result: StrategyCreateResponse;
+    try {
+      const res = await fetch("/api/strategies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        // 403 means user isn't on the `pro` plan — surface clearly.
+        if (res.status === 403) {
+          setSubmitErr("Creating strategies requires the Pro plan. Upgrade to continue.");
+          return;
+        }
+        setSubmitErr(typeof err?.error === "string" ? err.error : `Create failed (${res.status})`);
+        return;
+      }
+      result = (await res.json()) as StrategyCreateResponse;
+    } catch (err) {
+      setSubmitErr(err instanceof Error ? err.message : "Network error");
+      return;
+    }
+    const newId = result.strategy_id;
+    const target = afterKey === "backtest"
+      ? `/backtest?strategy_id=${newId}`
+      : `/strategies/${newId}`;
+    startTransition(() => router.push(target));
+  }
 
   return (
     <AppFrame route="/strategies">
@@ -319,16 +455,37 @@ export default function WizardPage() {
             </Btn>
           )}
           {step === 3 && (
-            <Link
-              href={afterKey === "backtest" ? "/backtest" : `/strategies/${preset.defaultId}`}
-              style={{ textDecoration: "none" }}
+            <Btn
+              variant="primary"
+              size="md"
+              icon={Icon.spark}
+              onClick={() => {
+                if (pending) return;
+                void onCreate();
+              }}
+              style={pending ? { opacity: 0.6, cursor: "wait" } : undefined}
             >
-              <Btn variant="primary" size="md" icon={Icon.spark}>
-                Create &amp; {afterKey === "backtest" ? "run backtest" : "open editor"} →
-              </Btn>
-            </Link>
+              {pending
+                ? "Creating…"
+                : `Create & ${afterKey === "backtest" ? "run backtest" : "open editor"} →`}
+            </Btn>
           )}
         </div>
+        {submitErr && (
+          <div
+            role="alert"
+            style={{
+              padding: `10px ${padX}`,
+              borderTop: `1px solid ${T.outlineFaint}`,
+              background: T.surfaceLow,
+              fontFamily: T.fontMono,
+              fontSize: 12,
+              color: T.loss,
+            }}
+          >
+            {submitErr}
+          </div>
+        )}
       </div>
     </AppFrame>
   );

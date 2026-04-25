@@ -344,6 +344,91 @@ Either of these triggers the unit of work labeled "Phase 3.2 enrichment":
 
 ---
 
+## ADR-9 · Phase 3.2b–3.5 ship safe-write paths only; complex round-trips deferred
+
+**Status**: Accepted (2026-04-26 — implemented same session as 3.2a/b/c, 3.3, 3.4, 3.5).
+
+**Context**.
+Phase 3 wired five remaining routes (`/strategies/new` wizard, `/strategies/[id]`
+editor, `/bots` list/wizard/dashboard, `/portfolio`, `/backtest`) in one stretch.
+Each had write paths whose full bidirectional fidelity would have required
+either schema work, UX clarification, or per-row enrichment endpoints that
+don't exist yet. To keep the migration moving without shipping broken
+round-trips, each route ships **safe** writes and defers the dangerous ones.
+
+**Decision** — five concrete deferrals, one per route:
+
+1. **Wizard preset → `entry_rules` mapping is starter conditions, not faithful**.
+   `app/strategies/new/page.tsx`'s `presetToEntryRules()` maps each preset
+   (mean reversion, momentum, golden cross, etc.) to the *simplest possible*
+   condition the backend's indicator vocabulary allows. The preset's
+   `baseRule` text (e.g. "Volume > 1.5× avg") describes the spirit; the
+   posted condition (e.g. RSI(14) < 30) is the realization. Users are
+   expected to refine in the editor afterwards. This is documented inline.
+   **Lifts when**: the backend grows custom-indicator support, or the wizard
+   gains a "review the conditions" preview step.
+
+2. **Editor condition canvas does not round-trip**.
+   `app/strategies/[id]/editor-view.tsx` reads `initialStrategy` and renders
+   the existing visual canvas in **display only**. The Save Draft button
+   reports "Draft saved (local)" — the canvas state is *not* serialized to
+   `entry_rules.conditions`. Only the deploy/pause toggle is real (PUTs
+   `{status: ACTIVE|PAUSED}`). Persisting the canvas requires a node-tree
+   serializer that maps the editor's internal model to the backend's nested
+   `ConditionGroup{logic, conditions[]}` shape — a session of careful work
+   on its own.
+   **Lifts when**: a dedicated session designs and tests the
+   canvas↔ConditionGroup serializer with round-trip equality tests.
+
+3. **Bot dashboard activity log is empty-state only**.
+   The backend exposes positions, trades, and performance snapshots — but no
+   per-bot scan/decision log. The Logs modal renders a "coming soon" notice
+   instead of fake entries; the inline "recent activity" panel renders an
+   empty-state.
+   **Lifts when**: a `GET /bots/{id}/logs` endpoint is added (or trades are
+   reframed as the activity feed).
+
+4. **Bot list `today` (daily P&L) is always 0**.
+   `daily_pnl` is on `BotDetailResponse` only, not the list `BotResponse`. The
+   list shows 0 / "—" for the today column; the per-bot dashboard reads the
+   real value. Same trade-off as ADR-8 (per-row enrichment cost) and the
+   same lifting trigger.
+
+5. **Portfolio backend semantics differ from the journal UI; full wiring deferred**.
+   The backend's `/portfolio` is a paper-trading account (place market
+   orders, executes against latest price). The frontend's `/portfolio` page
+   is currently a *journal* (log trades you made elsewhere, kept in local
+   CSV via `lib/portfolio-csv.ts`). Wiring naively would change product
+   semantics. This session ships:
+   - `lib/api/portfolio.ts` (full type surface + wrappers)
+   - `/api/portfolio/{orders, reset, add-funds}` route handlers
+   - **No page-level changes** — the journal UI keeps using local state.
+   **Lifts when**: product decides whether `/portfolio` is the journal, the
+   paper-trading account, or both with clear UI separation.
+
+6. **Backtest "Re-run" uses an opinionated 12-month range and 1M PKR capital**.
+   The existing UI has no date pickers or capital input — the wired Re-run
+   button picks "today minus 1 year → today" and `initial_capital = 1_000_000`
+   (or carries forward the loaded result's value). Polling lasts ~45 seconds
+   (30 attempts × 1.5s) and gives up rather than hanging. A range/capital
+   form belongs to a follow-up.
+   **Lifts when**: the UI grows a backtest-config form (date range +
+   capital + universe override).
+
+**Why this is acceptable**.
+- Every deferral is documented at its call site **and** here, with a concrete
+  trigger to lift it.
+- No deferral leaves the user with broken behavior — each route either does
+  the safe thing (read + simple write) or shows an empty-state with a
+  truthful "coming soon" message. There are no fake entries dressed up as
+  real data.
+- The full type + route surface ships in this session, so follow-up slices
+  don't re-derive the contract. They just fill in the deferred behavior.
+
+**Implemented**: yes — Phases 3.2b/c, 3.3, 3.4 (API surface only), 3.5 — this session.
+
+---
+
 ## Deferred (no ADR, captured for completeness)
 
 - **`useActionState` / `useFormStatus` / `useOptimistic` for wizards**. The `strategies/new` and `bots/new` wizards currently use `onClick` + step state, not `<form>` / `onSubmit`. React 19's form primitives only help when an async server action backs the submit. **Revisit when** the first wizard step wires to a real `action` — at that moment, migrate the whole wizard (not incrementally).

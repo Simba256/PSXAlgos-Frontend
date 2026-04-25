@@ -249,3 +249,149 @@ export async function getDataRange(
     { next: { revalidate: 3600 } },
   );
 }
+
+// ============ Backtest types + wrappers ============
+
+type Decimal = string | number;
+
+export interface BacktestEquityPoint {
+  date: string;
+  equity: number;
+  drawdown: number;
+  daily_return?: number | null;
+}
+
+export interface BacktestTrade {
+  symbol: string;
+  entry_date: string;
+  entry_price: number;
+  exit_date: string;
+  exit_price: number;
+  quantity: number;
+  side: string;
+  pnl: number;
+  pnl_pct: number;
+  exit_reason: string;
+  holding_days: number;
+}
+
+export interface BacktestResultResponse {
+  id: number;
+  strategy_id: number;
+  start_date: string;
+  end_date: string;
+  initial_capital: Decimal;
+  final_equity: Decimal;
+  total_return_pct: Decimal;
+  cagr?: Decimal | null;
+  sharpe_ratio?: Decimal | null;
+  sortino_ratio?: Decimal | null;
+  max_drawdown?: Decimal | null;
+  max_drawdown_duration?: number | null;
+  volatility?: Decimal | null;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  win_rate?: Decimal | null;
+  profit_factor?: Decimal | null;
+  avg_trade_return?: Decimal | null;
+  avg_win?: Decimal | null;
+  avg_loss?: Decimal | null;
+  largest_win?: Decimal | null;
+  largest_loss?: Decimal | null;
+  avg_holding_days?: Decimal | null;
+  equity_curve?: BacktestEquityPoint[] | null;
+  trades?: BacktestTrade[] | null;
+  created_at?: string | null;
+}
+
+export interface BacktestSummary {
+  id: number;
+  strategy_id: number;
+  start_date: string;
+  end_date: string;
+  initial_capital: Decimal;
+  final_equity: Decimal;
+  total_return_pct: Decimal;
+  sharpe_ratio?: Decimal | null;
+  max_drawdown?: Decimal | null;
+  total_trades: number;
+  win_rate?: Decimal | null;
+  created_at?: string | null;
+}
+
+export interface BacktestListResponse {
+  items: BacktestSummary[];
+  total: number;
+}
+
+export interface BacktestRequestBody {
+  start_date: string; // YYYY-MM-DD
+  end_date: string;
+  initial_capital?: number;
+}
+
+export interface BacktestJobPending {
+  job_id: string;
+  status: "pending";
+  message: string;
+}
+
+export interface BacktestJobStatus {
+  status: "pending" | "running" | "completed" | "failed";
+  strategy_id: number;
+  job_id?: string | null;
+  backtest_id?: number | null;
+  total_return_pct?: number | null;
+  total_trades?: number | null;
+  error?: string | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  failed_at?: string | null;
+}
+
+export async function startBacktest(
+  jwt: string,
+  strategyId: number,
+  body: BacktestRequestBody,
+): Promise<BacktestJobPending | BacktestResultResponse> {
+  return apiFetch(`/strategies/${strategyId}/backtest?async_mode=true`, {
+    jwt,
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getBacktestJob(
+  jwt: string,
+  strategyId: number,
+  jobId: string,
+): Promise<BacktestJobStatus> {
+  return apiFetch<BacktestJobStatus>(
+    `/strategies/${strategyId}/backtest/job/${jobId}`,
+    { jwt },
+  );
+}
+
+export async function listBacktests(
+  jwt: string,
+  strategyId: number,
+  limit = 20,
+): Promise<BacktestListResponse> {
+  return apiFetch<BacktestListResponse>(
+    `/strategies/${strategyId}/backtests?limit=${limit}`,
+    { jwt },
+  );
+}
+
+export async function getBacktestResult(
+  jwt: string,
+  strategyId: number,
+  backtestId: number,
+): Promise<BacktestResultResponse> {
+  return apiFetch<BacktestResultResponse>(
+    `/strategies/${strategyId}/backtests/${backtestId}`,
+    { jwt },
+  );
+}

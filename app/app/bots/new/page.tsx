@@ -1,18 +1,72 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState, useTransition } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
 import { Btn, DotRow, EditorialHeader, Kicker, Ribbon } from "@/components/atoms";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
+import type { BotResponse } from "@/lib/api/bots";
 
 export default function BotWizardPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
+  // strategyId is read from ?strategy_id=… on mount. Reading via
+  // window.location instead of useSearchParams keeps the page out of the
+  // Next 16 CSR-bailout error if it ever ends up prerendered.
+  const [strategyId, setStrategyId] = useState<number | null>(null);
+  const [submitErr, setSubmitErr] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+  const router = useRouter();
   const T = useT();
   const { bp, isMobile } = useBreakpoint();
   const padX = pick(bp, PAD.page);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = new URL(window.location.href).searchParams.get("strategy_id");
+    if (!raw) return;
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) setStrategyId(n);
+  }, []);
+
+  async function onLaunch() {
+    setSubmitErr(null);
+    if (!strategyId) {
+      setSubmitErr("Open a strategy and use 'Spin up bot' to bind one.");
+      return;
+    }
+    let bot: BotResponse;
+    try {
+      const res = await fetch("/api/bots", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy_id: strategyId,
+          // Wizard shows hardcoded values for the alpha. Real edits land in
+          // the dashboard when the bot is paused.
+          name: "Bot " + new Date().toISOString().slice(0, 10),
+          allocated_capital: 1_000_000,
+          max_positions: 5,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        if (res.status === 403) {
+          setSubmitErr("Creating bots requires the Pro+ plan. Upgrade to continue.");
+          return;
+        }
+        setSubmitErr(typeof err?.error === "string" ? err.error : `Create failed (${res.status})`);
+        return;
+      }
+      bot = (await res.json()) as BotResponse;
+    } catch (err) {
+      setSubmitErr(err instanceof Error ? err.message : "Network error");
+      return;
+    }
+    startTransition(() => router.push(`/bots/${bot.id}`));
+  }
   return (
     <AppFrame route="/bots">
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -175,13 +229,35 @@ export default function BotWizardPage() {
             </Btn>
           )}
           {step === 3 && (
-            <Link href="/bots/momentum_live" style={{ textDecoration: "none" }}>
-              <Btn variant="deploy" size="md" icon={Icon.spark}>
-                Launch bot →
-              </Btn>
-            </Link>
+            <Btn
+              variant="deploy"
+              size="md"
+              icon={Icon.spark}
+              onClick={() => {
+                if (pending) return;
+                void onLaunch();
+              }}
+              style={pending ? { opacity: 0.6, cursor: "wait" } : undefined}
+            >
+              {pending ? "Launching…" : "Launch bot →"}
+            </Btn>
           )}
         </div>
+        {submitErr && (
+          <div
+            role="alert"
+            style={{
+              padding: `10px ${padX}`,
+              borderTop: `1px solid ${T.outlineFaint}`,
+              background: T.surfaceLow,
+              fontFamily: T.fontMono,
+              fontSize: 12,
+              color: T.loss,
+            }}
+          >
+            {submitErr}
+          </div>
+        )}
       </div>
     </AppFrame>
   );
