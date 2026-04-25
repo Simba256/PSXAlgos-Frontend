@@ -19,6 +19,7 @@ export function Btn({
   onClick,
   type = "button",
   title,
+  disabled,
 }: {
   children: ReactNode;
   variant?: BtnVariant;
@@ -28,6 +29,7 @@ export function Btn({
   onClick?: () => void;
   type?: "button" | "submit";
   title?: string;
+  disabled?: boolean;
 }) {
   const T = useT();
   const styles: Record<BtnVariant, { bg: string; color: string; border: string }> = {
@@ -47,6 +49,7 @@ export function Btn({
       type={type}
       onClick={onClick}
       title={title}
+      disabled={disabled}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -60,7 +63,8 @@ export function Btn({
         fontSize: fs,
         fontFamily: T.fontSans,
         fontWeight: 500,
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.55 : 1,
         whiteSpace: "nowrap",
         ...style,
       }}

@@ -1,149 +1,177 @@
-// Backend /portfolio wrappers. Mirrors backend/app/schemas/portfolio.py +
-// inline schemas in backend/app/routers/portfolio.py.
+// Backend /portfolio (trade journal) wrappers + types. Mirrors Pydantic
+// shapes in psxDataPortal/backend/app/schemas/portfolio.py.
 //
-// NOTE on semantics: the backend's /portfolio is a paper-trading account
-// (place market orders, executes against latest price, tracks PnL). The
-// frontend's /portfolio page is currently a personal-trade *journal*
-// (log trades you made elsewhere, kept in local CSV). Until the product
-// resolves which model wins, this client only exposes the read surface and
-// the safe write paths. The journal UI continues to operate on local state.
+// The journal model: users log real-broker trades. Open positions live as
+// rows; closing one migrates it to a closed-trade row with server-computed
+// pnl/return. Every scaled-in entry is its own position (multi-lot model).
 
 import { apiFetch } from "./client";
 
-export type OrderSide = "BUY" | "SELL";
-export type OrderType = "MARKET" | "LIMIT";
-export type OrderStatus =
-  | "PENDING"
-  | "FILLED"
-  | "PARTIALLY_FILLED"
-  | "CANCELLED"
-  | "REJECTED";
+// Pydantic serializes Decimal as a string in JSON; the frontend sometimes
+// needs to do math on them, so accept either shape.
+type Decimal = string | number;
 
-export interface PortfolioSummaryPosition {
-  // Backend's PortfolioSummary.positions field is `list` (untyped) — shape is
-  // determined by services/paper_trading.py at runtime. Treat as opaque
-  // until the contract is locked.
-  [key: string]: unknown;
-}
+// ============ Enums (mirror schemas/portfolio.py) ============
 
-export interface PortfolioSummary {
-  portfolio_id: number;
-  user_id: string;
-  initial_balance: number;
-  cash_balance: number;
-  positions_value: number;
-  total_value: number;
-  total_pnl: number;
-  total_pnl_percent: number;
-  positions: PortfolioSummaryPosition[];
-  created_at?: string | null;
-}
+export type JournalSource = "SIGNAL" | "MANUAL";
+export type JournalCloseReason = "STOP_LOSS" | "TARGET_HIT" | "MANUAL_CLOSE";
 
-export interface OrderItem {
-  order_id: number;
+// ============ Response shapes ============
+
+export interface OpenPositionResponse {
+  id: number;
   symbol: string;
-  stock_name: string;
-  side: string;
-  order_type: string;
+  stock_name?: string | null;
   quantity: number;
-  filled_quantity: number;
-  limit_price?: number | null;
-  status: string;
-  rejection_reason?: string | null;
-  created_at?: string | null;
+  entry_price: Decimal;
+  // Latest close from eod_prices — null if no price data for this symbol yet.
+  current_price?: Decimal | null;
+  stop_price?: Decimal | null;
+  target_price?: Decimal | null;
+  source: JournalSource;
+  strategy_name?: string | null;
+  opened_at: string;
 }
 
-export interface OrderListResponse {
-  orders: OrderItem[];
+export interface OpenPositionListResponse {
+  positions: OpenPositionResponse[];
   total: number;
 }
 
-export interface TradeItem {
-  trade_id: number;
-  order_id: number;
+export interface ClosedTradeResponse {
+  id: number;
   symbol: string;
-  stock_name: string;
-  side: string;
+  stock_name?: string | null;
   quantity: number;
-  price: number;
-  total_value: number;
-  trade_date: string;
-  executed_at?: string | null;
+  entry_price: Decimal;
+  exit_price: Decimal;
+  pnl: Decimal;
+  return_pct: Decimal;
+  source: JournalSource;
+  strategy_name?: string | null;
+  close_reason: JournalCloseReason;
+  opened_at: string;
+  closed_at: string;
 }
 
-export interface TradeListResponse {
-  trades: TradeItem[];
+export interface ClosedTradeListResponse {
+  trades: ClosedTradeResponse[];
   total: number;
 }
 
-export interface PlaceOrderBody {
-  symbol: string;
-  side: OrderSide;
-  quantity: number;
-  order_type?: OrderType;
-  limit_price?: number | null;
+export interface JournalSummaryResponse {
+  open_count: number;
+  closed_count: number;
+  total_unrealized_pnl: Decimal;
+  total_realized_pnl: Decimal;
 }
 
-export interface PlaceOrderResponse {
+export interface DeleteResponse {
   success: boolean;
-  order_id?: number | null;
-  trade_id?: number | null;
-  symbol?: string | null;
-  side?: string | null;
-  quantity?: number | null;
-  price?: number | null;
-  total_value?: number | null;
-  cash_balance?: number | null;
-  error?: string | null;
+  message: string;
 }
 
-export async function getPortfolioSummary(jwt: string): Promise<PortfolioSummary> {
-  return apiFetch<PortfolioSummary>(`/portfolio/summary`, { jwt });
+// ============ Request bodies ============
+
+export interface OpenPositionCreateBody {
+  symbol: string;
+  quantity: number;
+  entry_price: number;
+  stop_price?: number | null;
+  target_price?: number | null;
+  source?: JournalSource;
+  strategy_name?: string | null;
+  // ISO 8601; server defaults to now if omitted.
+  opened_at?: string | null;
 }
 
-export async function getOrders(
+// Only annotations are editable post-open. qty/entry/symbol are immutable.
+export interface OpenPositionUpdateBody {
+  stop_price?: number | null;
+  target_price?: number | null;
+  strategy_name?: string | null;
+}
+
+export interface ClosePositionBody {
+  exit_price: number;
+  close_reason?: JournalCloseReason;
+  closed_at?: string | null;
+}
+
+// ============ Wrappers ============
+
+export async function getJournalSummary(jwt: string): Promise<JournalSummaryResponse> {
+  return apiFetch<JournalSummaryResponse>(`/portfolio/summary`, { jwt });
+}
+
+export async function getOpenPositions(jwt: string): Promise<OpenPositionListResponse> {
+  return apiFetch<OpenPositionListResponse>(`/portfolio/positions`, { jwt });
+}
+
+export async function createOpenPosition(
   jwt: string,
-  params?: { status?: OrderStatus; limit?: number },
-): Promise<OrderListResponse> {
-  const search = new URLSearchParams();
-  if (params?.status) search.set("status", params.status);
-  if (params?.limit) search.set("limit", String(params.limit));
-  const q = search.toString();
-  return apiFetch<OrderListResponse>(`/portfolio/orders${q ? `?${q}` : ""}`, { jwt });
-}
-
-export async function getTrades(
-  jwt: string,
-  params?: { limit?: number },
-): Promise<TradeListResponse> {
-  const search = new URLSearchParams();
-  if (params?.limit) search.set("limit", String(params.limit));
-  const q = search.toString();
-  return apiFetch<TradeListResponse>(`/portfolio/trades${q ? `?${q}` : ""}`, { jwt });
-}
-
-export async function placeOrder(
-  jwt: string,
-  body: PlaceOrderBody,
-): Promise<PlaceOrderResponse> {
-  return apiFetch<PlaceOrderResponse>(`/portfolio/orders`, {
+  body: OpenPositionCreateBody,
+): Promise<OpenPositionResponse> {
+  return apiFetch<OpenPositionResponse>(`/portfolio/positions`, {
     jwt,
     method: "POST",
     body: JSON.stringify(body),
   });
 }
 
-export async function resetPortfolio(jwt: string): Promise<{ success: boolean; message: string; cash_balance: number }> {
-  return apiFetch(`/portfolio/reset`, { jwt, method: "POST" });
+export async function updateOpenPosition(
+  jwt: string,
+  id: number,
+  body: OpenPositionUpdateBody,
+): Promise<OpenPositionResponse> {
+  return apiFetch<OpenPositionResponse>(`/portfolio/positions/${id}`, {
+    jwt,
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
 }
 
-export async function addFunds(
+export async function deleteOpenPosition(
   jwt: string,
-  amount: number,
-): Promise<{ success: boolean; message: string; cash_balance: number; initial_balance: number }> {
-  return apiFetch(`/portfolio/add-funds`, {
+  id: number,
+): Promise<DeleteResponse> {
+  return apiFetch<DeleteResponse>(`/portfolio/positions/${id}`, {
+    jwt,
+    method: "DELETE",
+  });
+}
+
+export async function closeOpenPosition(
+  jwt: string,
+  id: number,
+  body: ClosePositionBody,
+): Promise<ClosedTradeResponse> {
+  return apiFetch<ClosedTradeResponse>(`/portfolio/positions/${id}/close`, {
     jwt,
     method: "POST",
-    body: JSON.stringify({ amount }),
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getClosedTrades(
+  jwt: string,
+  params?: { limit?: number },
+): Promise<ClosedTradeListResponse> {
+  const search = new URLSearchParams();
+  if (params?.limit) search.set("limit", String(params.limit));
+  const q = search.toString();
+  return apiFetch<ClosedTradeListResponse>(
+    `/portfolio/trades${q ? `?${q}` : ""}`,
+    { jwt },
+  );
+}
+
+export async function deleteClosedTrade(
+  jwt: string,
+  id: number,
+): Promise<DeleteResponse> {
+  return apiFetch<DeleteResponse>(`/portfolio/trades/${id}`, {
+    jwt,
+    method: "DELETE",
   });
 }
