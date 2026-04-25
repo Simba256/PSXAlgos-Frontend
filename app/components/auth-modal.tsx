@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import { signIn } from "next-auth/react";
 import { useT } from "./theme";
 import { LogoMark } from "./logo";
 
@@ -39,11 +40,9 @@ function GoogleIcon() {
 export function AuthModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const T = useT();
   const googleBtnRef = useRef<HTMLButtonElement>(null);
-  const [status, setStatus] = useState<"idle" | "pending">("idle");
 
   useEffect(() => {
     if (!open) return;
-    setStatus("idle");
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
@@ -61,10 +60,11 @@ export function AuthModal({ open, onClose }: { open: boolean; onClose: () => voi
   if (!open) return null;
 
   const handleGoogle = () => {
-    // Real Google OAuth integration goes here (e.g., NextAuth `signIn("google")`
-    // or a Supabase/Auth.js call). Until the backend exists, flip to a
-    // pending state so the user gets feedback without a fake auth success.
-    setStatus("pending");
+    const callbackUrl =
+      typeof window !== "undefined"
+        ? window.location.pathname + window.location.search
+        : "/";
+    void signIn("google", { callbackUrl });
   };
 
   return (
@@ -178,7 +178,6 @@ export function AuthModal({ open, onClose }: { open: boolean; onClose: () => voi
           ref={googleBtnRef}
           type="button"
           onClick={handleGoogle}
-          disabled={status === "pending"}
           style={{
             display: "flex",
             alignItems: "center",
@@ -193,39 +192,16 @@ export function AuthModal({ open, onClose }: { open: boolean; onClose: () => voi
             fontFamily: T.fontSans,
             fontSize: 14,
             fontWeight: 500,
-            cursor: status === "pending" ? "progress" : "pointer",
+            cursor: "pointer",
             boxShadow:
               T.mode === "dark"
                 ? "0 1px 2px rgba(60,64,67,0.1)"
                 : "0 1px 3px rgba(0,0,0,0.4)",
-            opacity: status === "pending" ? 0.82 : 1,
           }}
         >
           <GoogleIcon />
-          {status === "pending" ? "Connecting to Google…" : "Continue with Google"}
+          Continue with Google
         </button>
-
-        {status === "pending" && (
-          <div
-            role="status"
-            aria-live="polite"
-            style={{
-              marginTop: 14,
-              padding: "10px 12px",
-              borderRadius: 6,
-              background: T.surfaceLow,
-              border: `1px dashed ${T.outlineVariant}`,
-              fontFamily: T.fontMono,
-              fontSize: 11.5,
-              color: T.text3,
-              textAlign: "center",
-              lineHeight: 1.45,
-            }}
-          >
-            <span style={{ color: T.primaryLight }}>◉</span> Google sign-in is being
-            wired up — it&apos;ll work in the next cut.
-          </div>
-        )}
 
         <div
           style={{

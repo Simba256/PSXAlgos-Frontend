@@ -1,6 +1,6 @@
 # Project Tracker
 
-> Last updated: 2026-04-25 (Backend wiring plan written — Phase 1 starting)
+> Last updated: 2026-04-25 (Phase 1 done — auth wired, build green, ready for Phase 2 `/signals` spike)
 
 ## Project Summary
 PSX Algos — marketing site + in-app experience for a no-code strategy authoring, backtesting, and paper-trading product for the Pakistan Stock Exchange. Next.js 16 App Router, inline-style React UI.
@@ -9,9 +9,11 @@ PSX Algos — marketing site + in-app experience for a no-code strategy authorin
 **Status**: Active — backend wiring in progress
 
 ## In Progress
-- [ ] **Backend wiring — Phase 1: Auth (NextAuth v5 / Google)** — `BACKEND_WIRING_PLAN.md` is the source of truth. Scope: psx-ui's existing 7 routes + landing get wired to the existing FastAPI backend at `psxDataPortal/backend/`. **No new UI work, no new routes, no new features.** Repo Option A (psx-ui stays separate, talks to backend over HTTPS). NextAuth chosen because backend already verifies its JWTs (`backend/app/core/auth.py:1`). Phase 1 deliverable: clicking Continue with Google produces a real session cookie; no data fetching yet. Then Phase 2 (`/signals` spike) → Phase 3 (5 routes, one PR each) → Phase 4 (Vercel cutover).
+- [ ] **Backend wiring — Phase 2: `/signals` end-to-end spike** — first real data fetch. Build `app/lib/api/client.ts` (single `apiFetch<T>` wrapper, reads JWT from NextAuth session, forwards as `Authorization: Bearer`), then `app/lib/api/signals.ts` typed wrappers, then swap the local mock in `app/app/signals/page.tsx`. Loading + error states match the existing inline-style idiom (no SWR). Verifies the full chain: cookie → JWT → backend → render. Source of truth: `BACKEND_WIRING_PLAN.md`.
 
 ## Recently Completed
+- [x] **Backend wiring — Phase 1: Auth (NextAuth v5 / Google)** — `next-auth@5.0.0-beta.31` pinned (only new runtime dep). `app/auth.ts` ports `psx-trading-view/auth.ts` verbatim, preserving the `account.providerAccountId → token.user_id` mapping that existing Neon DB user rows key off. Route handler at `app/app/api/auth/[...nextauth]/route.ts`, gated proxy at `app/proxy.ts` (Next.js 16 file-convention rename of `middleware.ts`) protecting `/signals /strategies /backtest /bots /portfolio` and redirecting to `/?auth=required&from=<path>`. AuthModal Google button now calls `signIn("google", { callbackUrl })` — pending placeholder branch removed. `app/.env.example` documents `NEXTAUTH_URL`, `NEXTAUTH_SECRET`, `GOOGLE_CLIENT_ID/SECRET`, `NEXT_PUBLIC_API_BASE_URL`. ADR-7 added to `PRE_AUTH_DECISIONS.md`. Build clean, `check-env.mjs` passes, no UI markup changes — (2026-04-25)
+- [x] **Phase 0 — git repo initialized and pushed** to `https://github.com/Simba256/PSXAlgos-Frontend.git` (main branch). Stale `app/.git` removed; root-level `.gitignore` added (covers OS noise, `.claude/`, env files with `!.env.example` exception, root-level PNGs); `app/.gitignore` already path-anchored. 59 files in initial commit, no Claude branding — (2026-04-25)
 - [x] Repo cleanup — removed ephemeral PNGs, `.playwright-mcp/`, 5 angle-review reports, closed survey/followup docs, and pre-app design scaffolds. Repo root now: `PROJECT_TRACKER.md`, `FRONTEND_REVIEW_2026-04-24.md`, `PRE_AUTH_DECISIONS.md`, `FUTURE_TRIGGERS.md`, `app/` — (2026-04-25)
 - [x] P3 trigger registry — 8 earned-at-signal items at `FUTURE_TRIGGERS.md` (Lede clamping, TerminalTable virtualization, signal-log-bridge retirement, real-fetch loading states, Step 3 name truncation, Help nav placement, RTL audit, print stylesheet). Trigger fires → entry moves here, deleted from registry — (2026-04-25)
 - [x] P2 bucket — 6 ADRs at `PRE_AUTH_DECISIONS.md` (session tokens, OAuth redirect allowlist, action-tier blast radius, env-leak rule, analytics scrub, CSS-var escape valve). Two implementations shipped: `app/scripts/check-env.mjs` wired to prebuild; `app/globals.css` `:root` + `[data-theme]` token system. ADR-7 (form primitives) deferred — wizards use `onClick`, not `<form>` — (2026-04-25)
@@ -27,6 +29,8 @@ PSX Algos — marketing site + in-app experience for a no-code strategy authorin
 - None
 
 ## Key Decisions
+- (2026-04-25) **NextAuth v5 chosen over hand-rolled OAuth** (ADR-7). The 3-runtime-dep purity protects against UI bloat (Tailwind, shadcn, Radix, SWR), not auth infra. Two facts forced NextAuth: (1) the FastAPI backend already verifies NextAuth-issued HS256 JWTs and the live Neon DB has user rows keyed off `account.providerAccountId`, so hand-rolling would orphan accounts; (2) the previous frontend's 34-line integration ports verbatim. `next-auth@5.0.0-beta.31` is the only new runtime dep in the entire migration.
+- (2026-04-25) **`proxy.ts`, not `middleware.ts`** — Next.js 16 (`16.2.4`) renamed the file convention. The previous name still works but emits a deprecation warning at build time. Using the new name keeps the build clean and survives the eventual removal.
 - (2026-04-25) **Pre-auth architecture documented as ADRs at `PRE_AUTH_DECISIONS.md`** (6 ADRs). Two have code shipped today; the other four fire when their trigger event arrives. Rationale: cost of writing 6 ADRs now ≈ 20 min; cost of reversing wrong choices later = migration work, security incidents, compliance review.
 - (2026-04-25) **No ESLint in the project** — the `NEXT_PUBLIC_` leak guard is a 150-line `scripts/check-env.mjs` wired to `prebuild`, not an ESLint rule. Project ships 3 runtime + 5 dev deps and deliberately has no linter; a deps-free Node script catches the same class of bugs at the same lifecycle point.
 - (2026-04-24) **Auth is Google-only, single flow, modal (no dedicated route)**. One "Continue with Google" button creates account if new, signs in if returning. Modal over the marketing site keeps landing context intact and avoids a sparse auth page round-trip. Apple ID / magic-link can be added later if analytics demand it.

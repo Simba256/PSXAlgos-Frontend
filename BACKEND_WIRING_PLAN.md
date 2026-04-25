@@ -37,7 +37,7 @@
 | `/bots/[id]` | gated | `GET /bots/{id}`, `PUT /bots/{id}`, `DELETE /bots/{id}`, `POST /bots/{id}/{start\|pause\|stop}`, `GET /bots/{id}/{positions\|trades\|performance}` |
 | `/portfolio` | gated | `GET /portfolio/{summary\|orders\|trades}`, `POST /portfolio/{orders\|reset\|add-funds}`. Local CSV import/export via `lib/portfolio-csv.ts` stays — only orders go to the API. |
 
-**Public vs gated split** drives `middleware.ts`: public routes pass through, gated routes redirect to `/` with the AuthModal opened (or 401 if it's an SSR fetch).
+**Public vs gated split** drives `proxy.ts` (Next.js 16 file-convention rename of the old `middleware.ts`): public routes pass through, gated routes redirect to `/` with the AuthModal opened (or 401 if it's an SSR fetch).
 
 ---
 
@@ -52,7 +52,7 @@ Steps:
 2. Create `app/auth.ts` — port `psx-trading-view/auth.ts:1-34` verbatim. Same Google provider, same `account.providerAccountId → token.user_id` mapping (critical: existing user rows in the cloud Neon DB key off this; changing the mapping creates orphan accounts).
 3. Create `app/app/api/auth/[...nextauth]/route.ts` — exports `handlers.GET, handlers.POST` from `auth.ts`.
 4. Edit `components/auth-modal.tsx` — Google button `onClick` calls `signIn("google", { callbackUrl: window.location.pathname })`. Drop the `pending` placeholder branch entirely (it's no longer reachable).
-5. Add `middleware.ts` at `app/middleware.ts` — gates `/signals`, `/strategies`, `/backtest`, `/bots`, `/portfolio` (and their subpaths). Unauthenticated requests redirect to `/?auth=required` so the landing page can auto-open the AuthModal. Public: `/`, `/pricing`, `/brand`, `/api/auth/*`.
+5. Add `proxy.ts` at `app/proxy.ts` — gates `/signals`, `/strategies`, `/backtest`, `/bots`, `/portfolio` (and their subpaths). Unauthenticated requests redirect to `/?auth=required` so the landing page can auto-open the AuthModal. Public: `/`, `/pricing`, `/brand`, `/api/auth/*`.
 6. Add `app/.env.example` documenting required env vars: `NEXTAUTH_URL`, `NEXTAUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `NEXT_PUBLIC_API_BASE_URL`. Verify `scripts/check-env.mjs` passes (none of these match the SECRET/TOKEN/PASSWORD regex on the `NEXT_PUBLIC_*` side).
 7. Add ADR-7 to `PRE_AUTH_DECISIONS.md`: NextAuth chosen over hand-rolled OAuth. One paragraph.
 8. Update `PROJECT_TRACKER.md` — move "Backend wiring Phase 1" to Recently Completed when this phase lands.
@@ -112,7 +112,7 @@ Per phase, in dependency order:
 **Phase 1 (auth)**:
 - NEW `app/auth.ts`
 - NEW `app/app/api/auth/[...nextauth]/route.ts`
-- NEW `app/middleware.ts`
+- NEW `app/proxy.ts`
 - NEW `app/.env.example`
 - EDIT `app/components/auth-modal.tsx` (drop `pending` branch, wire `signIn`)
 - EDIT `app/package.json` (add `next-auth`)

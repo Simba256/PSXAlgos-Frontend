@@ -226,6 +226,49 @@ Server components need a parallel way to reach the same colors / fonts.
 
 ---
 
+## ADR-7 · NextAuth v5 chosen over hand-rolled OAuth
+
+**Status**: Accepted (2026-04-25 — implemented same session).
+
+**Context**.
+Backend wiring needed an auth solution for Google sign-in. Two paths existed:
+hand-roll the OAuth dance + cookie issuance (~150 lines), or adopt NextAuth v5
+(adds one runtime dep). The 3-runtime-dep purity (`next`, `react`, `react-dom`)
+is real and the bar to cross it is high.
+
+Two facts forced NextAuth: (1) the FastAPI backend at
+`psxDataPortal/backend/app/core/auth.py` already verifies NextAuth-issued JWTs
+(HS256 with `NEXTAUTH_SECRET`) and the cloud Neon DB has live user rows keyed
+off NextAuth's `account.providerAccountId → token.user_id` mapping —
+hand-rolling would require parallel changes on the backend and risk orphaning
+existing accounts; (2) the previous frontend (`psx-trading-view/auth.ts`) is a
+proven 34-line integration with the exact mapping the backend expects.
+
+**Decision**.
+
+1. Add `next-auth@5.0.0-beta.31` (pinned, exact version) as the only new
+   runtime dep in this migration.
+2. Port `psx-trading-view/auth.ts` verbatim — same Google provider, same
+   `providerAccountId → user_id` mapping. The only adjustment is `pages.signIn`,
+   which points to `/?auth=required` because psx-ui has no dedicated `/login`
+   route (the AuthModal opens on the landing page instead).
+3. The 3-dep-purity bar applies to **UI bloat** (Tailwind, shadcn, Radix, SWR);
+   auth infra is a deliberate exception, recorded here so it does not turn into
+   a precedent.
+
+**Consequences**.
+- NextAuth's defaults satisfy ADR-1 (httpOnly + Secure + SameSite=Lax cookies).
+- NextAuth's `callbacks.redirect` will be the implementation point for ADR-2's
+  same-origin allowlist when the first `callbackUrl` flow lands.
+- Future auth providers (Apple ID, magic link) plug into the same `auth.ts`
+  with no architectural change.
+
+**Implemented**: yes — `app/auth.ts`, `app/app/api/auth/[...nextauth]/route.ts`,
+`app/proxy.ts` (this session — `proxy.ts` is the Next.js 16 file-convention
+rename of `middleware.ts`).
+
+---
+
 ## Deferred (no ADR, captured for completeness)
 
 - **`useActionState` / `useFormStatus` / `useOptimistic` for wizards**. The `strategies/new` and `bots/new` wizards currently use `onClick` + step state, not `<form>` / `onSubmit`. React 19's form primitives only help when an async server action backs the submit. **Revisit when** the first wizard step wires to a real `action` — at that moment, migrate the whole wizard (not incrementally).
