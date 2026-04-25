@@ -1,0 +1,165 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Theme tokens (Paper defaults). Kept in sync with PALETTES in components/theme.tsx.
+ * Server components and any CSS rule can read `var(--surface)` etc. without touching useT().
+ * See PRE_AUTH_DECISIONS.md § ADR-6. */
+:root {
+  --surface-lowest: #eee9dc;
+  --surface: #f7f3ea;
+  --surface-low: #faf7ee;
+  --surface-2: #ffffff;
+  --surface-3: #ece6d6;
+  --surface-4: #ddd5c1;
+  --surface-bright: #fffcf3;
+  --primary: #1f5c3f;
+  --primary-light: #256b48;
+  --primary-container: #2e8a5f;
+  --deploy: #7a2a1a;
+  --deploy-hover: #94331f;
+  --deploy-fg: #ffffff;
+  --gain: #1f6b3a;
+  --loss: #a8321f;
+  --warning: #8a5a12;
+  --accent: #6b4a1e;
+  --text: #1a1815;
+  --text-2: #434038;
+  --text-3: #5f5a4e;
+  --outline: #938d7c;
+  --outline-variant: #c9c1ae;
+  --outline-faint: #e2dbca;
+}
+
+[data-theme="dark"] {
+  --surface-lowest: #050503;
+  --surface: #0a0906;
+  --surface-low: #100e09;
+  --surface-2: #15120c;
+  --surface-3: #1e1a12;
+  --surface-4: #2a251b;
+  --surface-bright: #322c20;
+  --primary: #d9881a;
+  --primary-light: #f2a93a;
+  --primary-container: #ffc85c;
+  --deploy: #1a7d5a;
+  --deploy-hover: #209972;
+  --deploy-fg: #eefff4;
+  --gain: #3fd26a;
+  --loss: #f05454;
+  --warning: #ffb93a;
+  --accent: #e6a23a;
+  --text: #fff4dc;
+  --text-2: #d4c9a8;
+  --text-3: #8a8066;
+  --outline: #7a6f55;
+  --outline-variant: #3a3224;
+  --outline-faint: #211d15;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+body {
+  font-family: var(--font-plex-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--surface);
+  color: var(--text);
+  transition: background 180ms ease, color 180ms ease;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+}
+
+/* WCAG 2.4.7 — keyboard-only focus ring. Mouse clicks stay clean. */
+:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+img,
+svg,
+video,
+canvas {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Honor user's motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Prevent iOS from zooming when focusing inputs */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+@keyframes psx-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes psx-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes psx-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

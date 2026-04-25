@@ -1,0 +1,24 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Claude Code per-project state (settings.local.json contains user-specific paths)
+.claude/
+
+# Env files at any level (app/.gitignore also covers these inside app/)
+.env
+.env.*
+!.env.example
+
+# Runtime artifacts that shouldn't have escaped to root
+.playwright-mcp/
+*.log
+
+# Stray screenshots at root (project policy: screenshots aren't tracked)
+/*.png
+/*.jpg
+/*.jpeg
