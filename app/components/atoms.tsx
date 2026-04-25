@@ -1,7 +1,7 @@
 "use client";
 
-import type { CSSProperties, ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useT, type Tokens } from "./theme";
 import { useBreakpoint, PAD, pick, clampPx } from "./responsive";
 
@@ -851,6 +851,231 @@ export function Ribbon({
         }}
       />
       {right}
+    </div>
+  );
+}
+
+/* ────────── Combobox (autocomplete with free-text fallback) ──────────
+
+   Permissive autocomplete: the input is always editable text, the dropdown
+   is a *hint* sourced from `options`. Free-text typed values pass through
+   `onChange` even if they're not in the list — so a stale/missing symbol
+   doesn't block submission. Filtering is a case-insensitive prefix match
+   on the option's `label` and `keywords`.
+*/
+
+export interface ComboOption {
+  value: string;
+  label: string;
+  /** Extra strings the option should match against (e.g. company name). */
+  keywords?: string;
+  /** Right-aligned dim text rendered next to the label in the dropdown. */
+  hint?: string;
+}
+
+export function Combobox({
+  label,
+  value,
+  onChange,
+  options,
+  placeholder,
+  transform,
+  mono,
+  maxResults = 8,
+  emptyHint,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: ComboOption[];
+  placeholder?: string;
+  transform?: (v: string) => string;
+  mono?: boolean;
+  maxResults?: number;
+  emptyHint?: string;
+}) {
+  const T = useT();
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  const matches = useMemo(() => {
+    const q = value.trim().toLowerCase();
+    if (!q) return options.slice(0, maxResults);
+    const starts: ComboOption[] = [];
+    const contains: ComboOption[] = [];
+    for (const opt of options) {
+      const lab = opt.label.toLowerCase();
+      const kw = (opt.keywords ?? "").toLowerCase();
+      if (lab.startsWith(q)) starts.push(opt);
+      else if (lab.includes(q) || kw.includes(q)) contains.push(opt);
+      if (starts.length >= maxResults) break;
+    }
+    return [...starts, ...contains].slice(0, maxResults);
+  }, [value, options, maxResults]);
+
+  // Keep highlight in range when matches change.
+  useEffect(() => {
+    setHighlight((h) => Math.min(h, Math.max(0, matches.length - 1)));
+  }, [matches.length]);
+
+  // Close on outside click. Listener attaches only when open.
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  function commit(opt: ComboOption) {
+    onChange(transform ? transform(opt.value) : opt.value);
+    setOpen(false);
+  }
+
+  function onKey(e: ReactKeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setOpen(true);
+      setHighlight((h) => (matches.length === 0 ? 0 : (h + 1) % matches.length));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setOpen(true);
+      setHighlight((h) => (matches.length === 0 ? 0 : (h - 1 + matches.length) % matches.length));
+    } else if (e.key === "Enter" && open && matches[highlight]) {
+      e.preventDefault();
+      commit(matches[highlight]);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    } else if (e.key === "Tab" && open && matches[highlight]) {
+      // Tab acts as accept-and-move-on so power users can chain fields fast.
+      commit(matches[highlight]);
+    }
+  }
+
+  const showDropdown = open && (matches.length > 0 || (value.length > 0 && emptyHint));
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <Kicker>{label}</Kicker>
+      <div
+        style={{
+          marginTop: 6,
+          padding: "8px 12px",
+          background: T.surface,
+          borderRadius: 8,
+          boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+          display: "flex",
+          alignItems: "baseline",
+          gap: 8,
+        }}
+      >
+        <input
+          type="text"
+          value={value}
+          placeholder={placeholder}
+          autoComplete="off"
+          onChange={(e) => {
+            onChange(transform ? transform(e.target.value) : e.target.value);
+            setOpen(true);
+            setHighlight(0);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKey}
+          style={{
+            background: "transparent",
+            border: "none",
+            color: T.text,
+            fontFamily: mono ? T.fontMono : T.fontSans,
+            fontSize: 13,
+            width: "100%",
+            padding: 0,
+            outline: "none",
+          }}
+        />
+      </div>
+      {showDropdown && (
+        <div
+          role="listbox"
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            marginTop: 4,
+            background: T.surface2,
+            borderRadius: 8,
+            boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 12px 32px -12px rgba(0,0,0,0.5)`,
+            maxHeight: 240,
+            overflowY: "auto",
+            zIndex: 10,
+          }}
+        >
+          {matches.length === 0 && emptyHint ? (
+            <div
+              style={{
+                padding: "10px 12px",
+                fontFamily: T.fontMono,
+                fontSize: 11,
+                color: T.text3,
+              }}
+            >
+              {emptyHint}
+            </div>
+          ) : (
+            matches.map((opt, i) => {
+              const active = i === highlight;
+              return (
+                <div
+                  key={opt.value}
+                  role="option"
+                  aria-selected={active}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    commit(opt);
+                  }}
+                  onMouseEnter={() => setHighlight(i)}
+                  style={{
+                    padding: "8px 12px",
+                    display: "flex",
+                    alignItems: "baseline",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    background: active ? T.surface3 : "transparent",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: mono ? T.fontMono : T.fontSans,
+                      fontSize: 13,
+                      color: T.text,
+                    }}
+                  >
+                    {opt.label}
+                  </span>
+                  {opt.hint && (
+                    <span
+                      style={{
+                        fontFamily: T.fontMono,
+                        fontSize: 10.5,
+                        color: T.text3,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        maxWidth: "60%",
+                      }}
+                    >
+                      {opt.hint}
+                    </span>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
     </div>
   );
 }

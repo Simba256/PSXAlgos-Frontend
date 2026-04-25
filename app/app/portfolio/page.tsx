@@ -8,8 +8,10 @@ import {
   type ClosedTradeResponse,
   type JournalCloseReason,
 } from "@/lib/api/portfolio";
+import { getAllStocks } from "@/lib/api/stocks";
+import { getStrategies } from "@/lib/api/strategies";
 import type { ClosedTrade, CloseReason, OpenPosition, TradeSource } from "@/lib/portfolio-csv";
-import { PortfolioView } from "./portfolio-view";
+import { PortfolioView, type SymbolOption, type StrategyOption } from "./portfolio-view";
 
 // The journal-page UI types (in lib/portfolio-csv.ts) predate the backend
 // contract — they use sym/qty/entry/now and lowercase source. The backend
@@ -85,15 +87,32 @@ export default async function PortfolioPage() {
     email: session.user.email,
   });
 
-  const [openRes, closedRes] = await Promise.all([
+  // Stocks fetch is paginated and the strategies endpoint may 403 for free
+  // users — neither failure should block /portfolio from rendering, so each
+  // is wrapped to a degraded fallback instead of throwing.
+  const [openRes, closedRes, stocks, strategies] = await Promise.all([
     getOpenPositions(jwt),
     getClosedTrades(jwt, { limit: 100 }),
+    getAllStocks().catch(() => []),
+    getStrategies(jwt).catch(() => ({ items: [], total: 0, page: 1, page_size: 0, total_pages: 0 })),
   ]);
+
+  const symbolOptions: SymbolOption[] = stocks
+    .filter((s) => s.is_active && s.symbol)
+    .map((s) => ({ symbol: s.symbol, name: s.name ?? null }));
+
+  const strategyOptions: StrategyOption[] = strategies.items.map((s) => ({
+    id: s.id,
+    name: s.name,
+    status: s.status,
+  }));
 
   return (
     <PortfolioView
       initialPositions={openRes.positions.map(mapPosition)}
       initialClosed={closedRes.trades.map(mapClosed)}
+      symbolOptions={symbolOptions}
+      strategyOptions={strategyOptions}
     />
   );
 }

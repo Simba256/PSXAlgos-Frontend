@@ -1,6 +1,6 @@
 # Project Tracker
 
-> Last updated: 2026-04-26 (Phases 3.2b/c, 3.3, 3.4 API surface, and 3.5 shipped — only Phase 4 cutover remains)
+> Last updated: 2026-04-26 (Phase 5 trade journal switchover complete; symbol/strategy autocomplete added to /portfolio modal; only Phase 4 cutover remains)
 
 ## Project Summary
 PSX Algos — marketing site + in-app experience for a no-code strategy authoring, backtesting, and paper-trading product for the Pakistan Stock Exchange. Next.js 16 App Router, inline-style React UI.
@@ -12,6 +12,7 @@ PSX Algos — marketing site + in-app experience for a no-code strategy authorin
 - [ ] **Backend wiring — Phase 4: production cutover** — Vercel project, env vars (NEXTAUTH_SECRET must match Railway byte-for-byte), CORS origin add to backend, DNS, decommission old project. No frontend code changes here.
 
 ## Recently Completed
+- [x] **`/portfolio` LogTradeModal — symbol + strategy autocomplete.** New `Combobox` atom (`components/atoms.tsx`) — permissive: input is always free-text, dropdown is a hint, free-typed values pass through unchanged so a stale cache or mistyped ticker can't block submission. Arrow-key nav, Enter/Tab to accept, Escape to close, click outside to dismiss. Filtering is case-insensitive prefix-then-contains over `label` + `keywords`. Server component (`portfolio/page.tsx`) now also fetches `getAllStocks()` (paginated walk of `/stocks`, 5min ISR per page) and `getStrategies(jwt)` in parallel; both wrapped in `.catch()` so a free-tier 403 on strategies or a transient stocks failure degrades to an empty list instead of breaking `/portfolio`. New file: `lib/api/stocks.ts`. — (2026-04-26)
 - [x] **Backend wiring — Phases 3.2b/c, 3.3, 3.4 API surface, 3.5 — full app stretch in one session.** Each route ships safe read paths + safe writes; complex round-trips deferred per ADR-9. Files added/changed:
   - **API client modules**: `lib/api/strategies.ts` (extended with backtest types/wrappers), `lib/api/bots.ts` (full CRUD + positions/trades/performance), `lib/api/portfolio.ts` (summary/orders/trades/place-order/reset/add-funds).
   - **Server-side proxy routes** (mint JWT from session, forward to backend): `/api/strategies` (POST), `/api/strategies/[id]` (GET/PUT/DELETE), `/api/strategies/[id]/backtest` (POST), `/api/strategies/[id]/backtest/job/[jobId]` (GET poll), `/api/bots` (POST), `/api/bots/[id]` (PUT/DELETE), `/api/bots/[id]/[action]` (start/pause/stop), `/api/portfolio/orders` (POST), `/api/portfolio/reset` (POST), `/api/portfolio/add-funds` (POST).

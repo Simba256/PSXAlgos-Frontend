@@ -7,6 +7,7 @@ import { AppFrame } from "@/components/frame";
 import { useT, type Tokens } from "@/components/theme";
 import {
   Btn,
+  Combobox,
   DotRow,
   EditorialHeader,
   Kicker,
@@ -15,6 +16,7 @@ import {
   Ribbon,
   TerminalTable,
   useFlash,
+  type ComboOption,
   type Col,
 } from "@/components/atoms";
 import { Icon } from "@/components/icons";
@@ -153,12 +155,30 @@ const SECTOR_COLOR = (T: Tokens): Record<string, string> => ({
 
 /* ────────── View ────────── */
 
+export interface SymbolOption {
+  symbol: string;
+  name: string | null;
+}
+
+export interface StrategyOption {
+  id: number;
+  name: string;
+  status: string;
+}
+
 interface PortfolioViewProps {
   initialPositions: OpenPosition[];
   initialClosed: ClosedTrade[];
+  symbolOptions: SymbolOption[];
+  strategyOptions: StrategyOption[];
 }
 
-export function PortfolioView({ initialPositions, initialClosed }: PortfolioViewProps) {
+export function PortfolioView({
+  initialPositions,
+  initialClosed,
+  symbolOptions,
+  strategyOptions,
+}: PortfolioViewProps) {
   const [positions, setPositions] = useState<OpenPosition[]>(initialPositions);
   const [closed, setClosed] = useState<ClosedTrade[]>(initialClosed);
   const [logOpen, setLogOpen] = useState(false);
@@ -374,6 +394,8 @@ export function PortfolioView({ initialPositions, initialClosed }: PortfolioView
       {logOpen && (
         <LogTradeModal
           onClose={() => setLogOpen(false)}
+          symbolOptions={symbolOptions}
+          strategyOptions={strategyOptions}
           onSubmit={async (p) => {
             const ok = await handleLog(p);
             if (ok) setLogOpen(false);
@@ -1063,12 +1085,38 @@ function FlashBar({ message }: { message: string }) {
 function LogTradeModal({
   onClose,
   onSubmit,
+  symbolOptions,
+  strategyOptions,
 }: {
   onClose: () => void;
   onSubmit: (p: Omit<OpenPosition, "id">) => Promise<boolean>;
+  symbolOptions: SymbolOption[];
+  strategyOptions: StrategyOption[];
 }) {
   const T = useT();
   const [sym, setSym] = useState("");
+
+  const symbolCombo: ComboOption[] = useMemo(
+    () =>
+      symbolOptions.map((s) => ({
+        value: s.symbol,
+        label: s.symbol,
+        keywords: s.name ?? "",
+        hint: s.name ?? undefined,
+      })),
+    [symbolOptions],
+  );
+
+  const strategyCombo: ComboOption[] = useMemo(
+    () =>
+      strategyOptions.map((s) => ({
+        value: s.name,
+        label: s.name,
+        hint: s.status === "ACTIVE" ? "active" : s.status.toLowerCase(),
+      })),
+    [strategyOptions],
+  );
+
   const [qty, setQty] = useState("");
   const [entry, setEntry] = useState("");
   const [stop, setStop] = useState("");
@@ -1144,13 +1192,15 @@ function LogTradeModal({
 
       <div style={{ padding: "14px 26px" }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-          <ModalInput
+          <Combobox
             label="Symbol"
             value={sym}
             onChange={setSym}
+            options={symbolCombo}
             placeholder="OGDC"
             transform={(v) => v.toUpperCase()}
             mono
+            emptyHint="No match — will submit as typed"
           />
           <ModalInput
             label="Quantity"
@@ -1214,11 +1264,17 @@ function LogTradeModal({
 
         {source === "signal" && (
           <div style={{ marginTop: 10 }}>
-            <ModalInput
+            <Combobox
               label="Strategy name"
               value={strat}
               onChange={setStrat}
+              options={strategyCombo}
               placeholder="RSI Bounce v1"
+              emptyHint={
+                strategyOptions.length === 0
+                  ? "No strategies yet — type a name to log freely"
+                  : "No match — will submit as typed"
+              }
             />
           </div>
         )}
