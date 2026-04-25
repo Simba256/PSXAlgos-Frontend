@@ -8,6 +8,7 @@ import { useT, useTheme } from "./theme";
 import { useBreakpoint, PAD, pick } from "./responsive";
 import { LogoMark } from "./logo";
 import { AuthModal } from "./auth-modal";
+import { UserMenu } from "./user-menu";
 
 type MarketingItem =
   | { kind: "link"; href: string; label: string }
@@ -151,21 +152,7 @@ export function TopNav({ route }: { route?: string }) {
             <span style={{ fontFamily: T.fontMono, whiteSpace: "nowrap" }}>
               KSE-100 <span style={{ color: T.gain }}>+0.42%</span>
             </span>
-            <span
-              style={{
-                width: 26,
-                height: 26,
-                borderRadius: 13,
-                background: T.surface3,
-                color: T.text2,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 11,
-              }}
-            >
-              AR
-            </span>
+            <UserMenu size={26} />
           </div>
         )}
       </div>
@@ -278,24 +265,29 @@ export function MarketingNav({ badge }: { badge?: string }) {
           >
             Pricing
           </Link>
-          <button
-            type="button"
-            onClick={() => setAuthOpen(true)}
-            style={{
-              fontFamily: T.fontMono,
-              fontSize: 11.5,
-              padding: "8px 16px",
-              borderRadius: 999,
-              background: T.primary,
-              color: T.surface,
-              border: "none",
-              cursor: "pointer",
-              fontWeight: 600,
-              whiteSpace: "nowrap",
-            }}
-          >
-            Sign in
-          </button>
+          <UserMenu
+            size={30}
+            fallback={
+              <button
+                type="button"
+                onClick={() => setAuthOpen(true)}
+                style={{
+                  fontFamily: T.fontMono,
+                  fontSize: 11.5,
+                  padding: "8px 16px",
+                  borderRadius: 999,
+                  background: T.primary,
+                  color: T.surface,
+                  border: "none",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Sign in
+              </button>
+            }
+          />
         </div>
       </div>
 
