@@ -77,7 +77,10 @@ Steps:
 One route per PR. Order from lowest blast radius to highest:
 
 1. **`/pricing`** — public, single `GET /subscriptions/plans` call. Trivial.
-2. **`/strategies` (list + wizard)** — full CRUD but no derived state.
+2. **`/strategies`** — split into three slices:
+   - **3.2a list (read-only)** — `GET /strategies` server-fetch, map `StrategyResponse → Strategy`. Per-row enrichment (signals today, latest backtest %, Sharpe, output bindings) deferred — see ADR-8. Sort UI for `backtest`/`sharpe`/`today` is preserved but inert until enrichment lands.
+   - **3.2b wizard** — `POST /strategies` on submit at `/strategies/new`. Requires the create body shape (entry_rules, exit_rules, position_sizing) which the existing wizard doesn't fully model — likely needs a normalize step from the wizard's local state to the backend schema.
+   - **3.2c editor** — full read/write at `/strategies/[id]` including a careful round-trip of the visual condition canvas to/from `EntryRules.conditions.{logic, conditions[]}` JSON. Heaviest sub-slice (2232-line page).
 3. **`/bots` (list + dashboard + wizard)** — CRUD + lifecycle actions (start/pause/stop). Confirm action confirmation UI matches ADR-3's tier classification (paper-trade actions = T2).
 4. **`/portfolio`** — preserves local CSV import/export; only orders/reset/add-funds hit the API.
 5. **`/backtest`** — most complex (job-pending → poll → result). Phase 3's load-bearing route.

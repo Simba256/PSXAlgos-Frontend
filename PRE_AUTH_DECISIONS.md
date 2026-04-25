@@ -269,9 +269,85 @@ rename of `middleware.ts`).
 
 ---
 
+## ADR-8 · `/strategies` list ships without per-row enrichment (signals / latest backtest)
+
+**Status**: Accepted (2026-04-26 — implemented same session, Phase 3.2 list slice).
+
+**Context**.
+The `/strategies` list-page UI (`app/strategies/strategies-view.tsx`) declares a
+row shape that includes:
+
+- `signals` — count of signals fired today by the strategy
+- `bt` — latest backtest's total return (e.g. `"+14.2%"`)
+- `sharpe` — latest backtest's Sharpe ratio
+- `outputs` — array of `bt`/`sig`/`bot` glyphs indicating which downstream
+  surfaces the strategy is bound to
+
+None of these fields are on the bare `StrategyResponse` returned by
+`GET /strategies` (`backend/app/schemas/strategy.py:211`). Sourcing them
+correctly requires:
+
+- one `GET /strategy-signals?strategy_id={id}&date=today` per row, **or** a new
+  list-summary endpoint
+- one `GET /strategies/{id}/backtests?limit=1` per row, **or** the same
+- bot-binding lookup (which strategies have an active bot bound) — currently
+  derivable only by joining the `bots` table
+
+For a list of N strategies that's 2N+1 round trips for first paint of a page
+that's the *index* of the user's authoring work — i.e. the most-visited
+authenticated route besides `/signals`.
+
+**Decision**.
+
+1. **List page ships with empty sentinels.** Mapping in
+   `app/strategies/page.tsx` sets `signals: 0`, `bt: "—"`, `sharpe: null`,
+   `outputs: []` for every row. The UI already renders these as "no data"
+   states (greyed `—`, dim "today" count) — no markup change required, no
+   shouting `null`s in the user's face.
+2. **`type` is hardcoded to `"Custom"`.** The frontend's `Mean reversion` /
+   `Momentum` / `Trend follow` taxonomy is a presentation taxonomy that does
+   not exist as a backend field. Deriving it from `entry_rules.conditions[].indicator`
+   would couple the frontend taxonomy to the indicator enum and be wrong about
+   half the time (a strategy can use both RSI and SMA indicators and not be
+   cleanly any single category). `"Custom"` is honest; a real classifier
+   belongs to the strategy author, not the renderer.
+3. **`universe` is derived locally.** From `stock_symbols` if non-empty
+   (`"PSO, OGDC"` for ≤2, `"N symbols"` otherwise), else from
+   `stock_filters.sectors` if present, else fallback to `"KSE-100"`. Cheap,
+   no extra fetch.
+4. **The existing JSON-import flow stays in-memory only.** `coerceStrategy()`
+   reads imported records into client state; nothing POSTs to the backend.
+   Real persistence arrives with the wizard (Phase 3.2 follow-up) which uses
+   `POST /strategies` directly.
+
+**Consequences**.
+- Page renders in 1 round trip instead of 2N+1. Predictable LCP.
+- Users with many strategies lose at-a-glance signal counts and recent BT
+  performance — the loss is real but measured: this data is one click away on
+  the strategy editor page (`/strategies/[id]`) which fetches the full record
+  + can fetch backtest history when needed.
+- Sorting by `backtest`, `sharpe`, `today` (signals today) all become no-ops
+  while the columns are placeholders. Sort UI stays — removing it would be a
+  markup change. The columns still work after enrichment ships.
+
+**When to lift the deferral**.
+
+Either of these triggers the unit of work labeled "Phase 3.2 enrichment":
+
+1. A user with ≥10 strategies reports the empty `bt` / `sharpe` columns as a
+   real workflow problem (the bar is feedback, not aesthetics).
+2. The backend grows a `GET /strategies?include=summary` (or equivalent) that
+   returns the enriched fields in a single query — at which point the cost
+   collapses to one round trip and the deferral is free to lift.
+
+**Implemented**: yes — list page wired, fields default to sentinels — this session.
+
+---
+
 ## Deferred (no ADR, captured for completeness)
 
 - **`useActionState` / `useFormStatus` / `useOptimistic` for wizards**. The `strategies/new` and `bots/new` wizards currently use `onClick` + step state, not `<form>` / `onSubmit`. React 19's form primitives only help when an async server action backs the submit. **Revisit when** the first wizard step wires to a real `action` — at that moment, migrate the whole wizard (not incrementally).
+- **Strategies wizard (`/strategies/new`) and editor (`/strategies/[id]`) wiring**. Phase 3.2 sub-tasks. The wizard needs a `POST /strategies` round trip on final submit; the editor needs the full read/write loop including a careful round-trip of the visual condition canvas to/from the backend's `EntryRules.conditions.{logic, conditions[]}` JSON. **Revisit when**: list slice is verified end-to-end with real user data and the editor's serialization shape is mapped.
 
 ---
 
