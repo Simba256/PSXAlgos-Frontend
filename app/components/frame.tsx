@@ -204,6 +204,22 @@ export function MarketingNav({ badge }: { badge?: string }) {
   const compact = !isDesktop;
   const [authOpen, setAuthOpen] = useState(false);
 
+  // proxy.ts redirects gated routes to /?auth=required&from=<path> when no
+  // session. Pop the modal automatically when we land here with that flag,
+  // then strip the query so a refresh doesn't re-trigger. Reads
+  // window.location directly inside the effect instead of useSearchParams()
+  // so static-prerendered pages (e.g. /brand) don't bail out of SSG.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("auth") !== "required") return;
+    setAuthOpen(true);
+    url.searchParams.delete("auth");
+    url.searchParams.delete("from");
+    const cleaned = url.pathname + (url.searchParams.toString() ? `?${url.searchParams}` : "");
+    window.history.replaceState(null, "", cleaned);
+  }, []);
+
   const padX = pick(bp, PAD.pageMarketing);
 
   return (

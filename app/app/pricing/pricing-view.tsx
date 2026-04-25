@@ -29,8 +29,12 @@ export interface PriceTable {
   quant?: { monthly: number; yearly: number } | null;
 }
 
-const FALLBACK_MONTHLY = { pro: 500, quant: 1500 } as const;
-const FALLBACK_DISCOUNT = 0.2;
+// Mirrors the seeded plan rows in
+// backend/alembic/versions/20260314_000001_012_subscriptions.py.
+// pro = 1500/mo, 15000/yr → ~17% off.
+// pro_plus (frontend "Quant") = 3000/mo, 30000/yr → same ~17% off.
+const FALLBACK_MONTHLY = { pro: 1500, quant: 3000 } as const;
+const FALLBACK_DISCOUNT = 1 - 15000 / (1500 * 12); // 0.1667
 
 function tierPricing(
   name: "Free" | "Pro" | "Quant",
@@ -208,7 +212,7 @@ export function PricingView({ prices }: { prices: PriceTable }) {
             Monthly
           </BillingTab>
           <BillingTab active={billing === "yearly"} onClick={() => setBilling("yearly")}>
-            Yearly <span style={{ color: T.gain }}>· save 20%</span>
+            Yearly <span style={{ color: T.gain }}>· save 17%</span>
           </BillingTab>
         </div>
       </div>
