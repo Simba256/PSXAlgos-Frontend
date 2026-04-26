@@ -6,7 +6,7 @@ import {
   type StrategyResponse,
   type StockFilters,
 } from "@/lib/api/strategies";
-import { StrategiesView, type Strategy, type Status } from "./strategies-view";
+import { StrategiesView, type Strategy, type Status, type OutputKind } from "./strategies-view";
 
 const MIN_MS = 60_000;
 
@@ -51,10 +51,11 @@ function toNum(v: number | string | null | undefined): number | null {
 }
 
 function mapStrategy(s: StrategyResponse): Strategy {
-  // Both `latest_backtest` and `signals_today` are populated by the list
-  // endpoint via LEFT JOINs (single query, no N+1). Strategies that have
-  // never been backtested return null + the "—" sentinel; strategies that
-  // produced no signals today return signals_today=0.
+  // `latest_backtest`, `signals_today`, `bots_count`, and `last_scan_at`
+  // are all populated by the list endpoint via single-query LEFT JOINs
+  // (no N+1). Defaults: latest_backtest=null → "—" for the bt cell;
+  // signals_today=0 / bots_count=0 → empty outputs / no badges; null
+  // last_scan_at → never-scanned sentinel.
   const lb = s.latest_backtest ?? null;
   const totalReturn = toNum(lb?.total_return_pct);
   const sharpeNum = toNum(lb?.sharpe_ratio);
@@ -63,18 +64,31 @@ function mapStrategy(s: StrategyResponse): Strategy {
       ? "—"
       : `${totalReturn >= 0 ? "+" : ""}${totalReturn.toFixed(1)}%`;
   const { updated, updatedMin } = formatRelative(s.updated_at);
+  const { updatedMin: lastScanMin } = formatRelative(s.last_scan_at);
+  const signalsToday = s.signals_today ?? 0;
+  const botsCount = s.bots_count ?? 0;
+  // Outputs reflect what the strategy is *actually* producing right now:
+  //   "bt"  — has at least one backtest result
+  //   "sig" — produced ≥1 signal today (PKT)
+  //   "bot" — at least one non-STOPPED bot is running it
+  const outputs: OutputKind[] = [];
+  if (lb) outputs.push("bt");
+  if (signalsToday > 0) outputs.push("sig");
+  if (botsCount > 0) outputs.push("bot");
   return {
     id: String(s.id),
     name: s.name,
     type: "Custom",
     status: mapStatus(s.status),
-    signals: s.signals_today ?? 0,
+    signals: signalsToday,
+    botsCount,
     bt,
     sharpe: sharpeNum,
-    outputs: lb ? ["bt"] : [],
+    outputs,
     universe: deriveUniverse(s.stock_filters, s.stock_symbols),
     updated,
     updatedMin,
+    lastScanMin,
   };
 }
 

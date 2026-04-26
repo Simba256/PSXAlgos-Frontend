@@ -28,12 +28,19 @@ export interface Strategy {
   type: string;
   status: Status;
   signals: number;
+  // Number of non-STOPPED bots bound to this strategy. Populated from
+  // backend `bots_count` (single-query aggregate); 0 means no live bots.
+  botsCount: number;
   bt: string;
   sharpe: number | null;
   outputs: OutputKind[];
   universe: string;
   updated: string;
   updatedMin: number;
+  // Minutes since the signal scanner last ran this strategy. Used to render
+  // the "last scan Xm ago" footer chip. Number.MAX_SAFE_INTEGER means
+  // never scanned.
+  lastScanMin: number;
   pinned?: boolean;
 }
 
@@ -194,10 +201,29 @@ function ListBody({
     () => source.reduce((acc, r) => acc + r.signals, 0),
     [source]
   );
+  // Sum per-row botsCount (the real backend aggregate). Previously this
+  // counted strategies that had any bot, not the actual number of bots —
+  // and even that was structurally broken because outputs never included
+  // "bot". Now it matches what the user sees in the bots dashboard.
   const botsBound = useMemo(
-    () => source.filter((r) => r.outputs.includes("bot")).length,
+    () => source.reduce((acc, r) => acc + (r.botsCount ?? 0), 0),
     [source]
   );
+
+  // Most recent scan across all strategies. Number.MAX_SAFE_INTEGER means
+  // no strategy has ever been scanned. Anything else gets formatted as
+  // "Xm/Xh/Xd ago" matching the per-row "updated" column.
+  const lastScanLabel = useMemo(() => {
+    if (source.length === 0) return "no scans yet";
+    const min = Math.min(...source.map((r) => r.lastScanMin));
+    if (min === Number.MAX_SAFE_INTEGER) return "no scans yet";
+    if (min < 1) return "last scan just now";
+    if (min < 60) return `last scan ${min}m ago`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `last scan ${h}h ago`;
+    const d = Math.floor(h / 24);
+    return `last scan ${d}d ago`;
+  }, [source]);
 
   const filtered = useMemo(() => {
     if (status === "all") return source;
@@ -254,7 +280,7 @@ function ListBody({
               <span>
                 {botsBound} {botsBound === 1 ? "bot" : "bots"} bound
               </span>
-              <span style={{ color: T.text3 }}>last scan 2m ago</span>
+              <span style={{ color: T.text3 }}>{lastScanLabel}</span>
             </>
           )
         }
@@ -601,12 +627,14 @@ function coerceStrategy(raw: unknown, idx: number): Strategy {
     type: typeof r.type === "string" ? r.type : "Custom",
     status,
     signals: typeof r.signals === "number" ? r.signals : 0,
+    botsCount: typeof r.botsCount === "number" ? r.botsCount : 0,
     bt: typeof r.bt === "string" ? r.bt : "—",
     sharpe: typeof r.sharpe === "number" ? r.sharpe : null,
     outputs,
     universe: typeof r.universe === "string" ? r.universe : "KSE-100",
     updated: "just now",
     updatedMin: 0,
+    lastScanMin: Number.MAX_SAFE_INTEGER,
     pinned: r.pinned === true,
   };
 }

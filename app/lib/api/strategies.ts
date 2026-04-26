@@ -125,10 +125,16 @@ export interface StrategyResponse {
   trading_mode: TradingMode;
   created_at?: string | null;
   updated_at?: string | null;
+  // Last time the signal scanner ran this strategy. Null until the strategy
+  // has been deployed and scanned at least once. Powers the "last scan" chip.
+  last_scan_at?: string | null;
   latest_backtest?: LatestBacktestSummary | null;
   // Number of strategy_signals rows whose signal_date is today (PKT).
   // Populated by the list endpoint via JOIN; defaults to 0 elsewhere.
   signals_today?: number;
+  // Number of non-STOPPED bots that reference this strategy. Populated by
+  // the list endpoint via JOIN; defaults to 0 elsewhere.
+  bots_count?: number;
 }
 
 export interface StrategyListResponse {
