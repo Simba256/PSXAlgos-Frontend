@@ -25,6 +25,10 @@ export interface BotResponse {
   stopped_at?: string | null;
 
   strategy_name?: string | null;
+  // True when the referenced strategy has been soft-deleted on the backend.
+  // The bot keeps showing the last-known strategy name; the UI should
+  // suppress the strategy link and render a "(deleted)" badge.
+  strategy_deleted?: boolean;
   total_equity?: Decimal | null;
   total_return_pct?: Decimal | null;
   open_positions_count?: number | null;

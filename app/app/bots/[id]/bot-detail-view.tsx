@@ -148,7 +148,23 @@ export function BotDetailView({
               </span>
               <span>
                 Bound to{" "}
-                <span style={{ color: T.primaryLight }}>{bot.strategy_name ?? "—"}</span>
+                {bot.strategy_deleted || !bot.strategy_id ? (
+                  <span style={{ color: T.text3 }}>
+                    {bot.strategy_name ?? "—"}{" "}
+                    <span
+                      style={{ color: T.warning, fontSize: 10.5, letterSpacing: 0.4 }}
+                    >
+                      (deleted)
+                    </span>
+                  </span>
+                ) : (
+                  <Link
+                    href={`/strategies/${bot.strategy_id}`}
+                    style={{ color: T.primaryLight, textDecoration: "none" }}
+                  >
+                    {bot.strategy_name ?? "—"}
+                  </Link>
+                )}
               </span>
               <span>{startedLabel}</span>
               <span style={{ color: T.text3 }}>{nextScan}</span>

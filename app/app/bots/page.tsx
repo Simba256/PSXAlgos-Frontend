@@ -8,6 +8,10 @@ interface BotRow {
   id: string;
   name: string;
   strat: string;
+  // Strategy id this bot points at — used to render strategy_name as a Link.
+  // Null when the strategy has been soft-deleted; the row shows the last-
+  // known name with a "(deleted)" badge instead of a link.
+  stratId: string | null;
   status: "RUNNING" | "PAUSED" | "STOPPED";
   equity: number;
   start: number;
@@ -46,6 +50,7 @@ function mapBot(b: BotResponse): BotRow {
     id: String(b.id),
     name: b.name,
     strat: b.strategy_name ?? "—",
+    stratId: b.strategy_deleted ? null : String(b.strategy_id),
     status,
     equity: num(b.total_equity ?? b.allocated_capital),
     start: allocated,

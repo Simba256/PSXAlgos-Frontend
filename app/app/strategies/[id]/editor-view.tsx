@@ -1161,7 +1161,7 @@ function Canvas({
                 status="No bot"
                 statusColor={T.text3}
                 sub="bind for paper trading"
-                href="/bots/new"
+                href={`/bots/new?strategy_id=${strategyId}`}
               />
             </>
           );
@@ -1248,7 +1248,7 @@ function Canvas({
         <Btn variant="deploy" size="sm" icon={Icon.spark} onClick={onDeploy}>
           {deployed ? "Pause" : "Deploy"}
         </Btn>
-        <Link href="/bots/new" style={{ textDecoration: "none" }}>
+        <Link href={`/bots/new?strategy_id=${strategyId}`} style={{ textDecoration: "none" }}>
           <Btn variant="primary" size="sm" icon={Icon.bot}>
             + Bot
           </Btn>

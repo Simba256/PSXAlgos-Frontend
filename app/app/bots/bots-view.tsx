@@ -24,6 +24,8 @@ interface Bot {
   id: string;
   name: string;
   strat: string;
+  // null when the underlying strategy has been soft-deleted
+  stratId: string | null;
   status: "RUNNING" | "PAUSED" | "STOPPED";
   equity: number;
   start: number;
@@ -257,7 +259,7 @@ function Populated({ bots }: { bots: Bot[] }) {
           <TerminalTable
             cols={cols}
             rows={rows}
-            renderCell={(cell, ci) => {
+            renderCell={(cell, ci, ri) => {
               if (ci === 0) {
                 const b = cell as Bot;
                 return (
@@ -276,8 +278,30 @@ function Populated({ bots }: { bots: Bot[] }) {
                   </Link>
                 );
               }
-              if (ci === 1)
-                return <span style={{ color: T.primaryLight }}>{cell as ReactNode}</span>;
+              if (ci === 1) {
+                const b = bots[ri];
+                const name = cell as ReactNode;
+                if (!b || !b.stratId) {
+                  // Strategy is gone (soft-deleted on the backend) — show
+                  // last-known name + a "(deleted)" badge instead of a link.
+                  return (
+                    <span style={{ color: T.text3 }}>
+                      {name}{" "}
+                      <span style={{ color: T.warning, fontSize: 10.5, letterSpacing: 0.4 }}>
+                        (deleted)
+                      </span>
+                    </span>
+                  );
+                }
+                return (
+                  <Link
+                    href={`/strategies/${b.stratId}`}
+                    style={{ color: T.primaryLight, textDecoration: "none" }}
+                  >
+                    {name}
+                  </Link>
+                );
+              }
               if (ci === 2) {
                 const st = cell as Bot["status"];
                 const c = { RUNNING: T.gain, PAUSED: T.warning, STOPPED: T.text3 }[st];
