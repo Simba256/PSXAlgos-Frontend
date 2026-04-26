@@ -96,6 +96,19 @@ export interface StockFilters {
 
 // ============ Response / request shapes ============
 
+// Lightweight summary of a strategy's most recent backtest, embedded by
+// the list endpoint (`GET /strategies`) via a single LEFT JOIN. Single-
+// strategy GETs leave this null — fetch detail via `getBacktestResult`.
+export interface LatestBacktestSummary {
+  id: number;
+  total_return_pct: Decimal;
+  sharpe_ratio: Decimal | null;
+  max_drawdown: Decimal | null;
+  total_trades: number;
+  win_rate: Decimal | null;
+  completed_at: string;
+}
+
 export interface StrategyResponse {
   id: number;
   user_id: string;
@@ -112,6 +125,7 @@ export interface StrategyResponse {
   trading_mode: TradingMode;
   created_at?: string | null;
   updated_at?: string | null;
+  latest_backtest?: LatestBacktestSummary | null;
 }
 
 export interface StrategyListResponse {

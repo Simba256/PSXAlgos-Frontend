@@ -44,12 +44,25 @@ function mapStatus(s: StrategyResponse["status"]): Status {
   return s;
 }
 
+function toNum(v: number | string | null | undefined): number | null {
+  if (v === null || v === undefined) return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function mapStrategy(s: StrategyResponse): Strategy {
-  // Phase 3.2 list-only deferral: `signals` (today count), `bt` (latest
-  // backtest %), `sharpe`, and `outputs` are not on the bare StrategyResponse
-  // and would require N+1 fetches against /strategy-signals and
-  // /strategies/{id}/backtests per row. They render as their empty sentinels
-  // (0 / "—" / null / []) until the enrichment ticket lands.
+  // `latest_backtest` is populated by the list endpoint via a LEFT JOIN on
+  // backtest_results (single query, no N+1). Strategies that have never been
+  // backtested return null and we fall back to the "—" sentinel so the row
+  // still renders without a backtest %. `signals` (today count) is still a
+  // sentinel — wiring it requires a separate join against strategy_signals.
+  const lb = s.latest_backtest ?? null;
+  const totalReturn = toNum(lb?.total_return_pct);
+  const sharpeNum = toNum(lb?.sharpe_ratio);
+  const bt =
+    totalReturn === null
+      ? "—"
+      : `${totalReturn >= 0 ? "+" : ""}${totalReturn.toFixed(1)}%`;
   const { updated, updatedMin } = formatRelative(s.updated_at);
   return {
     id: String(s.id),
@@ -57,9 +70,9 @@ function mapStrategy(s: StrategyResponse): Strategy {
     type: "Custom",
     status: mapStatus(s.status),
     signals: 0,
-    bt: "—",
-    sharpe: null,
-    outputs: [],
+    bt,
+    sharpe: sharpeNum,
+    outputs: lb ? ["bt"] : [],
     universe: deriveUniverse(s.stock_filters, s.stock_symbols),
     updated,
     updatedMin,
