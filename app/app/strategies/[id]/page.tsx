@@ -2,8 +2,16 @@ import { notFound, redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { signBackendJwt } from "@/lib/api/jwt";
 import { ApiError } from "@/lib/api/client";
-import { getStrategy } from "@/lib/api/strategies";
+import { getIndicatorMeta, getStrategy, type IndicatorMeta } from "@/lib/api/strategies";
 import { EditorView } from "./editor-view";
+
+// Empty fallback so the editor stays usable if the meta endpoint is down —
+// the picker just shows nothing, but conditions still render and persist.
+const EMPTY_META: IndicatorMeta = {
+  indicators: {},
+  operators: [],
+  position_sizing_types: [],
+};
 
 export default async function StrategyEditorPage({
   params,
@@ -25,8 +33,11 @@ export default async function StrategyEditorPage({
   });
 
   try {
-    const initialStrategy = await getStrategy(jwt, id);
-    return <EditorView initialStrategy={initialStrategy} />;
+    const [initialStrategy, indicatorMeta] = await Promise.all([
+      getStrategy(jwt, id),
+      getIndicatorMeta().catch(() => EMPTY_META),
+    ]);
+    return <EditorView initialStrategy={initialStrategy} indicatorMeta={indicatorMeta} />;
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) {
       notFound();

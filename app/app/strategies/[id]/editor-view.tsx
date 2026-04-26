@@ -1,17 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
 import {
   Btn,
+  Combobox,
   Connector,
   GateGlyph,
   Kicker,
   Pin,
   Ribbon,
   StatusDot,
+  type ComboOption,
 } from "@/components/atoms";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick, clampPx } from "@/components/responsive";
@@ -19,6 +21,7 @@ import type {
   ConditionLogic,
   ConditionValue,
   ExitRules,
+  IndicatorMeta,
   Operator,
   PositionSizing,
   SingleCondition,
@@ -159,7 +162,13 @@ function deriveUniverseLabel(s: StrategyResponse): string {
   return "KSE-100";
 }
 
-export function EditorView({ initialStrategy }: { initialStrategy: StrategyResponse }) {
+export function EditorView({
+  initialStrategy,
+  indicatorMeta,
+}: {
+  initialStrategy: StrategyResponse;
+  indicatorMeta: IndicatorMeta;
+}) {
   const [selection, setSelection] = useState<Selection>(null);
   const [deployed, setDeployed] = useState(initialStrategy.status === "ACTIVE");
   const [savedAt, setSavedAt] = useState<number>(() => {
@@ -188,7 +197,7 @@ export function EditorView({ initialStrategy }: { initialStrategy: StrategyRespo
   const [sizing, setSizing] = useState<PositionSizing>(initialStrategy.position_sizing);
   const [dirty, setDirty] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
-  const [name] = useState<string>(initialStrategy.name);
+  const [name, setName] = useState<string>(initialStrategy.name);
 
   const universeLabel = deriveUniverseLabel(initialStrategy);
 
@@ -256,12 +265,47 @@ export function EditorView({ initialStrategy }: { initialStrategy: StrategyRespo
     setFlash(`Restored ${label}`);
   };
 
-  const handleAdd = (what: "condition" | "group") => {
-    setFlash(
-      what === "condition"
-        ? "Pick a condition from the palette — coming soon"
-        : "New group added to canvas — coming soon"
-    );
+  // Create-mode wiring — clicking "+ condition" stages a draft
+  // SingleCondition that the drawer renders against. Save appends, Close
+  // cancels with no canvas-state change. The default mirrors the most
+  // common starter rule (RSI < 50).
+  const [creating, setCreating] = useState<SingleCondition | null>(null);
+  const handleAddCondition = () => {
+    setSelection(null);
+    setCreating({
+      indicator: "rsi",
+      operator: "<",
+      value: { type: "constant", value: 50 },
+      params: null,
+    });
+  };
+
+  const handleDeleteRule = (id: RuleId) => {
+    if (rules.length <= 1) {
+      setFlash("A strategy needs at least one condition");
+      return;
+    }
+    setRules((rs) => rs.filter((r) => r.id !== id));
+    setDirty(true);
+    close();
+    setFlash("Condition deleted");
+  };
+
+  const handleDuplicateRule = (id: RuleId) => {
+    const src = rules.find((r) => r.id === id);
+    if (!src) return;
+    const copy: RuleNode = {
+      id: `r${Date.now()}`,
+      cond: {
+        ...src.cond,
+        value: { ...src.cond.value },
+        params: src.cond.params ? { ...src.cond.params } : null,
+      },
+    };
+    setRules((rs) => [...rs, copy]);
+    setDirty(true);
+    close();
+    setFlash("Condition duplicated");
   };
 
   const handleToggleLogic = () => {
@@ -283,6 +327,11 @@ export function EditorView({ initialStrategy }: { initialStrategy: StrategyRespo
           savedAt={savedAt}
           dirty={dirty}
           saveStatus={saveStatus}
+          onNameChange={(next) => {
+            if (next === name) return;
+            setName(next);
+            setDirty(true);
+          }}
           onSaveDraft={handleSaveDraft}
           onRestoreVersion={handleRestoreVersion}
         />
@@ -301,13 +350,31 @@ export function EditorView({ initialStrategy }: { initialStrategy: StrategyRespo
             selection={selection}
             onSelect={onSelect}
             onToggleLogic={handleToggleLogic}
-            drawerOpen={selection !== null}
+            drawerOpen={selection !== null || creating !== null}
             deployed={deployed}
             onValidate={handleValidate}
             onDeploy={handleDeploy}
-            onAdd={handleAdd}
+            onAddCondition={handleAddCondition}
           />
-          {selection?.kind === "condition" && selectedRule && (
+          {creating && (
+            <ConditionDrawer
+              key="create"
+              cond={creating}
+              displayName="New condition"
+              indicatorMeta={indicatorMeta}
+              onApply={(nextCond) => {
+                const id = `r${Date.now()}`;
+                setRules((rs) => [...rs, { id, cond: nextCond }]);
+                setDirty(true);
+                setCreating(null);
+                setFlash(
+                  `Added · ${formatIndicator(nextCond.indicator, nextCond.params ?? null)}`
+                );
+              }}
+              onClose={() => setCreating(null)}
+            />
+          )}
+          {!creating && selection?.kind === "condition" && selectedRule && (
             <ConditionDrawer
               key={selection.id}
               cond={selectedRule.cond}
@@ -315,6 +382,7 @@ export function EditorView({ initialStrategy }: { initialStrategy: StrategyRespo
                 selectedRule.cond.indicator,
                 selectedRule.cond.params ?? null
               )}
+              indicatorMeta={indicatorMeta}
               onApply={(nextCond) => {
                 setRules((rs) =>
                   rs.map((r) => (r.id === selection.id ? { ...r, cond: nextCond } : r))
@@ -325,6 +393,8 @@ export function EditorView({ initialStrategy }: { initialStrategy: StrategyRespo
                   `Saved · ${formatIndicator(nextCond.indicator, nextCond.params ?? null)}`
                 );
               }}
+              onDelete={() => handleDeleteRule(selection.id)}
+              onDuplicate={() => handleDuplicateRule(selection.id)}
               onClose={close}
             />
           )}
@@ -412,6 +482,7 @@ function Header({
   savedAt,
   dirty,
   saveStatus,
+  onNameChange,
   onSaveDraft,
   onRestoreVersion,
 }: {
@@ -422,6 +493,7 @@ function Header({
   savedAt: number;
   dirty: boolean;
   saveStatus: SaveStatus;
+  onNameChange: (next: string) => void;
   onSaveDraft: () => void;
   onRestoreVersion: (label: string) => void;
 }) {
@@ -430,6 +502,37 @@ function Header({
   const padX = pick(bp, PAD.page);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyAnchorRef = useRef<HTMLDivElement>(null);
+  const [editingName, setEditingName] = useState(false);
+  const [draftName, setDraftName] = useState(name);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setDraftName(name);
+  }, [name]);
+
+  useEffect(() => {
+    if (editingName) {
+      nameInputRef.current?.focus();
+      nameInputRef.current?.select();
+    }
+  }, [editingName]);
+
+  const commitName = () => {
+    const trimmed = draftName.trim();
+    if (!trimmed) {
+      // Empty name is invalid (backend min_length=1) — revert.
+      setDraftName(name);
+      setEditingName(false);
+      return;
+    }
+    onNameChange(trimmed);
+    setEditingName(false);
+  };
+
+  const cancelName = () => {
+    setDraftName(name);
+    setEditingName(false);
+  };
 
   useEffect(() => {
     if (!historyOpen) return;
@@ -516,7 +619,72 @@ function Header({
             lineHeight: 1.05,
           }}
         >
-          {name}
+          {editingName ? (
+            <input
+              ref={nameInputRef}
+              type="text"
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              onBlur={commitName}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitName();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelName();
+                }
+              }}
+              maxLength={120}
+              aria-label="Strategy name"
+              style={{
+                fontFamily: "inherit",
+                fontSize: "inherit",
+                fontWeight: "inherit",
+                letterSpacing: "inherit",
+                lineHeight: "inherit",
+                color: T.text,
+                background: T.surfaceLow,
+                border: "none",
+                outline: `2px solid ${T.primary}`,
+                borderRadius: 4,
+                padding: "0 6px",
+                margin: "0 -6px",
+                minWidth: 240,
+                maxWidth: "100%",
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setEditingName(true)}
+              aria-label={`Edit name (currently ${name})`}
+              title="Click to rename"
+              style={{
+                fontFamily: "inherit",
+                fontSize: "inherit",
+                fontWeight: "inherit",
+                letterSpacing: "inherit",
+                lineHeight: "inherit",
+                color: "inherit",
+                background: "transparent",
+                border: "none",
+                padding: "0 6px",
+                margin: "0 -6px",
+                cursor: "text",
+                textAlign: "left",
+                borderRadius: 4,
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.background = T.surfaceLow;
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+              }}
+            >
+              {name}
+            </button>
+          )}
           <span
             style={{
               color: T.text3,
@@ -651,7 +819,7 @@ function Canvas({
   deployed,
   onValidate,
   onDeploy,
-  onAdd,
+  onAddCondition,
 }: {
   rules: RuleNode[];
   logic: ConditionLogic;
@@ -662,7 +830,7 @@ function Canvas({
   deployed: boolean;
   onValidate: () => void;
   onDeploy: () => void;
-  onAdd: (what: "condition" | "group") => void;
+  onAddCondition: () => void;
 }) {
   const isSelected = (kind: SelKind, id: string) =>
     selection?.kind === kind && selection.id === id;
@@ -1007,8 +1175,7 @@ function Canvas({
           zIndex: 5,
         }}
       >
-        <AddPill onClick={() => onAdd("condition")}>condition</AddPill>
-        <AddPill onClick={() => onAdd("group")}>group</AddPill>
+        <AddPill onClick={onAddCondition}>condition</AddPill>
       </div>
 
       <div
@@ -1508,15 +1675,37 @@ function DrawerContainer({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Period maps indicators that have parametric variants on the backend
+// (SMA_20/50/200, EMA_12/26, RSI). The period is baked into the enum
+// value, so changing it remaps `cond.indicator` rather than touching
+// `cond.params`. Returns null when the indicator has no parametric peer.
+function getPeriodConfig(
+  indicator: string,
+): { current: number; choices: number[]; family: "rsi" | "sma" | "ema" } | null {
+  if (indicator === "rsi") return { current: 14, choices: [14], family: "rsi" };
+  const smaMatch = indicator.match(/^sma_(\d+)$/);
+  if (smaMatch) return { current: Number(smaMatch[1]), choices: [20, 50, 200], family: "sma" };
+  const emaMatch = indicator.match(/^ema_(\d+)$/);
+  if (emaMatch) return { current: Number(emaMatch[1]), choices: [12, 26], family: "ema" };
+  return null;
+}
+
+function withPeriod(indicator: string, period: number): string {
+  if (indicator === "rsi") return "rsi";
+  if (/^sma_\d+$/.test(indicator)) return `sma_${period}`;
+  if (/^ema_\d+$/.test(indicator)) return `ema_${period}`;
+  return indicator;
+}
+
 // Controlled ConditionDrawer — reads `cond` (the live SingleCondition from
 // EditorView state), seeds local form state on mount, calls `onApply` with
-// the next SingleCondition when the user hits Save. Indicator-side editing
-// (changing the LHS indicator or the RHS reference indicator) lands in
-// PR-2 / Phase 7 via Combobox + IndicatorMeta. For PR-1 the LHS is locked
-// and switching to Indicator compare-mode preserves the existing reference.
+// the next SingleCondition when the user hits Save. PR-2 wires the LHS
+// indicator picker, RHS indicator picker, and period selector via
+// `indicatorMeta` from /strategies/meta/indicators.
 function ConditionDrawer({
   cond,
   displayName,
+  indicatorMeta,
   onApply,
   onDelete,
   onDuplicate,
@@ -1524,6 +1713,7 @@ function ConditionDrawer({
 }: {
   cond: SingleCondition;
   displayName: string;
+  indicatorMeta: IndicatorMeta;
   onApply: (next: SingleCondition) => void;
   onDelete?: () => void;
   onDuplicate?: () => void;
@@ -1532,39 +1722,63 @@ function ConditionDrawer({
   const T = useT();
   const initialCompare: CompareMode = cond.value.type === "indicator" ? "Indicator" : "Constant";
   const initialThreshold = cond.value.type === "constant" ? cond.value.value : 0;
-  // Preserve the original RHS indicator so toggling Constant → Indicator
-  // restores it (PR-1 doesn't let users pick a different one).
-  const initialRefIndicator =
-    cond.value.type === "indicator" ? cond.value.indicator : null;
+  const initialRefIndicator = cond.value.type === "indicator" ? cond.value.indicator : "";
 
+  const [indicator, setIndicator] = useState<string>(cond.indicator);
   const [op, setOp] = useState<Operator>(cond.operator);
   const [compareMode, setCompareMode] = useState<CompareMode>(initialCompare);
   const [threshold, setThreshold] = useState<number>(initialThreshold);
-  const refIndicatorRef = useRef<string | null>(initialRefIndicator);
+  const [refIndicator, setRefIndicator] = useState<string>(initialRefIndicator);
   const thresholdPct = Math.max(0, Math.min(100, threshold));
 
   const slider = useSliderDrag((pct) => setThreshold(Math.round(pct * 100)));
 
-  const refLabel = refIndicatorRef.current
-    ? formatIndicator(refIndicatorRef.current, null)
-    : "—";
+  // Build Combobox options from IndicatorMeta. Group name becomes the
+  // right-aligned hint; value is the wire format consumed by the backend.
+  const indicatorOptions: ComboOption[] = useMemo(() => {
+    const opts: ComboOption[] = [];
+    for (const [group, list] of Object.entries(indicatorMeta.indicators)) {
+      for (const ind of list) {
+        opts.push({
+          value: ind,
+          label: formatIndicator(ind, null),
+          keywords: ind.replace(/_/g, " "),
+          hint: group.replace(/_/g, " "),
+        });
+      }
+    }
+    return opts;
+  }, [indicatorMeta]);
+
+  const period = getPeriodConfig(indicator);
+  const lhsLabel = formatIndicator(indicator, null);
+  const refLabel = refIndicator ? formatIndicator(refIndicator, null) : "—";
   const previewVal = compareMode === "Constant" ? String(threshold) : refLabel;
   const previewOp = formatOp(op);
+
+  const handleIndicatorChange = (next: string) => {
+    setIndicator(next);
+    // If user typed something not in the list, leave it — backend will
+    // 422 on save and we'll surface that error. Free-text is intentional.
+  };
+
+  const handlePeriodChange = (n: number) => {
+    setIndicator((curr) => withPeriod(curr, n));
+  };
 
   const handleSave = () => {
     let nextValue: ConditionValue;
     if (compareMode === "Constant") {
       nextValue = { type: "constant", value: threshold };
-    } else if (refIndicatorRef.current) {
-      nextValue = { type: "indicator", indicator: refIndicatorRef.current };
+    } else if (refIndicator) {
+      nextValue = { type: "indicator", indicator: refIndicator };
     } else {
-      // Compare-to-Indicator without a reference set is only reachable in
-      // PR-2 once the picker exists. Falling back to constant here keeps
-      // the round-trip valid.
+      // Compare-to-Indicator with no reference picked — fall back to
+      // constant rather than emitting an invalid SingleCondition.
       nextValue = { type: "constant", value: threshold };
     }
     const next: SingleCondition = {
-      indicator: cond.indicator,
+      indicator,
       operator: op,
       value: nextValue,
       params: cond.params ?? null,
@@ -1616,6 +1830,63 @@ function ConditionDrawer({
 
       <div style={{ flex: 1, overflowX: "hidden", overflowY: "auto", padding: 22, paddingTop: 16 }}>
         <div style={{ marginTop: 4 }}>
+          <Combobox
+            label="indicator"
+            value={lhsLabel}
+            onChange={(v) => {
+              // Combobox commits the option's `value` (wire format), but
+              // free-typed text comes through verbatim. Map back to the
+              // wire format if the typed text matches a known label.
+              const match = indicatorOptions.find(
+                (o) => o.label.toLowerCase() === v.toLowerCase() || o.value === v,
+              );
+              handleIndicatorChange(match ? match.value : v);
+            }}
+            options={indicatorOptions}
+            mono
+            placeholder="Pick an indicator…"
+            emptyHint="No matching indicator"
+          />
+        </div>
+
+        {period && (
+          <div style={{ marginTop: 14 }}>
+            <Kicker>period</Kicker>
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              {period.choices.map((p) => {
+                const active = p === period.current;
+                const locked = period.family === "rsi";
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    disabled={locked}
+                    onClick={() => handlePeriodChange(p)}
+                    title={locked ? "RSI period is fixed at 14" : undefined}
+                    style={{
+                      padding: "6px 14px",
+                      borderRadius: 999,
+                      fontSize: 12,
+                      border: "none",
+                      cursor: locked ? "default" : "pointer",
+                      opacity: locked ? 0.7 : 1,
+                      fontFamily: T.fontMono,
+                      fontVariantNumeric: "tabular-nums",
+                      background: active ? T.primary + "22" : T.surface,
+                      color: active ? T.primaryLight : T.text3,
+                      boxShadow: `0 0 0 1px ${active ? T.primary : T.outlineFaint}`,
+                      transition: "background 140ms, color 140ms",
+                    }}
+                  >
+                    {p}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginTop: 18 }}>
           <Kicker>operator</Kicker>
           <div
             style={{
@@ -1660,21 +1931,17 @@ function ConditionDrawer({
           <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
             {COMPARE_MODES.map((t) => {
               const active = compareMode === t;
-              const disabled = t === "Indicator" && !refIndicatorRef.current;
               return (
                 <button
                   key={t}
                   type="button"
-                  disabled={disabled}
-                  title={disabled ? "Indicator picker arrives in the next release" : undefined}
                   onClick={() => setCompareMode(t)}
                   style={{
                     padding: "6px 12px",
                     borderRadius: 999,
                     fontSize: 11.5,
                     border: "none",
-                    cursor: disabled ? "not-allowed" : "pointer",
-                    opacity: disabled ? 0.5 : 1,
+                    cursor: "pointer",
                     fontFamily: "inherit",
                     background: active ? T.surface3 : T.surface,
                     color: active ? T.text : T.text3,
@@ -1781,31 +2048,21 @@ function ConditionDrawer({
               </div>
             </div>
           ) : (
-            <div
-              style={{
-                marginTop: 10,
-                padding: "12px 14px",
-                background: T.surface,
-                borderRadius: 8,
-                boxShadow: `0 0 0 1px ${T.outlineFaint}`,
-                display: "flex",
-                alignItems: "baseline",
-                gap: 10,
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: T.fontHead,
-                  fontSize: 18,
-                  color: T.primaryLight,
-                  letterSpacing: -0.2,
+            <div style={{ marginTop: 10 }}>
+              <Combobox
+                label="reference indicator"
+                value={refIndicator ? formatIndicator(refIndicator, null) : ""}
+                onChange={(v) => {
+                  const match = indicatorOptions.find(
+                    (o) => o.label.toLowerCase() === v.toLowerCase() || o.value === v,
+                  );
+                  setRefIndicator(match ? match.value : v);
                 }}
-              >
-                {refLabel}
-              </span>
-              <span style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3 }}>
-                reference indicator · picker in next release
-              </span>
+                options={indicatorOptions}
+                mono
+                placeholder="Pick an indicator…"
+                emptyHint="No matching indicator"
+              />
             </div>
           )}
         </div>
@@ -1838,60 +2095,6 @@ function ConditionDrawer({
   );
 }
 
-function Field({
-  label,
-  value,
-  suffix,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  suffix?: string;
-  onChange?: (v: string) => void;
-}) {
-  const T = useT();
-  return (
-    <div>
-      <Kicker>{label}</Kicker>
-      <div
-        style={{
-          marginTop: 6,
-          padding: "10px 12px",
-          background: T.surface,
-          borderRadius: 8,
-          boxShadow: `0 0 0 1px ${T.outlineFaint}`,
-          display: "flex",
-          alignItems: "baseline",
-          justifyContent: "space-between",
-          gap: 8,
-        }}
-      >
-        {onChange ? (
-          <input
-            type="text"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            style={{
-              fontFamily: T.fontMono,
-              fontSize: 13,
-              color: T.text,
-              background: "transparent",
-              border: "none",
-              padding: 0,
-              flex: 1,
-              minWidth: 0,
-            }}
-          />
-        ) : (
-          <span style={{ fontFamily: T.fontMono, fontSize: 13, color: T.text }}>{value}</span>
-        )}
-        {suffix && (
-          <span style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3 }}>{suffix}</span>
-        )}
-      </div>
-    </div>
-  );
-}
 
 type ExitKey = "stopLoss" | "takeProfit" | "trailingStop" | "maxHolding";
 

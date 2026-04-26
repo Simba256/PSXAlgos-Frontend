@@ -368,17 +368,24 @@ round-trips, each route ships **safe** writes and defers the dangerous ones.
    **Lifts when**: the backend grows custom-indicator support, or the wizard
    gains a "review the conditions" preview step.
 
-2. **Editor condition canvas does not round-trip**.
-   `app/strategies/[id]/editor-view.tsx` reads `initialStrategy` and renders
-   the existing visual canvas in **display only**. The Save Draft button
-   reports "Draft saved (local)" — the canvas state is *not* serialized to
-   `entry_rules.conditions`. Only the deploy/pause toggle is real (PUTs
-   `{status: ACTIVE|PAUSED}`). Persisting the canvas requires a node-tree
-   serializer that maps the editor's internal model to the backend's nested
-   `ConditionGroup{logic, conditions[]}` shape — a session of careful work
-   on its own.
-   **Lifts when**: a dedicated session designs and tests the
-   canvas↔ConditionGroup serializer with round-trip equality tests.
+2. **Editor condition canvas does not round-trip**. **LIFTED 2026-04-26** —
+   ADR-10 + `STRATEGY_EDITOR_WIRING_PLAN.md` plus a two-PR implementation
+   landed the round-trip. PR-1 (phases 1–4) lifted state, made the drawers
+   controlled, and wired Save Draft to `PUT /api/strategies/{id}` via a
+   pure `buildUpdateBody` serializer. PR-2 (phases 5–7) added rule CRUD,
+   inline header name editing, and the indicator picker (LHS + RHS) plus
+   constrained period selector via `getIndicatorMeta()`. The flat
+   `ConditionGroup{logic, conditions[]}` schema is matched directly — the
+   nested OR-group visual was deleted (ADR-10 §1) rather than serialized.
+   _Original deferral text preserved below for history._
+   ~~`app/strategies/[id]/editor-view.tsx` reads `initialStrategy` and
+   renders the existing visual canvas in **display only**. The Save Draft
+   button reports "Draft saved (local)" — the canvas state is *not*
+   serialized to `entry_rules.conditions`. Only the deploy/pause toggle
+   is real (PUTs `{status: ACTIVE|PAUSED}`). Persisting the canvas
+   requires a node-tree serializer that maps the editor's internal model
+   to the backend's nested `ConditionGroup{logic, conditions[]}` shape —
+   a session of careful work on its own.~~
 
 3. **Bot dashboard activity log is empty-state only**.
    The backend exposes positions, trades, and performance snapshots — but no
