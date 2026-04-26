@@ -90,9 +90,15 @@ export default async function PortfolioPage() {
   // Stocks fetch is paginated and the strategies endpoint may 403 for free
   // users — neither failure should block /portfolio from rendering, so each
   // is wrapped to a degraded fallback instead of throwing.
+  // Closed trades are unbounded: with a limit, the "X closed" header count
+  // and Realized YTD silently understate as soon as the user crosses the
+  // cap. Backend returns all rows when limit is omitted (services/
+  // journal_service.py only applies LIMIT when limit > 0). If render cost
+  // becomes a problem at scale, switch the table to server-side pagination
+  // and source totals from /portfolio/summary instead of capping here.
   const [openRes, closedRes, stocks, strategies] = await Promise.all([
     getOpenPositions(jwt),
-    getClosedTrades(jwt, { limit: 100 }),
+    getClosedTrades(jwt),
     getAllStocks().catch(() => []),
     getStrategies(jwt).catch(() => ({ items: [], total: 0, page: 1, page_size: 0, total_pages: 0 })),
   ]);
