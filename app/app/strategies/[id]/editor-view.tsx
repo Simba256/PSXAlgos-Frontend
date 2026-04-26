@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
@@ -10,6 +11,7 @@ import {
   Connector,
   GateGlyph,
   Kicker,
+  Modal,
   Pin,
   Ribbon,
   StatusDot,
@@ -27,6 +29,8 @@ import type {
   SingleCondition,
   StrategyResponse,
   StrategyUpdateBody,
+  StrategyDependentBot,
+  StrategyDependentsResponse,
 } from "@/lib/api/strategies";
 
 type SelKind = "condition" | "execution" | "group";
@@ -198,8 +202,30 @@ export function EditorView({
   const [dirty, setDirty] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [name, setName] = useState<string>(initialStrategy.name);
+  // Cached dependent-bot count, refreshed on demand. Used by both the save
+  // impact warning (F8) and the delete-confirmation modal (F7).
+  const [dependentsCache, setDependentsCache] =
+    useState<StrategyDependentsResponse | null>(null);
+  // null  = no dialog open
+  // "save"   = pre-save impact warning (F8)
+  // "delete" = delete-confirmation modal (F7)
+  const [confirmModal, setConfirmModal] = useState<null | "save" | "delete">(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const router = useRouter();
 
   const universeLabel = deriveUniverseLabel(initialStrategy);
+
+  async function fetchDependents(): Promise<StrategyDependentsResponse | null> {
+    try {
+      const res = await fetch(`/api/strategies/${initialStrategy.id}/bots`);
+      if (!res.ok) return null;
+      const data = (await res.json()) as StrategyDependentsResponse;
+      setDependentsCache(data);
+      return data;
+    } catch {
+      return null;
+    }
+  }
 
   useEffect(() => {
     if (!flash) return;
@@ -213,7 +239,9 @@ export function EditorView({
     );
   const close = () => setSelection(null);
 
-  const handleSaveDraft = async () => {
+  // Performs the actual PUT. Split out so the impact-warning modal can call
+  // it directly after confirmation, bypassing the pre-flight check.
+  const performSave = async () => {
     if (!dirty || saveStatus === "saving") return;
     const body = buildUpdateBody(name, rules, logic, exit, sizing);
     setSaveStatus("saving");
@@ -234,6 +262,55 @@ export function EditorView({
     } catch (err) {
       setSaveStatus("error");
       setFlash(err instanceof Error ? err.message : "Save failed");
+    }
+  };
+
+  // F8: Pre-flight check before saving — if any bots depend on this
+  // strategy, surface a confirm modal so the user knows the change will
+  // affect their next trades. Click-to-Save Anyway then calls performSave().
+  const handleSaveDraft = async () => {
+    if (!dirty || saveStatus === "saving") return;
+    const deps = await fetchDependents();
+    if (deps && deps.blocking > 0) {
+      setConfirmModal("save");
+      return;
+    }
+    await performSave();
+  };
+
+  // F7: Delete a strategy. Always loads the dependent-bot list first so the
+  // modal can either (a) tell the user which bots to stop, or (b) confirm
+  // the destructive action when none are in the way. The actual DELETE is
+  // wired in the modal's confirm handler.
+  const handleDelete = async () => {
+    await fetchDependents();
+    setConfirmModal("delete");
+  };
+
+  const performDelete = async () => {
+    if (deleteBusy) return;
+    setDeleteBusy(true);
+    try {
+      const res = await fetch(`/api/strategies/${initialStrategy.id}`, {
+        method: "DELETE",
+      });
+      if (res.status === 409) {
+        // Race: a new bot was bound after we loaded the dependents. Refresh
+        // the list and keep the modal open so the user sees the new state.
+        await fetchDependents();
+        setFlash("Cannot delete — a bot was just bound to this strategy");
+        return;
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Delete failed (${res.status})`);
+      }
+      setConfirmModal(null);
+      router.push("/strategies");
+    } catch (err) {
+      setFlash(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -334,6 +411,7 @@ export function EditorView({
           }}
           onSaveDraft={handleSaveDraft}
           onRestoreVersion={handleRestoreVersion}
+          onDelete={handleDelete}
         />
         <div
           style={{
@@ -416,7 +494,155 @@ export function EditorView({
         </div>
       </div>
       {flash && <FlashToast message={flash} />}
+      {confirmModal === "save" && dependentsCache && (
+        <ImpactModal
+          kind="save"
+          dependents={dependentsCache}
+          onCancel={() => setConfirmModal(null)}
+          onConfirm={async () => {
+            setConfirmModal(null);
+            await performSave();
+          }}
+        />
+      )}
+      {confirmModal === "delete" && (
+        <ImpactModal
+          kind="delete"
+          dependents={dependentsCache}
+          busy={deleteBusy}
+          onCancel={() => setConfirmModal(null)}
+          onConfirm={performDelete}
+        />
+      )}
     </AppFrame>
+  );
+}
+
+function ImpactModal({
+  kind,
+  dependents,
+  busy = false,
+  onCancel,
+  onConfirm,
+}: {
+  kind: "save" | "delete";
+  dependents: StrategyDependentsResponse | null;
+  busy?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void | Promise<void>;
+}) {
+  const T = useT();
+  const blocking = dependents?.blocking ?? 0;
+  const isDelete = kind === "delete";
+  // Delete is hard-blocked when bots still depend (matches backend B2 409).
+  const blocked = isDelete && blocking > 0;
+  const title = isDelete
+    ? blocked
+      ? "Stop these bots first"
+      : "Delete this strategy?"
+    : `${blocking} bot${blocking === 1 ? "" : "s"} use this strategy`;
+  const blurb = isDelete
+    ? blocked
+      ? "Strategies can only be deleted once no live bots reference them. Stop or delete the bots below, then try again."
+      : "This soft-deletes the strategy. Backtests are preserved but it'll disappear from your dashboard."
+    : "Saving will change the rules these live bots run on their next trade. Make sure you're ready.";
+  const confirmLabel = isDelete
+    ? blocked
+      ? null
+      : busy
+      ? "Deleting…"
+      : "Delete"
+    : "Save anyway";
+  const confirmVariant = isDelete ? "danger" : "primary";
+
+  return (
+    <Modal onClose={onCancel} label={title}>
+      <div style={{ padding: 24 }}>
+        <div
+          style={{
+            fontFamily: T.fontHead,
+            fontSize: 20,
+            fontWeight: 500,
+            letterSpacing: -0.3,
+            marginBottom: 8,
+          }}
+        >
+          {title}
+        </div>
+        <p
+          style={{
+            margin: "0 0 18px",
+            fontSize: 13,
+            color: T.text2,
+            lineHeight: 1.55,
+          }}
+        >
+          {blurb}
+        </p>
+        {dependents && dependents.items.length > 0 && (
+          <div
+            style={{
+              border: `1px solid ${T.outlineFaint}`,
+              borderRadius: 8,
+              maxHeight: 220,
+              overflowY: "auto",
+              marginBottom: 18,
+            }}
+          >
+            {dependents.items.map((b: StrategyDependentBot, i) => (
+              <div
+                key={b.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "10px 14px",
+                  borderTop: i === 0 ? "none" : `1px solid ${T.outlineFaint}`,
+                  fontFamily: T.fontMono,
+                  fontSize: 12,
+                }}
+              >
+                <Link
+                  href={`/bots/${b.id}`}
+                  style={{ color: T.primaryLight, textDecoration: "none", flex: 1 }}
+                >
+                  {b.name}
+                </Link>
+                <span
+                  style={{
+                    fontSize: 10.5,
+                    letterSpacing: 0.6,
+                    color:
+                      b.status === "ACTIVE"
+                        ? T.gain
+                        : b.status === "PAUSED"
+                        ? T.warning
+                        : T.text3,
+                  }}
+                >
+                  {b.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <Btn variant="ghost" size="sm" onClick={onCancel}>
+            {blocked ? "Close" : "Cancel"}
+          </Btn>
+          {confirmLabel && (
+            <Btn
+              variant={confirmVariant}
+              size="sm"
+              disabled={busy}
+              onClick={() => void onConfirm()}
+            >
+              {confirmLabel}
+            </Btn>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -486,6 +712,7 @@ function Header({
   onNameChange,
   onSaveDraft,
   onRestoreVersion,
+  onDelete,
 }: {
   name: string;
   slug: string;
@@ -497,6 +724,7 @@ function Header({
   onNameChange: (next: string) => void;
   onSaveDraft: () => void;
   onRestoreVersion: (label: string) => void;
+  onDelete: () => void;
 }) {
   const T = useT();
   const { bp, isMobile } = useBreakpoint();
@@ -728,6 +956,9 @@ function Header({
           onClick={onSaveDraft}
         >
           {saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Retry save" : "Save draft"}
+        </Btn>
+        <Btn variant="ghost" size="sm" onClick={onDelete}>
+          Delete
         </Btn>
       </div>
     </div>

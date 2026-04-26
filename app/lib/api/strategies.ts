@@ -257,6 +257,27 @@ export async function deleteStrategy(
   });
 }
 
+export interface StrategyDependentBot {
+  id: number;
+  name: string;
+  status: "ACTIVE" | "PAUSED" | "STOPPED";
+}
+
+export interface StrategyDependentsResponse {
+  items: StrategyDependentBot[];
+  total: number;
+  // Number of items whose status is not STOPPED — these are the bots that
+  // would block a delete (B2) or be impacted by a strategy edit.
+  blocking: number;
+}
+
+export async function getStrategyDependents(
+  jwt: string,
+  id: number,
+): Promise<StrategyDependentsResponse> {
+  return apiFetch<StrategyDependentsResponse>(`/strategies/${id}/bots`, { jwt });
+}
+
 export async function getIndicatorMeta(): Promise<IndicatorMeta> {
   // Public endpoint — cache for an hour, the indicator list rarely changes.
   return apiFetch<IndicatorMeta>(`/strategies/meta/indicators`, {

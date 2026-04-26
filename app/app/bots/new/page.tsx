@@ -9,6 +9,16 @@ import { Btn, DotRow, EditorialHeader, Kicker, Ribbon } from "@/components/atoms
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
 import type { BotResponse } from "@/lib/api/bots";
+import type { StrategyResponse } from "@/lib/api/strategies";
+
+interface StrategyPreview {
+  name: string;
+  // Last-backtest summary the user picked the strategy for. null when the
+  // strategy has never been backtested — preview shows "—" then.
+  totalReturnPct: number | null;
+  sharpe: number | null;
+  status: StrategyResponse["status"];
+}
 
 export default function BotWizardPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -16,6 +26,9 @@ export default function BotWizardPage() {
   // window.location instead of useSearchParams keeps the page out of the
   // Next 16 CSR-bailout error if it ever ends up prerendered.
   const [strategyId, setStrategyId] = useState<number | null>(null);
+  // Resolved strategy details for the wizard preview. Null while loading,
+  // and stays null if the fetch fails — preview falls back to "—" sentinels.
+  const [strategy, setStrategy] = useState<StrategyPreview | null>(null);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
@@ -30,6 +43,38 @@ export default function BotWizardPage() {
     const n = parseInt(raw, 10);
     if (Number.isFinite(n) && n > 0) setStrategyId(n);
   }, []);
+
+  // Fetch the strategy once we have an id. Failures here are non-fatal: the
+  // wizard still works against the raw id, the preview just shows "—".
+  useEffect(() => {
+    if (!strategyId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/strategies/${strategyId}`);
+        if (!res.ok || cancelled) return;
+        const s = (await res.json()) as StrategyResponse;
+        const lb = s.latest_backtest ?? null;
+        const toNum = (v: number | string | null | undefined): number | null => {
+          if (v === null || v === undefined) return null;
+          const n = typeof v === "number" ? v : Number(v);
+          return Number.isFinite(n) ? n : null;
+        };
+        if (cancelled) return;
+        setStrategy({
+          name: s.name,
+          totalReturnPct: toNum(lb?.total_return_pct),
+          sharpe: toNum(lb?.sharpe_ratio),
+          status: s.status,
+        });
+      } catch {
+        // swallow — preview will use "—" placeholders
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [strategyId]);
 
   async function onLaunch() {
     setSubmitErr(null);
@@ -76,7 +121,8 @@ export default function BotWizardPage() {
               <Link href="/strategies" style={{ color: T.primaryLight }}>
                 Strategies
               </Link>{" "}
-              / Momentum Breakout / <span style={{ color: T.text2 }}>bind bot</span>
+              / {strategy?.name ?? (strategyId ? "loading…" : "no strategy")} /{" "}
+              <span style={{ color: T.text2 }}>bind bot</span>
             </>
           }
           title={
@@ -89,7 +135,19 @@ export default function BotWizardPage() {
             <>
               <span>Step {step} of 3</span>
               <span>
-                Bound to <span style={{ color: T.primaryLight }}>Momentum Breakout</span>
+                Bound to{" "}
+                {strategyId && strategy ? (
+                  <Link
+                    href={`/strategies/${strategyId}`}
+                    style={{ color: T.primaryLight, textDecoration: "none" }}
+                  >
+                    {strategy.name}
+                  </Link>
+                ) : (
+                  <span style={{ color: T.text3 }}>
+                    {strategyId ? "loading…" : "no strategy"}
+                  </span>
+                )}
               </span>
               <span style={{ color: T.text3 }}>paper-trading only</span>
             </>
@@ -201,7 +259,7 @@ export default function BotWizardPage() {
             {step === 2 && <Step2 />}
             {step === 3 && <Step3 />}
           </div>
-          <Preview step={step} />
+          <Preview step={step} strategy={strategy} />
         </div>
 
         <div
@@ -514,14 +572,42 @@ function Step3() {
   );
 }
 
-function Preview({ step }: { step: 1 | 2 | 3 }) {
+function Preview({
+  step,
+  strategy,
+}: {
+  step: 1 | 2 | 3;
+  strategy: StrategyPreview | null;
+}) {
   const T = useT();
+  const fmtPct = (n: number | null): string =>
+    n === null ? "—" : `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+  const backtestColor =
+    strategy?.totalReturnPct == null
+      ? T.text3
+      : strategy.totalReturnPct >= 0
+      ? T.gain
+      : T.loss;
   return (
     <div>
       <Ribbon kicker="preview · your bot" />
       <div style={{ marginTop: 14 }}>
         <DotRow label="Name" value="Momentum · live" bold />
-        <DotRow label="Strategy" value="Momentum Breakout" color={T.primaryLight} />
+        <DotRow
+          label="Strategy"
+          value={strategy?.name ?? "—"}
+          color={strategy ? T.primaryLight : T.text3}
+        />
+        <DotRow
+          label="Last backtest"
+          value={fmtPct(strategy?.totalReturnPct ?? null)}
+          color={backtestColor}
+        />
+        <DotRow
+          label="Sharpe"
+          value={strategy?.sharpe == null ? "—" : strategy.sharpe.toFixed(2)}
+          color={strategy?.sharpe == null ? T.text3 : T.text2}
+        />
         <DotRow label="Starting capital" value="PKR 1,000,000" />
         <DotRow label="Position size" value="2% fixed" />
         <DotRow label="Max concurrent" value="5 positions" />
