@@ -51,11 +51,10 @@ function toNum(v: number | string | null | undefined): number | null {
 }
 
 function mapStrategy(s: StrategyResponse): Strategy {
-  // `latest_backtest` is populated by the list endpoint via a LEFT JOIN on
-  // backtest_results (single query, no N+1). Strategies that have never been
-  // backtested return null and we fall back to the "—" sentinel so the row
-  // still renders without a backtest %. `signals` (today count) is still a
-  // sentinel — wiring it requires a separate join against strategy_signals.
+  // Both `latest_backtest` and `signals_today` are populated by the list
+  // endpoint via LEFT JOINs (single query, no N+1). Strategies that have
+  // never been backtested return null + the "—" sentinel; strategies that
+  // produced no signals today return signals_today=0.
   const lb = s.latest_backtest ?? null;
   const totalReturn = toNum(lb?.total_return_pct);
   const sharpeNum = toNum(lb?.sharpe_ratio);
@@ -69,7 +68,7 @@ function mapStrategy(s: StrategyResponse): Strategy {
     name: s.name,
     type: "Custom",
     status: mapStatus(s.status),
-    signals: 0,
+    signals: s.signals_today ?? 0,
     bt,
     sharpe: sharpeNum,
     outputs: lb ? ["bt"] : [],

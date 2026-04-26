@@ -126,6 +126,9 @@ export interface StrategyResponse {
   created_at?: string | null;
   updated_at?: string | null;
   latest_backtest?: LatestBacktestSummary | null;
+  // Number of strategy_signals rows whose signal_date is today (PKT).
+  // Populated by the list endpoint via JOIN; defaults to 0 elsewhere.
+  signals_today?: number;
 }
 
 export interface StrategyListResponse {
