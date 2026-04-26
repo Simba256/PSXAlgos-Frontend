@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
@@ -122,10 +122,12 @@ export function BacktestView({
   strategyId,
   strategyName,
   initialResult,
+  autoRun = false,
 }: {
   strategyId: number | null;
   strategyName: string | null;
   initialResult: BacktestResultResponse | null;
+  autoRun?: boolean;
 }) {
   const T = useT();
   const { bp } = useBreakpoint();
@@ -221,6 +223,25 @@ export function BacktestView({
       setRunning(false);
     }
   };
+
+  // Auto-trigger a run when arrived from "Run backtest" (?run=1). Ref-guarded
+  // so React strict-mode double-mounts don't fire twice; URL is rewritten to
+  // strip `run` so a manual refresh of the page doesn't kick off another run.
+  const autoRunFiredRef = useRef(false);
+  useEffect(() => {
+    if (!autoRun || !strategyId || autoRunFiredRef.current) return;
+    autoRunFiredRef.current = true;
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("run");
+      const qs = url.searchParams.toString();
+      window.history.replaceState(null, "", url.pathname + (qs ? `?${qs}` : ""));
+    }
+    void handleRerun();
+    // handleRerun is recreated each render; the ref guard ensures we only
+    // fire once per page load regardless of dep churn.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRun, strategyId]);
 
   const handleSaveBenchmark = () => {
     setBenchmarkSaved((b) => {

@@ -13,7 +13,7 @@ import { BacktestView } from "./backtest-view";
 export default async function BacktestPage({
   searchParams,
 }: {
-  searchParams: Promise<{ strategy_id?: string; backtest_id?: string }>;
+  searchParams: Promise<{ strategy_id?: string; backtest_id?: string; run?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -24,12 +24,18 @@ export default async function BacktestPage({
     email: session.user.email,
   });
 
-  const { strategy_id, backtest_id } = await searchParams;
+  const { strategy_id, backtest_id, run } = await searchParams;
   const sid = strategy_id ? parseInt(strategy_id, 10) : NaN;
+  const autoRun = run === "1";
 
   if (!Number.isFinite(sid) || sid <= 0) {
     return (
-      <BacktestView strategyId={null} strategyName={null} initialResult={null} />
+      <BacktestView
+        strategyId={null}
+        strategyName={null}
+        initialResult={null}
+        autoRun={false}
+      />
     );
   }
 
@@ -72,6 +78,7 @@ export default async function BacktestPage({
       strategyId={sid}
       strategyName={strategyName}
       initialResult={initialResult}
+      autoRun={autoRun}
     />
   );
 }

@@ -1240,7 +1240,7 @@ function Canvas({
           Validate
         </Btn>
         <div style={{ width: 1, height: 20, background: T.outlineFaint }} />
-        <Link href={`/backtest?strategy_id=${strategyId}`} style={{ textDecoration: "none" }}>
+        <Link href={`/backtest?strategy_id=${strategyId}&run=1`} style={{ textDecoration: "none" }}>
           <Btn variant="outline" size="sm">
             Run backtest
           </Btn>
