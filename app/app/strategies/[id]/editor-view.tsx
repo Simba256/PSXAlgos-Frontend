@@ -15,10 +15,27 @@ import {
 } from "@/components/atoms";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick, clampPx } from "@/components/responsive";
-import type { StrategyResponse } from "@/lib/api/strategies";
+import type {
+  ConditionLogic,
+  ConditionValue,
+  ExitRules,
+  Operator,
+  PositionSizing,
+  SingleCondition,
+  StrategyResponse,
+  StrategyUpdateBody,
+} from "@/lib/api/strategies";
 
 type SelKind = "condition" | "execution" | "group";
 type Selection = { kind: SelKind; id: string } | null;
+
+type RuleId = string;
+interface RuleNode {
+  id: RuleId;
+  cond: SingleCondition;
+}
+
+type NodeKind = "momentum" | "trend" | "volume";
 
 type CondMeta = {
   indicator: string;
@@ -26,40 +43,109 @@ type CondMeta = {
   val: string;
   valIsRef?: boolean;
   meta: string;
-  kind: "momentum" | "trend" | "volume";
+  kind: NodeKind;
   compact?: boolean;
 };
 
-const CONDITIONS: Record<string, CondMeta> = {
-  rsi: { indicator: "RSI (14)", op: "< ", val: "30", meta: "oversold", kind: "momentum" },
-  close: {
-    indicator: "Close",
-    op: "> ",
-    val: "SMA (200)",
-    valIsRef: true,
-    meta: "trend filter",
-    kind: "trend",
-  },
-  vol: {
-    indicator: "Volume",
-    op: "> ",
-    val: "avg × 1.5",
-    meta: "confirmation · OR leg 1",
-    kind: "volume",
-    compact: true,
-  },
-  macd: {
-    indicator: "MACD",
-    op: "×↑",
-    val: "Signal",
-    valIsRef: true,
-    meta: "confirmation · OR leg 2",
-    kind: "momentum",
-    compact: true,
-  },
-};
+// SingleCondition → display tuple. The canvas/drawer originally consumed a
+// hand-written CondMeta; this adapter keeps the visual layer untouched
+// while the editor switches to the live SingleCondition shape returned by
+// the backend. Phase 2 will let the drawer mutate the SingleCondition
+// directly — for Phase 1 it's read-only.
+function condToMeta(cond: SingleCondition): CondMeta {
+  return {
+    indicator: formatIndicator(cond.indicator, cond.params ?? null),
+    op: formatOp(cond.operator),
+    val: formatValue(cond.value),
+    valIsRef: cond.value.type === "indicator",
+    meta: "condition",
+    kind: classifyIndicator(cond.indicator),
+  };
+}
 
-type DrawerAction = "save" | "duplicate" | "delete" | "dissolve";
+function formatIndicator(ind: string, params: Record<string, number> | null): string {
+  const lower = ind.toLowerCase();
+  if (lower === "close_price" || lower === "close") return "Close";
+  if (lower === "open_price" || lower === "open") return "Open";
+  if (lower === "high_price" || lower === "high") return "High";
+  if (lower === "low_price" || lower === "low") return "Low";
+  if (lower === "volume") return "Volume";
+  const periodMatch = lower.match(/^(sma|ema)_(\d+)$/);
+  if (periodMatch) return `${periodMatch[1].toUpperCase()} (${periodMatch[2]})`;
+  if (lower === "rsi") return `RSI (${params?.period ?? 14})`;
+  if (lower === "macd") return "MACD";
+  if (lower === "macd_signal") return "MACD Signal";
+  if (lower === "macd_histogram") return "MACD Histogram";
+  if (lower.startsWith("bb_")) {
+    return `BB ${lower.slice(3).replace(/_/g, " ").toUpperCase()}`;
+  }
+  if (lower === "vwap") return "VWAP";
+  if (lower === "obv") return "OBV";
+  if (lower === "cmf") return "CMF";
+  if (lower === "atr") return "ATR";
+  if (lower === "atr_percent") return "ATR %";
+  if (lower === "adx") return "ADX";
+  if (lower === "roc") return "ROC";
+  if (lower === "williams_r") return "Williams %R";
+  if (lower === "stochastic_k") return "Stoch %K";
+  if (lower === "stochastic_d") return "Stoch %D";
+  if (lower === "parabolic_sar") return "Parabolic SAR";
+  return ind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatOp(op: Operator): string {
+  if (op === "crosses_above") return "×↑";
+  if (op === "crosses_below") return "×↓";
+  return op;
+}
+
+function formatValue(value: ConditionValue): string {
+  if (value.type === "constant") return String(value.value);
+  return formatIndicator(value.indicator, null);
+}
+
+function classifyIndicator(ind: string): NodeKind {
+  const lower = ind.toLowerCase();
+  if (lower === "volume" || lower === "obv" || lower === "cmf") return "volume";
+  if (
+    lower.startsWith("sma_") ||
+    lower.startsWith("ema_") ||
+    lower.startsWith("bb_") ||
+    lower === "vwap" ||
+    lower === "parabolic_sar" ||
+    lower === "adx" ||
+    lower.endsWith("_price") ||
+    lower === "close" ||
+    lower === "open" ||
+    lower === "high" ||
+    lower === "low"
+  ) {
+    return "trend";
+  }
+  return "momentum";
+}
+
+type SaveStatus = "idle" | "saving" | "error";
+
+// Pure serializer — kept module-level so it's straightforward to unit test
+// in isolation (Phase 8 / PR-2). Everything that can be edited in the
+// canvas/drawers travels through here on its way to the backend.
+export function buildUpdateBody(
+  name: string,
+  rules: RuleNode[],
+  logic: ConditionLogic,
+  exit: ExitRules,
+  sizing: PositionSizing,
+): StrategyUpdateBody {
+  return {
+    name,
+    entry_rules: {
+      conditions: { logic, conditions: rules.map((r) => r.cond) },
+    },
+    exit_rules: exit,
+    position_sizing: sizing,
+  };
+}
 
 function deriveUniverseLabel(s: StrategyResponse): string {
   if (s.stock_symbols && s.stock_symbols.length > 0) {
@@ -84,6 +170,26 @@ export function EditorView({ initialStrategy }: { initialStrategy: StrategyRespo
     return Date.now();
   });
   const [flash, setFlash] = useState<string | null>(null);
+
+  // Lifted graph state — Phase 1 hydrates from initialStrategy and renders
+  // the canvas off it. Phase 2/3 wire drawers to mutate this state and
+  // Phase 4 sends `dirty` back to the backend via PUT /strategies/{id}.
+  // _-prefixed state is held for later phases (see STRATEGY_EDITOR_WIRING_PLAN.md).
+  const [rules, setRules] = useState<RuleNode[]>(() =>
+    initialStrategy.entry_rules.conditions.conditions.map((c, i) => ({
+      id: `r${i}`,
+      cond: c,
+    }))
+  );
+  const [logic, setLogic] = useState<ConditionLogic>(
+    initialStrategy.entry_rules.conditions.logic
+  );
+  const [exit, setExit] = useState<ExitRules>(initialStrategy.exit_rules);
+  const [sizing, setSizing] = useState<PositionSizing>(initialStrategy.position_sizing);
+  const [dirty, setDirty] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [name] = useState<string>(initialStrategy.name);
+
   const universeLabel = deriveUniverseLabel(initialStrategy);
 
   useEffect(() => {
@@ -98,17 +204,32 @@ export function EditorView({ initialStrategy }: { initialStrategy: StrategyRespo
     );
   const close = () => setSelection(null);
 
-  const handleSaveDraft = () => {
-    // Phase 3.2c defers full save: the canvas state is in-memory only and
-    // there's no inline name editor. The button still gives feedback so the
-    // affordance isn't broken; real persistence lives behind the deploy
-    // toggle below (PUT /strategies/{id}).
-    setSavedAt(Date.now());
-    setFlash("Draft saved (local)");
+  const handleSaveDraft = async () => {
+    if (!dirty || saveStatus === "saving") return;
+    const body = buildUpdateBody(name, rules, logic, exit, sizing);
+    setSaveStatus("saving");
+    try {
+      const res = await fetch(`/api/strategies/${initialStrategy.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Save failed (${res.status})`);
+      }
+      setSavedAt(Date.now());
+      setDirty(false);
+      setSaveStatus("idle");
+      setFlash("Draft saved");
+    } catch (err) {
+      setSaveStatus("error");
+      setFlash(err instanceof Error ? err.message : "Save failed");
+    }
   };
 
   const handleValidate = () => {
-    setFlash("Strategy is valid · 4 conditions connected");
+    setFlash(`Strategy is valid · ${rules.length} condition${rules.length === 1 ? "" : "s"} connected`);
   };
 
   const handleDeploy = async () => {
@@ -135,17 +256,6 @@ export function EditorView({ initialStrategy }: { initialStrategy: StrategyRespo
     setFlash(`Restored ${label}`);
   };
 
-  const handleDrawerAction = (action: DrawerAction, subjectLabel: string) => {
-    close();
-    const verb: Record<DrawerAction, string> = {
-      save: "Saved",
-      duplicate: "Duplicated",
-      delete: "Deleted",
-      dissolve: "Dissolved",
-    };
-    setFlash(`${verb[action]} · ${subjectLabel}`);
-  };
-
   const handleAdd = (what: "condition" | "group") => {
     setFlash(
       what === "condition"
@@ -154,15 +264,25 @@ export function EditorView({ initialStrategy }: { initialStrategy: StrategyRespo
     );
   };
 
+  const handleToggleLogic = () => {
+    setLogic((l) => (l === "AND" ? "OR" : "AND"));
+    setDirty(true);
+  };
+
+  const selectedRule =
+    selection?.kind === "condition" ? rules.find((r) => r.id === selection.id) : null;
+
   return (
     <AppFrame route="/strategies">
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <Header
-          name={initialStrategy.name}
+          name={name}
           slug={String(initialStrategy.id)}
           universe={universeLabel}
           deployed={deployed}
           savedAt={savedAt}
+          dirty={dirty}
+          saveStatus={saveStatus}
           onSaveDraft={handleSaveDraft}
           onRestoreVersion={handleRestoreVersion}
         />
@@ -176,27 +296,51 @@ export function EditorView({ initialStrategy }: { initialStrategy: StrategyRespo
           }}
         >
           <Canvas
+            rules={rules}
+            logic={logic}
             selection={selection}
             onSelect={onSelect}
+            onToggleLogic={handleToggleLogic}
             drawerOpen={selection !== null}
             deployed={deployed}
             onValidate={handleValidate}
             onDeploy={handleDeploy}
             onAdd={handleAdd}
           />
-          {selection?.kind === "condition" && (
+          {selection?.kind === "condition" && selectedRule && (
             <ConditionDrawer
               key={selection.id}
-              node={CONDITIONS[selection.id]}
+              cond={selectedRule.cond}
+              displayName={formatIndicator(
+                selectedRule.cond.indicator,
+                selectedRule.cond.params ?? null
+              )}
+              onApply={(nextCond) => {
+                setRules((rs) =>
+                  rs.map((r) => (r.id === selection.id ? { ...r, cond: nextCond } : r))
+                );
+                setDirty(true);
+                close();
+                setFlash(
+                  `Saved · ${formatIndicator(nextCond.indicator, nextCond.params ?? null)}`
+                );
+              }}
               onClose={close}
-              onAction={handleDrawerAction}
             />
           )}
           {selection?.kind === "execution" && (
-            <ExecutionDrawer onClose={close} onAction={handleDrawerAction} />
-          )}
-          {selection?.kind === "group" && (
-            <GroupDrawer onClose={close} onAction={handleDrawerAction} />
+            <ExecutionDrawer
+              exit={exit}
+              sizing={sizing}
+              onApply={(nextExit, nextSizing) => {
+                setExit(nextExit);
+                setSizing(nextSizing);
+                setDirty(true);
+                close();
+                setFlash("Saved · Execution");
+              }}
+              onClose={close}
+            />
           )}
         </div>
       </div>
@@ -266,6 +410,8 @@ function Header({
   universe,
   deployed,
   savedAt,
+  dirty,
+  saveStatus,
   onSaveDraft,
   onRestoreVersion,
 }: {
@@ -274,6 +420,8 @@ function Header({
   universe: string;
   deployed: boolean;
   savedAt: number;
+  dirty: boolean;
+  saveStatus: SaveStatus;
   onSaveDraft: () => void;
   onRestoreVersion: (label: string) => void;
 }) {
@@ -300,9 +448,25 @@ function Header({
     };
   }, [historyOpen]);
 
-  const savedLabel = formatSavedLabel(savedAt);
+  const savedLabel =
+    saveStatus === "saving"
+      ? "saving…"
+      : saveStatus === "error"
+      ? "save failed — retry"
+      : dirty
+      ? "unsaved changes"
+      : formatSavedLabel(savedAt);
+  const savedColor =
+    saveStatus === "error"
+      ? T.loss
+      : saveStatus === "saving"
+      ? T.warning
+      : dirty
+      ? T.warning
+      : T.text3;
   const statusColor = deployed ? T.deploy : T.warning;
   const statusLabel = deployed ? "deployed" : "draft";
+  const saveDisabled = !dirty || saveStatus === "saving";
 
   return (
     <div
@@ -340,7 +504,7 @@ function Header({
           <span style={{ color: statusColor, textTransform: "uppercase", letterSpacing: 0.6 }}>
             {statusLabel}
           </span>
-          <span style={{ color: T.text3 }}>· {savedLabel}</span>
+          <span style={{ color: savedColor }}>· {savedLabel}</span>
         </div>
         <h1
           style={{
@@ -388,8 +552,13 @@ function Header({
             />
           )}
         </div>
-        <Btn variant="outline" size="sm" onClick={onSaveDraft}>
-          Save draft
+        <Btn
+          variant={saveStatus === "error" ? "primary" : "outline"}
+          size="sm"
+          disabled={saveDisabled}
+          onClick={onSaveDraft}
+        >
+          {saveStatus === "saving" ? "Saving…" : saveStatus === "error" ? "Retry save" : "Save draft"}
         </Btn>
       </div>
     </div>
@@ -473,16 +642,22 @@ function HistoryPopover({ onRestore }: { onRestore: (label: string) => void }) {
 }
 
 function Canvas({
+  rules,
+  logic,
   selection,
   onSelect,
+  onToggleLogic,
   drawerOpen,
   deployed,
   onValidate,
   onDeploy,
   onAdd,
 }: {
+  rules: RuleNode[];
+  logic: ConditionLogic;
   selection: Selection;
   onSelect: (kind: SelKind, id: string) => void;
+  onToggleLogic: () => void;
   drawerOpen: boolean;
   deployed: boolean;
   onValidate: () => void;
@@ -658,120 +833,168 @@ function Canvas({
           transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
         }}
       >
-        <svg
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            pointerEvents: "none",
-            overflow: "visible",
-          }}
-        >
-          <Connector d="M 240 134 C 320 134 320 290 385 290" dashed T={T} />
-          <Connector d="M 240 254 C 320 254 320 305 385 305" dashed T={T} />
-          <Connector d="M 240 444 C 275 444 275 475 300 475" dashed T={T} />
-          <Connector d="M 240 564 C 275 564 275 495 300 495" dashed T={T} />
-          <Connector d="M 370 485 C 378 485 378 320 385 320" dashed T={T} />
-          <Connector d="M 545 305 C 585 305 585 304 620 304" color={T.primaryLight} width={2} T={T} />
-          <Connector d="M 860 304 C 870 304 870 104 880 104" color={T.primary} width={1.3} T={T} />
-          <Connector d="M 860 304 C 870 304 870 292 880 292" color={T.deploy} width={1.6} T={T} />
-          <Connector d="M 860 304 C 870 304 870 464 880 464" color={T.accent} width={1.3} T={T} />
-        </svg>
+        {(() => {
+          // Geometry derived from rules.length so the canvas reshapes when
+          // conditions are added/removed (Phase 5). Y values centered on
+          // the gate glyph; with a single rule the gate is hidden and the
+          // condition wires directly into ExecNode.
+          const NODE_X = 40;
+          const NODE_W = 200;
+          const NODE_H = 108;
+          const NODE_Y0 = 40;
+          const NODE_GAP = 120;
+          const condTopY = (i: number) => NODE_Y0 + i * NODE_GAP;
+          const condPinY = (i: number) => condTopY(i) + NODE_H / 2;
+          const N = rules.length;
+          const gateY = N > 0 ? (condPinY(0) + condPinY(N - 1)) / 2 : 200;
+          const showGate = N > 1;
+          const execY = gateY - 54;
+          const execPinY = gateY;
+          const out1Y = gateY - 224; // Backtest pin at gateY-204
+          const out2Y = gateY - 36;  // Live signals pin at gateY-16
+          const out3Y = gateY + 136; // Automate pin at gateY+156
+          const gateBlockX = 410;
+          const gateBlockW = 110;
+          const condRightX = NODE_X + NODE_W;
+          const gateLeftX = 385;
+          const gateRightX = 545;
+          return (
+            <>
+              <svg
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  pointerEvents: "none",
+                  overflow: "visible",
+                }}
+              >
+                {rules.map((r, i) => {
+                  const cy = condPinY(i);
+                  const tx = showGate ? gateLeftX : 620;
+                  const ty = showGate ? gateY : execPinY;
+                  const midX = condRightX + 80;
+                  return (
+                    <Connector
+                      key={r.id}
+                      d={`M ${condRightX} ${cy} C ${midX} ${cy} ${midX} ${ty} ${tx} ${ty}`}
+                      dashed
+                      T={T}
+                    />
+                  );
+                })}
+                {showGate && (
+                  <Connector
+                    d={`M ${gateRightX} ${gateY} C 585 ${gateY} 585 ${execPinY} 620 ${execPinY}`}
+                    color={T.primaryLight}
+                    width={2}
+                    T={T}
+                  />
+                )}
+                <Connector
+                  d={`M 860 ${execPinY} C 870 ${execPinY} 870 ${out1Y + 20} 880 ${out1Y + 20}`}
+                  color={T.primary}
+                  width={1.3}
+                  T={T}
+                />
+                <Connector
+                  d={`M 860 ${execPinY} C 870 ${execPinY} 870 ${out2Y + 20} 880 ${out2Y + 20}`}
+                  color={T.deploy}
+                  width={1.6}
+                  T={T}
+                />
+                <Connector
+                  d={`M 860 ${execPinY} C 870 ${execPinY} 870 ${out3Y + 20} 880 ${out3Y + 20}`}
+                  color={T.accent}
+                  width={1.3}
+                  T={T}
+                />
+              </svg>
 
-        <GroupBox
-          x={24}
-          y={380}
-          w={240}
-          h={240}
-          label="OR group"
-          selected={isSelected("group", "or")}
-          onClick={() => onSelect("group", "or")}
-        />
+              {rules.map((r, i) => {
+                const meta = condToMeta(r.cond);
+                return (
+                  <CondNode
+                    key={r.id}
+                    x={NODE_X}
+                    y={condTopY(i)}
+                    {...meta}
+                    selected={isSelected("condition", r.id)}
+                    onClick={() => onSelect("condition", r.id)}
+                  />
+                );
+              })}
 
-        <CondNode
-          x={40}
-          y={80}
-          {...CONDITIONS.rsi}
-          selected={isSelected("condition", "rsi")}
-          onClick={() => onSelect("condition", "rsi")}
-        />
-        <CondNode
-          x={40}
-          y={200}
-          {...CONDITIONS.close}
-          selected={isSelected("condition", "close")}
-          onClick={() => onSelect("condition", "close")}
-        />
-        <CondNode
-          x={40}
-          y={400}
-          {...CONDITIONS.vol}
-          selected={isSelected("condition", "vol")}
-          onClick={() => onSelect("condition", "vol")}
-        />
-        <CondNode
-          x={40}
-          y={520}
-          {...CONDITIONS.macd}
-          selected={isSelected("condition", "macd")}
-          onClick={() => onSelect("condition", "macd")}
-        />
+              {showGate && (
+                <button
+                  type="button"
+                  onClick={onToggleLogic}
+                  aria-label={`Toggle gate logic (currently ${logic})`}
+                  title={`Click to toggle ${logic === "AND" ? "→ OR" : "→ AND"}`}
+                  style={{
+                    position: "absolute",
+                    left: gateBlockX,
+                    top: gateY - gateBlockW / 2,
+                    width: gateBlockW,
+                    height: gateBlockW,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    border: "none",
+                    background: "transparent",
+                    cursor: "pointer",
+                    padding: 0,
+                  }}
+                >
+                  <GateGlyph logic={logic} size={68} />
+                </button>
+              )}
 
-        <div
-          data-bg="true"
-          style={{
-            position: "absolute",
-            left: 410,
-            top: 250,
-            width: 110,
-            height: 110,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            pointerEvents: "none",
-          }}
-        >
-          <GateGlyph logic="AND" size={68} />
-        </div>
-        <div
-          data-bg="true"
-          style={{
-            position: "absolute",
-            left: 300,
-            top: 450,
-            width: 70,
-            height: 70,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            pointerEvents: "none",
-          }}
-        >
-          <GateGlyph logic="OR" size={42} />
-        </div>
+              <ExecNode
+                x={620}
+                y={execY}
+                selected={isSelected("execution", "exec")}
+                onClick={() => onSelect("execution", "exec")}
+              />
 
-        <ExecNode
-          x={620}
-          y={250}
-          selected={isSelected("execution", "exec")}
-          onClick={() => onSelect("execution", "exec")}
-        />
-
-        <OutputPin x={880} y={80} tint={T.primary} glyph="⎈" title="Backtest" status="+14.2%" statusColor={T.gain} sub="last run 2m ago" href="/backtest" />
-        <OutputPin
-          x={880}
-          y={268}
-          tint={deployed ? T.deploy : T.text3}
-          glyph="◉"
-          title="Live signals"
-          status={deployed ? "Deployed" : "Paused"}
-          statusColor={deployed ? T.deploy : T.text3}
-          sub={deployed ? "3 today · 100 scanned" : "feed halted"}
-          emphasized={deployed}
-          href="/signals"
-        />
-        <OutputPin x={880} y={440} tint={T.accent} glyph="◇" title="Automate" status="No bot" statusColor={T.text3} sub="bind for paper trading" href="/bots/new" />
+              <OutputPin
+                x={880}
+                y={out1Y}
+                tint={T.primary}
+                glyph="⎈"
+                title="Backtest"
+                status="+14.2%"
+                statusColor={T.gain}
+                sub="last run 2m ago"
+                href="/backtest"
+              />
+              <OutputPin
+                x={880}
+                y={out2Y}
+                tint={deployed ? T.deploy : T.text3}
+                glyph="◉"
+                title="Live signals"
+                status={deployed ? "Deployed" : "Paused"}
+                statusColor={deployed ? T.deploy : T.text3}
+                sub={deployed ? "3 today · 100 scanned" : "feed halted"}
+                emphasized={deployed}
+                href="/signals"
+              />
+              <OutputPin
+                x={880}
+                y={out3Y}
+                tint={T.accent}
+                glyph="◇"
+                title="Automate"
+                status="No bot"
+                statusColor={T.text3}
+                sub="bind for paper trading"
+                href="/bots/new"
+              />
+            </>
+          );
+        })()}
       </div>
 
       <div
@@ -1166,71 +1389,6 @@ function OutputPin({
   );
 }
 
-function GroupBox({
-  x,
-  y,
-  w,
-  h,
-  label,
-  selected,
-  onClick,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  label: string;
-  selected?: boolean;
-  onClick?: () => void;
-}) {
-  const T = useT();
-  return (
-    <div
-      onClick={onClick}
-      onKeyDown={onClick ? (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onClick();
-        }
-      } : undefined}
-      role={onClick ? "button" : undefined}
-      tabIndex={onClick ? 0 : undefined}
-      style={{
-        position: "absolute",
-        left: x,
-        top: y,
-        width: w,
-        height: h,
-        border: `1px dashed ${selected ? T.primaryLight : T.outlineVariant}`,
-        borderRadius: 12,
-        background: `linear-gradient(180deg, ${T.primary}${selected ? "14" : "08"}, transparent)`,
-        cursor: onClick ? "pointer" : undefined,
-        boxShadow: selected ? `0 0 0 1px ${T.primaryLight}66` : undefined,
-      }}
-    >
-      <span
-        style={{
-          position: "absolute",
-          top: -10,
-          left: 14,
-          padding: "2px 10px",
-          fontFamily: T.fontHead,
-          fontStyle: "italic",
-          fontWeight: 600,
-          fontSize: 11,
-          color: T.primaryLight,
-          background: T.surfaceLowest,
-          borderRadius: 999,
-          letterSpacing: 0.3,
-          pointerEvents: "none",
-        }}
-      >
-        {label}
-      </span>
-    </div>
-  );
-}
-
 function AddPill({
   children,
   onClick,
@@ -1272,7 +1430,7 @@ function AddPill({
   );
 }
 
-type CompareMode = "Constant" | "Indicator" | "Price ref";
+type CompareMode = "Constant" | "Indicator";
 
 function useSliderDrag(onChange: (pct: number) => void) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -1310,8 +1468,18 @@ function useSliderDrag(onChange: (pct: number) => void) {
   return { trackRef, onPointerDown, onPointerMove, onPointerUp };
 }
 
-const OPERATORS = [">", "≥", "<", "≤", "=", "×↑", "×↓", "·"] as const;
-const COMPARE_MODES: CompareMode[] = ["Constant", "Indicator", "Price ref"];
+// Operator options match backend's Operator enum (schemas/strategy.py).
+// `value` is the wire format; `label` is the canvas/drawer glyph.
+const OPERATOR_OPTIONS: { value: Operator; label: string }[] = [
+  { value: ">", label: ">" },
+  { value: ">=", label: "≥" },
+  { value: "<", label: "<" },
+  { value: "<=", label: "≤" },
+  { value: "==", label: "=" },
+  { value: "crosses_above", label: "×↑" },
+  { value: "crosses_below", label: "×↓" },
+];
+const COMPARE_MODES: CompareMode[] = ["Constant", "Indicator"];
 
 function DrawerContainer({ children }: { children: React.ReactNode }) {
   const T = useT();
@@ -1340,37 +1508,69 @@ function DrawerContainer({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Controlled ConditionDrawer — reads `cond` (the live SingleCondition from
+// EditorView state), seeds local form state on mount, calls `onApply` with
+// the next SingleCondition when the user hits Save. Indicator-side editing
+// (changing the LHS indicator or the RHS reference indicator) lands in
+// PR-2 / Phase 7 via Combobox + IndicatorMeta. For PR-1 the LHS is locked
+// and switching to Indicator compare-mode preserves the existing reference.
 function ConditionDrawer({
-  node,
+  cond,
+  displayName,
+  onApply,
+  onDelete,
+  onDuplicate,
   onClose,
-  onAction,
 }: {
-  node?: CondMeta;
+  cond: SingleCondition;
+  displayName: string;
+  onApply: (next: SingleCondition) => void;
+  onDelete?: () => void;
+  onDuplicate?: () => void;
   onClose: () => void;
-  onAction: (action: DrawerAction, subjectLabel: string) => void;
 }) {
   const T = useT();
-  const title = node?.indicator ?? "Condition";
-  const kindLabel =
-    node?.kind === "momentum"
-      ? "Momentum indicator"
-      : node?.kind === "trend"
-      ? "Trend filter"
-      : node?.kind === "volume"
-      ? "Volume confirmation"
-      : "Condition";
+  const initialCompare: CompareMode = cond.value.type === "indicator" ? "Indicator" : "Constant";
+  const initialThreshold = cond.value.type === "constant" ? cond.value.value : 0;
+  // Preserve the original RHS indicator so toggling Constant → Indicator
+  // restores it (PR-1 doesn't let users pick a different one).
+  const initialRefIndicator =
+    cond.value.type === "indicator" ? cond.value.indicator : null;
 
-  const initialOp = (node?.op ?? "<").trim() || "<";
-  const initialCompare: CompareMode = node?.valIsRef ? "Indicator" : "Constant";
-
-  const [op, setOp] = useState<string>(initialOp);
+  const [op, setOp] = useState<Operator>(cond.operator);
   const [compareMode, setCompareMode] = useState<CompareMode>(initialCompare);
-  const [period, setPeriod] = useState("14");
-  const [timeframe, setTimeframe] = useState("1D");
-  const [threshold, setThreshold] = useState(30);
+  const [threshold, setThreshold] = useState<number>(initialThreshold);
+  const refIndicatorRef = useRef<string | null>(initialRefIndicator);
   const thresholdPct = Math.max(0, Math.min(100, threshold));
 
   const slider = useSliderDrag((pct) => setThreshold(Math.round(pct * 100)));
+
+  const refLabel = refIndicatorRef.current
+    ? formatIndicator(refIndicatorRef.current, null)
+    : "—";
+  const previewVal = compareMode === "Constant" ? String(threshold) : refLabel;
+  const previewOp = formatOp(op);
+
+  const handleSave = () => {
+    let nextValue: ConditionValue;
+    if (compareMode === "Constant") {
+      nextValue = { type: "constant", value: threshold };
+    } else if (refIndicatorRef.current) {
+      nextValue = { type: "indicator", indicator: refIndicatorRef.current };
+    } else {
+      // Compare-to-Indicator without a reference set is only reachable in
+      // PR-2 once the picker exists. Falling back to constant here keeps
+      // the round-trip valid.
+      nextValue = { type: "constant", value: threshold };
+    }
+    const next: SingleCondition = {
+      indicator: cond.indicator,
+      operator: op,
+      value: nextValue,
+      params: cond.params ?? null,
+    };
+    onApply(next);
+  };
 
   return (
     <DrawerContainer>
@@ -1397,7 +1597,7 @@ function ConditionDrawer({
         >
           {Icon.close}
         </button>
-        <Kicker color={T.primaryLight}>{node?.meta ?? "condition"}</Kicker>
+        <Kicker color={T.primaryLight}>condition</Kicker>
         <h2
           style={{
             fontFamily: T.fontHead,
@@ -1407,21 +1607,15 @@ function ConditionDrawer({
             letterSpacing: -0.4,
           }}
         >
-          {title}
+          {displayName}
         </h2>
         <div style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
-          {kindLabel} · {op} {compareMode === "Constant" ? threshold : node?.val}
+          {previewOp} {previewVal}
         </div>
       </div>
 
       <div style={{ flex: 1, overflowX: "hidden", overflowY: "auto", padding: 22, paddingTop: 16 }}>
-        <Ribbon kicker="definition" />
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 12, marginTop: 6 }}>
-          <Field label="Period" value={period} onChange={setPeriod} suffix="bars" />
-          <Field label="Timeframe" value={timeframe} onChange={setTimeframe} />
-        </div>
-
-        <div style={{ marginTop: 18 }}>
+        <div style={{ marginTop: 4 }}>
           <Kicker>operator</Kicker>
           <div
             style={{
@@ -1431,13 +1625,13 @@ function ConditionDrawer({
               marginTop: 8,
             }}
           >
-            {OPERATORS.map((o) => {
-              const active = op === o;
+            {OPERATOR_OPTIONS.map((o) => {
+              const active = op === o.value;
               return (
                 <button
-                  key={o}
+                  key={o.value}
                   type="button"
-                  onClick={() => setOp(o)}
+                  onClick={() => setOp(o.value)}
                   style={{
                     padding: "8px 0",
                     textAlign: "center",
@@ -1454,7 +1648,7 @@ function ConditionDrawer({
                     transition: "background 140ms, color 140ms, box-shadow 140ms",
                   }}
                 >
-                  {o}
+                  {o.label}
                 </button>
               );
             })}
@@ -1466,17 +1660,21 @@ function ConditionDrawer({
           <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
             {COMPARE_MODES.map((t) => {
               const active = compareMode === t;
+              const disabled = t === "Indicator" && !refIndicatorRef.current;
               return (
                 <button
                   key={t}
                   type="button"
+                  disabled={disabled}
+                  title={disabled ? "Indicator picker arrives in the next release" : undefined}
                   onClick={() => setCompareMode(t)}
                   style={{
                     padding: "6px 12px",
                     borderRadius: 999,
                     fontSize: 11.5,
                     border: "none",
-                    cursor: "pointer",
+                    cursor: disabled ? "not-allowed" : "pointer",
+                    opacity: disabled ? 0.5 : 1,
                     fontFamily: "inherit",
                     background: active ? T.surface3 : T.surface,
                     color: active ? T.text : T.text3,
@@ -1489,136 +1687,127 @@ function ConditionDrawer({
               );
             })}
           </div>
-          <div
-            style={{
-              marginTop: 10,
-              padding: "12px 14px",
-              background: T.surface,
-              borderRadius: 8,
-              boxShadow: `0 0 0 1px ${T.outlineFaint}`,
-              display: "flex",
-              alignItems: "baseline",
-              gap: 8,
-            }}
-          >
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={threshold}
-              onChange={(e) => {
-                const digits = e.target.value.replace(/[^0-9]/g, "");
-                if (digits === "") {
-                  setThreshold(0);
-                  return;
-                }
-                const n = Number(digits);
-                if (Number.isFinite(n)) setThreshold(Math.max(0, Math.min(100, n)));
-              }}
-              style={{
-                fontFamily: T.fontHead,
-                fontSize: 28,
-                color: T.text,
-                letterSpacing: -0.4,
-                fontVariantNumeric: "tabular-nums",
-                background: "transparent",
-                border: "none",
-                width: 64,
-                padding: 0,
-              }}
-            />
-            <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>of 100</span>
-            <div style={{ flex: 1 }} />
+          {compareMode === "Constant" ? (
             <div
-              ref={slider.trackRef}
-              onPointerDown={slider.onPointerDown}
-              onPointerMove={slider.onPointerMove}
-              onPointerUp={slider.onPointerUp}
-              onPointerCancel={slider.onPointerUp}
               style={{
-                position: "relative",
-                width: 120,
-                height: 14,
+                marginTop: 10,
+                padding: "12px 14px",
+                background: T.surface,
+                borderRadius: 8,
+                boxShadow: `0 0 0 1px ${T.outlineFaint}`,
                 display: "flex",
-                alignItems: "center",
-                cursor: "pointer",
-                touchAction: "none",
+                alignItems: "baseline",
+                gap: 8,
               }}
             >
-              <div
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={threshold}
+                onChange={(e) => {
+                  const digits = e.target.value.replace(/[^0-9]/g, "");
+                  if (digits === "") {
+                    setThreshold(0);
+                    return;
+                  }
+                  const n = Number(digits);
+                  if (Number.isFinite(n)) setThreshold(Math.max(0, Math.min(100, n)));
+                }}
                 style={{
-                  position: "absolute",
-                  left: 0,
-                  right: 0,
-                  height: 4,
-                  borderRadius: 2,
-                  background: T.surface3,
-                  overflow: "hidden",
+                  fontFamily: T.fontHead,
+                  fontSize: 28,
+                  color: T.text,
+                  letterSpacing: -0.4,
+                  fontVariantNumeric: "tabular-nums",
+                  background: "transparent",
+                  border: "none",
+                  width: 64,
+                  padding: 0,
+                }}
+              />
+              <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>of 100</span>
+              <div style={{ flex: 1 }} />
+              <div
+                ref={slider.trackRef}
+                onPointerDown={slider.onPointerDown}
+                onPointerMove={slider.onPointerMove}
+                onPointerUp={slider.onPointerUp}
+                onPointerCancel={slider.onPointerUp}
+                style={{
+                  position: "relative",
+                  width: 120,
+                  height: 14,
+                  display: "flex",
+                  alignItems: "center",
+                  cursor: "pointer",
+                  touchAction: "none",
                 }}
               >
                 <div
                   style={{
                     position: "absolute",
-                    inset: 0,
-                    width: `${thresholdPct}%`,
+                    left: 0,
+                    right: 0,
+                    height: 4,
+                    borderRadius: 2,
+                    background: T.surface3,
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      width: `${thresholdPct}%`,
+                      background: T.primaryLight,
+                      transition: "width 80ms linear",
+                    }}
+                  />
+                </div>
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `${thresholdPct}%`,
+                    top: "50%",
+                    width: 12,
+                    height: 12,
+                    borderRadius: 6,
                     background: T.primaryLight,
-                    transition: "width 80ms linear",
+                    transform: "translate(-6px, -6px)",
+                    boxShadow: `0 0 0 3px ${T.primaryLight}33`,
                   }}
                 />
               </div>
-              <div
-                style={{
-                  position: "absolute",
-                  left: `${thresholdPct}%`,
-                  top: "50%",
-                  width: 12,
-                  height: 12,
-                  borderRadius: 6,
-                  background: T.primaryLight,
-                  transform: "translate(-6px, -6px)",
-                  boxShadow: `0 0 0 3px ${T.primaryLight}33`,
-                }}
-              />
             </div>
-          </div>
-        </div>
-
-        <Ribbon kicker="behavior" color={T.primaryLight} />
-        <div style={{ fontSize: 12, color: T.text2, lineHeight: 1.6, marginTop: 4 }}>
-          Fires when momentum dips into{" "}
-          <span style={{ color: T.primaryLight }}>oversold</span> territory. Typical read:
-          &ldquo;reversion likely&rdquo; — pairs well with a trend filter to avoid falling knives.
-        </div>
-
-        <Ribbon kicker="historical fit" />
-        <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 4 }}>
-          <span
-            style={{
-              fontFamily: T.fontHead,
-              fontSize: 34,
-              color: T.primaryLight,
-              letterSpacing: -0.6,
-              fontVariantNumeric: "tabular-nums",
-            }}
-          >
-            47
-          </span>
-          <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
-            fires / 252 days · 86 symbols · 18.6% hit rate
-          </span>
-        </div>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 42, marginTop: 12 }}>
-          {[2, 4, 3, 5, 2, 6, 3, 4, 5, 3, 7, 2, 4, 3, 5, 2, 4, 3, 6, 4, 2, 3, 5, 4, 6, 3].map((b, i) => (
+          ) : (
             <div
-              key={i}
               style={{
-                width: 8,
-                height: (b / 7) * 42,
-                background: T.primaryLight + "80",
-                borderRadius: 1,
+                marginTop: 10,
+                padding: "12px 14px",
+                background: T.surface,
+                borderRadius: 8,
+                boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+                display: "flex",
+                alignItems: "baseline",
+                gap: 10,
               }}
-            />
-          ))}
+            >
+              <span
+                style={{
+                  fontFamily: T.fontHead,
+                  fontSize: 18,
+                  color: T.primaryLight,
+                  letterSpacing: -0.2,
+                }}
+              >
+                {refLabel}
+              </span>
+              <span style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3 }}>
+                reference indicator · picker in next release
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1630,15 +1819,19 @@ function ConditionDrawer({
           gap: 8,
         }}
       >
-        <Btn variant="danger" size="sm" onClick={() => onAction("delete", title)}>
-          Delete
-        </Btn>
+        {onDelete && (
+          <Btn variant="danger" size="sm" onClick={onDelete}>
+            Delete
+          </Btn>
+        )}
         <div style={{ flex: 1 }} />
-        <Btn variant="outline" size="sm" onClick={() => onAction("duplicate", title)}>
-          Duplicate
-        </Btn>
-        <Btn variant="primary" size="sm" onClick={() => onAction("save", title)}>
-          Save
+        {onDuplicate && (
+          <Btn variant="outline" size="sm" onClick={onDuplicate}>
+            Duplicate
+          </Btn>
+        )}
+        <Btn variant="primary" size="sm" onClick={handleSave}>
+          Apply
         </Btn>
       </div>
     </DrawerContainer>
@@ -1700,46 +1893,92 @@ function Field({
   );
 }
 
-type Direction = "Long" | "Short" | "Either";
-type ExitKey = "stopLoss" | "takeProfit" | "trailingStop" | "maxHolding" | "exitSignal";
+type ExitKey = "stopLoss" | "takeProfit" | "trailingStop" | "maxHolding";
 
-const DIRECTIONS: Direction[] = ["Long", "Short", "Either"];
+// "5%" / "5" → 5, "" / "—" → null. Bounded to [0, 100] to match backend
+// validators (stop_loss_pct etc are pct floats). parseDays is similar but
+// integers only and unbounded above.
+function parsePct(raw: string): number | null {
+  const cleaned = raw.replace(/[^0-9.]/g, "").trim();
+  if (!cleaned) return null;
+  const n = Number(cleaned);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, n));
+}
 
+function parseDays(raw: string): number | null {
+  const cleaned = raw.replace(/[^0-9]/g, "").trim();
+  if (!cleaned) return null;
+  const n = Number(cleaned);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.floor(n);
+}
+
+function fmtPct(n: number | null | undefined): string {
+  return n == null ? "5%" : `${n}%`;
+}
+
+function fmtDays(n: number | null | undefined): string {
+  return n == null ? "21 days" : `${n} days`;
+}
+
+// Controlled ExecutionDrawer — Direction (long-only) and Exit-signal (no
+// separate exit tree in the data model) are intentionally hidden in PR-1.
+// Sizing maps to position_sizing.value (assumes fixed_percent, see ADR-10).
 function ExecutionDrawer({
+  exit,
+  sizing,
+  onApply,
   onClose,
-  onAction,
 }: {
+  exit: ExitRules;
+  sizing: PositionSizing;
+  onApply: (nextExit: ExitRules, nextSizing: PositionSizing) => void;
   onClose: () => void;
-  onAction: (action: DrawerAction, subjectLabel: string) => void;
 }) {
   const T = useT();
-  const [direction, setDirection] = useState<Direction>("Long");
-  const [sizing, setSizing] = useState(10);
-  const [exits, setExits] = useState<Record<ExitKey, { on: boolean; value: string }>>({
-    stopLoss: { on: true, value: "5%" },
-    takeProfit: { on: true, value: "15%" },
-    trailingStop: { on: false, value: "—" },
-    maxHolding: { on: true, value: "21 days" },
-    exitSignal: { on: false, value: "separate tree" },
-  });
+  const [sizingPct, setSizingPct] = useState<number>(() =>
+    Math.max(0, Math.min(100, Math.round(sizing.value)))
+  );
+  const [exits, setExits] = useState<Record<ExitKey, { on: boolean; value: string }>>(() => ({
+    stopLoss: {
+      on: exit.stop_loss_pct != null,
+      value: fmtPct(exit.stop_loss_pct),
+    },
+    takeProfit: {
+      on: exit.take_profit_pct != null,
+      value: fmtPct(exit.take_profit_pct),
+    },
+    trailingStop: {
+      on: exit.trailing_stop_pct != null,
+      value: fmtPct(exit.trailing_stop_pct),
+    },
+    maxHolding: {
+      on: exit.max_holding_days != null,
+      value: fmtDays(exit.max_holding_days),
+    },
+  }));
 
-  const slider = useSliderDrag((pct) => setSizing(Math.round(pct * 100)));
+  const slider = useSliderDrag((pct) => setSizingPct(Math.round(pct * 100)));
 
   const toggleExit = (k: ExitKey) =>
     setExits((prev) => ({ ...prev, [k]: { ...prev[k], on: !prev[k].on } }));
   const setExitValue = (k: ExitKey, v: string) =>
     setExits((prev) => ({ ...prev, [k]: { ...prev[k], value: v } }));
 
-  const reset = () => {
-    setDirection("Long");
-    setSizing(10);
-    setExits({
-      stopLoss: { on: true, value: "5%" },
-      takeProfit: { on: true, value: "15%" },
-      trailingStop: { on: false, value: "—" },
-      maxHolding: { on: true, value: "21 days" },
-      exitSignal: { on: false, value: "separate tree" },
-    });
+  const handleSave = () => {
+    const nextExit: ExitRules = {
+      ...exit,
+      stop_loss_pct: exits.stopLoss.on ? parsePct(exits.stopLoss.value) : null,
+      take_profit_pct: exits.takeProfit.on ? parsePct(exits.takeProfit.value) : null,
+      trailing_stop_pct: exits.trailingStop.on ? parsePct(exits.trailingStop.value) : null,
+      max_holding_days: exits.maxHolding.on ? parseDays(exits.maxHolding.value) : null,
+    };
+    const nextSizing: PositionSizing = {
+      ...sizing,
+      value: sizingPct,
+    };
+    onApply(nextExit, nextSizing);
   };
 
   return (
@@ -1781,34 +2020,6 @@ function ExecutionDrawer({
         </h2>
       </div>
       <div style={{ flex: 1, overflowX: "hidden", overflowY: "auto", padding: 22, paddingTop: 14 }}>
-        <Ribbon kicker="direction" />
-        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-          {DIRECTIONS.map((o) => {
-            const active = direction === o;
-            return (
-              <button
-                key={o}
-                type="button"
-                onClick={() => setDirection(o)}
-                style={{
-                  padding: "6px 14px",
-                  borderRadius: 999,
-                  fontSize: 12,
-                  border: "none",
-                  cursor: "pointer",
-                  fontFamily: T.fontSans,
-                  background: active ? T.accent + "22" : T.surface,
-                  color: active ? T.accent : T.text3,
-                  boxShadow: `0 0 0 1px ${active ? T.accent : T.outlineFaint}`,
-                  transition: "background 140ms, color 140ms",
-                }}
-              >
-                {o}
-              </button>
-            );
-          })}
-        </div>
-
         <Ribbon kicker="sizing" />
         <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 }}>
           <div style={{ position: "relative", display: "inline-flex", alignItems: "baseline" }}>
@@ -1816,15 +2027,15 @@ function ExecutionDrawer({
               type="text"
               inputMode="numeric"
               pattern="[0-9]*"
-              value={sizing}
+              value={sizingPct}
               onChange={(e) => {
                 const digits = e.target.value.replace(/[^0-9]/g, "");
                 if (digits === "") {
-                  setSizing(0);
+                  setSizingPct(0);
                   return;
                 }
                 const n = Number(digits);
-                if (Number.isFinite(n)) setSizing(Math.max(0, Math.min(100, n)));
+                if (Number.isFinite(n)) setSizingPct(Math.max(0, Math.min(100, n)));
               }}
               style={{
                 fontFamily: T.fontHead,
@@ -1885,7 +2096,7 @@ function ExecutionDrawer({
               style={{
                 position: "absolute",
                 inset: 0,
-                width: `${sizing}%`,
+                width: `${sizingPct}%`,
                 background: T.accent,
                 borderRadius: 3,
                 transition: "width 80ms linear",
@@ -1895,7 +2106,7 @@ function ExecutionDrawer({
           <div
             style={{
               position: "absolute",
-              left: `${sizing}%`,
+              left: `${sizingPct}%`,
               top: "50%",
               width: 16,
               height: 16,
@@ -1938,12 +2149,6 @@ function ExecutionDrawer({
           onToggle={() => toggleExit("maxHolding")}
           onValueChange={(v) => setExitValue("maxHolding", v)}
         />
-        <ExitRow
-          label="Exit signal"
-          value={exits.exitSignal.value}
-          on={exits.exitSignal.on}
-          onToggle={() => toggleExit("exitSignal")}
-        />
 
         <div
           style={{
@@ -1960,7 +2165,7 @@ function ExecutionDrawer({
         >
           <span style={{ color: T.warning }}>{Icon.warn}</span>
           <span>
-            With {sizing}% per trade and 5 concurrent positions, up to {Math.min(100, sizing * 5)}%
+            With {sizingPct}% per trade and 5 concurrent positions, up to {Math.min(100, sizingPct * 5)}%
             of portfolio can be deployed.
           </span>
         </div>
@@ -1974,11 +2179,8 @@ function ExecutionDrawer({
         }}
       >
         <div style={{ flex: 1 }} />
-        <Btn variant="outline" size="sm" onClick={reset}>
-          Reset
-        </Btn>
-        <Btn variant="primary" size="sm" onClick={() => onAction("save", "Execution")}>
-          Save
+        <Btn variant="primary" size="sm" onClick={handleSave}>
+          Apply
         </Btn>
       </div>
     </DrawerContainer>
@@ -2091,185 +2293,3 @@ function ExitRow({
   );
 }
 
-type Combinator = "OR" | "AND" | "XOR";
-const COMBINATORS: Combinator[] = ["OR", "AND", "XOR"];
-
-function GroupDrawer({
-  onClose,
-  onAction,
-}: {
-  onClose: () => void;
-  onAction: (action: DrawerAction, subjectLabel: string) => void;
-}) {
-  const T = useT();
-  const [combinator, setCombinator] = useState<Combinator>("OR");
-  const legs: { indicator: string; detail: string }[] = [
-    { indicator: "Volume", detail: "> avg × 1.5" },
-    { indicator: "MACD", detail: "×↑ Signal" },
-  ];
-  return (
-    <DrawerContainer>
-      <div style={{ padding: "18px 22px 0", position: "relative" }}>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close drawer"
-          style={{
-            position: "absolute",
-            top: 10,
-            right: 10,
-            width: 28,
-            height: 28,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "transparent",
-            border: "none",
-            borderRadius: 6,
-            color: T.text3,
-            cursor: "pointer",
-          }}
-        >
-          {Icon.close}
-        </button>
-        <Kicker color={T.primaryLight}>logic group</Kicker>
-        <h2
-          style={{
-            fontFamily: T.fontHead,
-            fontSize: 22,
-            fontWeight: 500,
-            margin: "10px 0 4px",
-            letterSpacing: -0.4,
-          }}
-        >
-          {combinator}{" "}
-          <span style={{ fontStyle: "italic", color: T.primaryLight }}>group</span>
-        </h2>
-        <div style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
-          {combinator === "OR"
-            ? "Any leg fires · feeds the AND gate"
-            : combinator === "AND"
-            ? "All legs must fire · feeds the AND gate"
-            : "Exactly one leg fires · feeds the AND gate"}
-        </div>
-      </div>
-
-      <div style={{ flex: 1, overflowX: "hidden", overflowY: "auto", padding: 22, paddingTop: 16 }}>
-        <Ribbon kicker="combinator" />
-        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-          {COMBINATORS.map((t) => {
-            const active = combinator === t;
-            return (
-              <button
-                key={t}
-                type="button"
-                onClick={() => setCombinator(t)}
-                style={{
-                  padding: "6px 14px",
-                  borderRadius: 999,
-                  fontSize: 12,
-                  border: "none",
-                  cursor: "pointer",
-                  fontFamily: T.fontSans,
-                  background: active ? T.primary + "22" : T.surface,
-                  color: active ? T.primaryLight : T.text3,
-                  boxShadow: `0 0 0 1px ${active ? T.primary : T.outlineFaint}`,
-                  transition: "background 140ms, color 140ms",
-                }}
-              >
-                {t}
-              </button>
-            );
-          })}
-        </div>
-
-        <Ribbon kicker="legs" />
-        {legs.map((leg, i) => (
-          <div
-            key={i}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              padding: "10px 0",
-              borderBottom: `1px dotted ${T.outlineFaint}`,
-            }}
-          >
-            <span
-              style={{
-                fontFamily: T.fontMono,
-                fontSize: 10,
-                color: T.text3,
-                letterSpacing: 0.6,
-                textTransform: "uppercase",
-                minWidth: 44,
-              }}
-            >
-              leg {i + 1}
-            </span>
-            <span style={{ fontFamily: T.fontSans, fontSize: 13, color: T.text, flex: 1 }}>
-              {leg.indicator}
-            </span>
-            <span
-              style={{
-                fontFamily: T.fontMono,
-                fontSize: 12,
-                color: T.text2,
-                fontVariantNumeric: "tabular-nums",
-              }}
-            >
-              {leg.detail}
-            </span>
-          </div>
-        ))}
-
-        <div
-          style={{
-            marginTop: 18,
-            padding: 12,
-            borderRadius: 8,
-            background: T.primary + "10",
-            fontSize: 11.5,
-            color: T.text2,
-            lineHeight: 1.55,
-          }}
-        >
-          Either leg triggers the OR group; the group itself is one of three inputs to the upstream
-          AND gate. Dissolve the group to flatten both legs into the parent.
-        </div>
-      </div>
-
-      <div
-        style={{
-          padding: 14,
-          borderTop: `1px solid ${T.outlineFaint}`,
-          display: "flex",
-          gap: 8,
-        }}
-      >
-        <Btn
-          variant="danger"
-          size="sm"
-          onClick={() => onAction("dissolve", `${combinator} group`)}
-        >
-          Dissolve
-        </Btn>
-        <div style={{ flex: 1 }} />
-        <Btn
-          variant="outline"
-          size="sm"
-          onClick={() => onAction("duplicate", `${combinator} group`)}
-        >
-          Duplicate
-        </Btn>
-        <Btn
-          variant="primary"
-          size="sm"
-          onClick={() => onAction("save", `${combinator} group`)}
-        >
-          Save
-        </Btn>
-      </div>
-    </DrawerContainer>
-  );
-}
