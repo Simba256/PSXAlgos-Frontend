@@ -355,6 +355,7 @@ export function EditorView({
             onValidate={handleValidate}
             onDeploy={handleDeploy}
             onAddCondition={handleAddCondition}
+            strategyId={initialStrategy.id}
           />
           {creating && (
             <ConditionDrawer
@@ -820,6 +821,7 @@ function Canvas({
   onValidate,
   onDeploy,
   onAddCondition,
+  strategyId,
 }: {
   rules: RuleNode[];
   logic: ConditionLogic;
@@ -831,6 +833,7 @@ function Canvas({
   onValidate: () => void;
   onDeploy: () => void;
   onAddCondition: () => void;
+  strategyId: number;
 }) {
   const isSelected = (kind: SelKind, id: string) =>
     selection?.kind === kind && selection.id === id;
@@ -1135,7 +1138,7 @@ function Canvas({
                 status="+14.2%"
                 statusColor={T.gain}
                 sub="last run 2m ago"
-                href="/backtest"
+                href={`/backtest?strategy_id=${strategyId}`}
               />
               <OutputPin
                 x={880}
@@ -1237,7 +1240,7 @@ function Canvas({
           Validate
         </Btn>
         <div style={{ width: 1, height: 20, background: T.outlineFaint }} />
-        <Link href="/backtest" style={{ textDecoration: "none" }}>
+        <Link href={`/backtest?strategy_id=${strategyId}`} style={{ textDecoration: "none" }}>
           <Btn variant="outline" size="sm">
             Run backtest
           </Btn>
@@ -1548,7 +1551,7 @@ function OutputPin({
     </div>
   );
   return href ? (
-    <Link href={href as "/backtest"} style={{ textDecoration: "none" }}>
+    <Link href={href} style={{ textDecoration: "none" }}>
       {body}
     </Link>
   ) : (
