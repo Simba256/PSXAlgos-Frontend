@@ -379,9 +379,6 @@ function Body({
                 </span>
               ) : (
                 <span style={{ display: "inline-flex", gap: 6, justifyContent: "flex-end" }}>
-                  <Btn variant="ghost" size="sm">
-                    chart
-                  </Btn>
                   <Btn variant="primary" size="sm" onClick={() => onLog(sig)}>
                     log trade →
                   </Btn>

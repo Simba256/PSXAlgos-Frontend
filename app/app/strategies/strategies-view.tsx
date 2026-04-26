@@ -287,9 +287,9 @@ function ListBody({
       />
 
       {empty ? (
-        <EmptyState />
+        <EmptyState onImport={onImport} />
       ) : rows.length === 0 ? (
-        <EmptyState />
+        <EmptyState onImport={onImport} />
       ) : (
         <FilteredList
           filters={filters}
@@ -753,7 +753,7 @@ function StrategyTable({ rows }: { rows: Strategy[] }) {
   );
 }
 
-function EmptyState() {
+function EmptyState({ onImport }: { onImport: () => void }) {
   const T = useT();
   const { bp, isMobile } = useBreakpoint();
   const padX = pick(bp, PAD.page);
@@ -818,7 +818,7 @@ function EmptyState() {
                 New strategy
               </Btn>
             </Link>
-            <Btn variant="ghost" size="lg">
+            <Btn variant="ghost" size="lg" onClick={onImport}>
               Import JSON
             </Btn>
           </div>
