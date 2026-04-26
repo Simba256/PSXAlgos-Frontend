@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { signBackendJwt } from "@/lib/api/jwt";
-import { getSignals, type TradingSignalWithSymbol } from "@/lib/api/signals";
+import { getTodaySignals, type StrategySignal } from "@/lib/api/signals";
 import { SignalsView, type Signal } from "./signals-view";
 
 const DAY_MS = 86_400_000;
@@ -17,18 +17,24 @@ function ageFromDate(iso: string): string {
   return `${Math.floor(days / 30)}mo`;
 }
 
-function mapSignal(row: TradingSignalWithSymbol, idx: number): Signal {
-  const dir: "BUY" | "SELL" = row.signal_type === "SELL" ? "SELL" : "BUY";
+function pickRsi(trigger: Record<string, number> | null): number {
+  if (!trigger) return 0;
+  const raw = trigger.rsi ?? trigger.rsi_14;
+  if (typeof raw !== "number" || Number.isNaN(raw)) return 0;
+  return Math.round(raw);
+}
+
+function mapSignal(strategyName: string, row: StrategySignal): Signal {
   return {
-    id: `${row.symbol}-${idx}`,
+    id: String(row.id),
     time: row.signal_date,
-    strategy: row.strength_label || row.time_horizon || "Signal",
+    strategy: strategyName,
     symbol: row.symbol,
-    price: Number(row.entry_price ?? 0),
-    rsi: row.rsi_value != null ? Math.round(Number(row.rsi_value)) : 0,
-    conf: Number(row.confidence) / 100,
+    price: Number(row.trigger_price ?? 0),
+    rsi: pickRsi(row.trigger_data),
+    conf: 1, // strategy-driven signals are deterministic — no confidence score
     age: ageFromDate(row.signal_date),
-    dir,
+    dir: row.signal_type === "SELL" ? "SELL" : "BUY",
   };
 }
 
@@ -43,8 +49,10 @@ export default async function SignalsPage() {
     email: session.user.email,
   });
 
-  const res = await getSignals(jwt, { active_only: true, limit: 50 });
-  const initialSignals = res.items.map(mapSignal);
+  const res = await getTodaySignals(jwt);
+  const initialSignals = res.groups.flatMap((group) =>
+    group.signals.map((sig) => mapSignal(group.strategy_name, sig)),
+  );
 
   return <SignalsView initialSignals={initialSignals} />;
 }
