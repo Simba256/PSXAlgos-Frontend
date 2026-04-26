@@ -429,6 +429,52 @@ round-trips, each route ships **safe** writes and defers the dangerous ones.
 
 ---
 
+## ADR-10 · Strategy editor canvas wires to flat schema; nested groups, timeframe, direction stay out
+
+**Status**: Accepted (2026-04-26 — planning; implementation tracked by `STRATEGY_EDITOR_WIRING_PLAN.md`).
+
+**Context**.
+ADR-9 §2 deferred wiring the `/strategies/[id]` canvas to the backend on the grounds that "persisting the canvas requires a node-tree serializer that maps the editor's internal model to the backend's nested `ConditionGroup{logic, conditions[]}` shape." A user report on 2026-04-26 (*"I changed symbol and saved for a node but it didn't persist"*) made the deferral untenable — the UX claims persistence ("saved just now"), the backend never receives the change, and there is no path within the existing visual to fail honestly.
+
+Investigation revealed a deeper mismatch: the canvas paints a *nested* shape (`RSI AND Close-filter AND OR-group(Volume, MACD)`), but the backend schema (`backend/app/schemas/strategy.py:131-141`) is **flat** — exactly one `ConditionGroup` with one `logic` and a flat list of conditions. The wizard's `presetToEntryRules` already conforms to this. The picture was lying about both content (hardcoded `CONDITIONS` map) and structure (nested groups the schema can't express).
+
+Three additional schema-vs-UI mismatches: indicator vocabulary is enum-scoped (`rsi`, `sma_20`, `sma_50`, `sma_200`) so "Period 14 bars" is parametric only for some indicators; `Timeframe` (1D/1H/...) does not exist server-side; `direction` is hard-coded long-only.
+
+**Decision** — six concrete choices, each binding for the wiring work:
+
+1. **Match the schema, drop the nested visual.** The canvas becomes a flat list of N rule nodes feeding one AND/OR gate which feeds the execution node. The OR-group decoration goes away. Future nesting requires a backend schema migration (recursive `ConditionGroup.groups`) and is out of scope.
+
+2. **Save model is explicit, not auto-save.** Drawer "Save" buttons apply edits to a single in-memory editor state and mark it dirty. The header "Save Draft" button is the only network call. Rationale: one PUT per checkpoint avoids partial-save races and per-keystroke chatter; matches the existing affordance the user already understands.
+
+3. **Hide UI fields that have no schema equivalent.** Direction (Long/Short/Either), Exit signal toggle (separate tree), and per-condition Timeframe disappear from the drawers in the wired editor. Shipping fields the backend can't honor is worse than shipping nothing — the user gets faster feedback about what the system actually does. Each is listed in `STRATEGY_EDITOR_WIRING_PLAN.md` § "Out of scope" with the lift conditions.
+
+4. **Indicator-period control becomes a constrained selector, not a free integer.** SMA period → dropdown of `[20, 50, 200]` mapping to enum variants. EMA → `[12, 26]`. RSI → static `14` label (single enum). Other indicators (MACD, BB, ATR, ADX, …) → no period field. Free integers create save errors with no path to success.
+
+5. **Two PRs, not one.** PR-1 lands phases 1–4 (state lift, controlled drawers, serializer, save). PR-2 lands phases 5–7 (CRUD, name edit, indicator picker). Rationale: PR-1 is the minimum that converts "saved just now" from lie to truth for existing rules; verifying it in production de-risks PR-2's bigger scope.
+
+6. **`buildUpdateBody` is a pure function.** Round-trip equality is testable in isolation: hydrate `RuleNode[]` from a `StrategyResponse`, serialize with the function, assert deep-equal on `entry_rules` / `exit_rules` / `position_sizing`. This is the regression net for every mapping change.
+
+**Why this is acceptable**.
+- The user report confirms the current state is *worse* than honest hidden behavior: the UI lies. Lifting the deferral is mandatory; the only question is what to ship.
+- Every UI element that disappears has a one-line documented reason in `STRATEGY_EDITOR_WIRING_PLAN.md` § "Out of scope" with a lift trigger.
+- The flat-schema decision matches what the wizard already produces. We are aligning the editor to the wizard's reality, not designing a new contract.
+- The two-PR split keeps PR-1 reviewable in one cycle (~70% rewrite of `editor-view.tsx`) and lets us see real user feedback on the round-trip before doing CRUD.
+
+**Cost of being wrong**.
+- If "flat is too restrictive": users will ask for nested OR-groups within ~10 strategies. The fix is a backend schema migration that's better designed once we see real strategies people actually want to express. We won't have wasted code — flat is a strict subset of nested.
+- If "explicit save is too coarse": users will ask for auto-save. Trivial to add — `useEffect(() => debounce(save), [dirty])` is ~10 lines on top of phase 4's plumbing.
+- If "hide direction was wrong": users will ask for Short. That requires backend shorting infra anyway, so the UI was correctly hidden until the engine catches up.
+
+**Implemented**: planned. PR-1 begins next session.
+
+**Cross-references**:
+- `STRATEGY_EDITOR_WIRING_PLAN.md` — full phased plan with file/line targets.
+- ADR-9 §2 — the deferral this lifts.
+- `backend/app/schemas/strategy.py` — the canonical schema.
+- `app/strategies/[id]/editor-view.tsx` — the file ~70% rewritten by this work.
+
+---
+
 ## Deferred (no ADR, captured for completeness)
 
 - **`useActionState` / `useFormStatus` / `useOptimistic` for wizards**. The `strategies/new` and `bots/new` wizards currently use `onClick` + step state, not `<form>` / `onSubmit`. React 19's form primitives only help when an async server action backs the submit. **Revisit when** the first wizard step wires to a real `action` — at that moment, migrate the whole wizard (not incrementally).
