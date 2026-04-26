@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { AppFrame } from "@/components/frame";
@@ -241,15 +242,19 @@ function SortBar({
 
 function BacktestTable({ rows }: { rows: BacktestIndexRow[] }) {
   const T = useT();
+  const router = useRouter();
+  // Compact, fits comfortably without horizontal scroll. Whole row is the
+  // affordance — clicking opens results, or kicks off a first run for
+  // strategies that haven't been backtested yet.
   const cols: Col[] = [
-    { label: "strategy", width: "1.6fr", primary: true, mono: false },
+    { label: "strategy", width: "1.5fr", primary: true, mono: false },
     { label: "status", width: "100px" },
-    { label: "total return", align: "right", width: "120px" },
-    { label: "sharpe", align: "right", width: "80px" },
+    { label: "total return", align: "right", width: "100px" },
+    { label: "sharpe", align: "right", width: "70px" },
     { label: "max DD", align: "right", width: "80px" },
-    { label: "trades", align: "right", width: "80px" },
-    { label: "ran", width: "120px", mobileFullWidth: true },
-    { label: "", width: "140px", mobileFullWidth: true },
+    { label: "trades", align: "right", width: "70px" },
+    { label: "ran", align: "right", width: "100px", mobileFullWidth: true },
+    { label: "", width: "32px", align: "right" },
   ];
 
   type Cell = ReactNode | string | number;
@@ -267,8 +272,7 @@ function BacktestTable({ rows }: { rows: BacktestIndexRow[] }) {
       maxDD === null ? "—" : `${maxDD.toFixed(1)}%`,
       trades === null ? "—" : trades.toLocaleString(),
       r.ranLabel,
-      // Action cell: link wrapper rendered in renderCell.
-      r.id,
+      r.totalTrades === null ? "▸" : "→",
     ];
   });
 
@@ -276,16 +280,20 @@ function BacktestTable({ rows }: { rows: BacktestIndexRow[] }) {
     <TerminalTable
       cols={cols}
       rows={data}
+      onRowClick={(_, ri) => {
+        const row = rows[ri];
+        const hasRun = row.totalTrades !== null;
+        router.push(
+          hasRun
+            ? `/backtest?strategy_id=${row.id}`
+            : `/backtest?strategy_id=${row.id}&run=1`,
+        );
+      }}
       renderCell={(cell, ci, ri) => {
         const row = rows[ri];
         if (ci === 0) {
           return (
-            <Link
-              href={`/backtest?strategy_id=${row.id}`}
-              style={{ color: T.text, textDecoration: "none", fontWeight: 500 }}
-            >
-              {cell as ReactNode}
-            </Link>
+            <span style={{ color: T.text, fontWeight: 500 }}>{cell as ReactNode}</span>
           );
         }
         if (ci === 1) {
@@ -316,20 +324,12 @@ function BacktestTable({ rows }: { rows: BacktestIndexRow[] }) {
           );
         }
         if (ci === 7) {
+          // Glyph affordance: → for "open results", ▸ for "run first backtest".
           const hasRun = row.totalTrades !== null;
           return (
-            <Link
-              href={
-                hasRun
-                  ? `/backtest?strategy_id=${row.id}`
-                  : `/backtest?strategy_id=${row.id}&run=1`
-              }
-              style={{ textDecoration: "none" }}
-            >
-              <Btn variant={hasRun ? "ghost" : "outline"} size="sm">
-                {hasRun ? "Open results →" : "Run first backtest →"}
-              </Btn>
-            </Link>
+            <span style={{ color: hasRun ? T.text3 : T.primaryLight, fontSize: 13 }}>
+              {cell as ReactNode}
+            </span>
           );
         }
         return cell as ReactNode;
