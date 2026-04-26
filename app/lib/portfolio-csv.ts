@@ -10,7 +10,10 @@ export interface OpenPosition {
   sym: string;
   qty: number;
   entry: number;
-  now: number;
+  // null when the backend has no EOD price for this symbol yet — UI renders
+  // "—" for now/value/pnl in that case rather than pretending the row is at
+  // entry-price (which would mis-report unrealized pnl as 0).
+  now: number | null;
   source: TradeSource;
   strat: string | null;
   date: string;
@@ -60,7 +63,9 @@ export function toCSV(open: OpenPosition[], closed: ClosedTrade[]): string {
         p.sym,
         p.qty,
         p.entry,
-        p.now,
+        // Empty cell when no EOD price; csvEscape("") → "" preserves an
+        // importable round-trip (empty cell maps back to null on import).
+        p.now ?? "",
         p.source,
         p.strat ?? "",
         p.date,
@@ -168,12 +173,18 @@ export function fromCSV(text: string): { open: OpenPosition[]; closed: ClosedTra
     if (!sym) continue;
     if (type === "open") {
       const entry = num(cols, iEntry);
+      // Empty/missing now_or_exit cell ⇒ null (unknown current price);
+      // a present-but-zero cell is also treated as null (a real "0" would
+      // be invalid market data and trips the same UI affordance).
+      const nowRaw = iNowExit >= 0 ? cols[iNowExit] : "";
+      const nowParsed = nowRaw ? Number(nowRaw) : NaN;
+      const nowVal = Number.isFinite(nowParsed) && nowParsed > 0 ? nowParsed : null;
       open.push({
         id: newId("p"),
         sym,
         qty: Math.max(1, Math.round(num(cols, iQty))),
         entry,
-        now: num(cols, iNowExit, entry) || entry,
+        now: nowVal,
         source: src(cols),
         strat: str(cols, iStrat) || null,
         date: str(cols, iDate) || todayLabel(),

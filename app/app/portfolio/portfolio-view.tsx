@@ -80,7 +80,12 @@ function backendReason(r: CloseReason): JournalCloseReason {
 
 function adaptPosition(p: OpenPositionResponse): OpenPosition {
   const entry = num(p.entry_price);
-  const now = p.current_price === null || p.current_price === undefined ? entry : num(p.current_price, entry);
+  // Mirrors the same null-passthrough in app/portfolio/page.tsx — see the
+  // comment there for the "no EOD row yet" rationale.
+  const now =
+    p.current_price === null || p.current_price === undefined
+      ? null
+      : num(p.current_price, entry);
   return {
     id: String(p.id),
     sym: p.symbol,
@@ -449,8 +454,14 @@ function Body({
   const { bp, isMobile } = useBreakpoint();
   const padX = pick(bp, PAD.page);
 
-  const totalCost = positions.reduce((s, p) => s + p.entry * p.qty, 0);
-  const totalValue = positions.reduce((s, p) => s + p.now * p.qty, 0);
+  // Totals only account for positions with a known current_price. An
+  // unpriced row (no EOD data yet) can't contribute a meaningful market
+  // value or unrealized pnl, so it's excluded from the aggregate rather
+  // than silently treated as flat-at-entry.
+  const pricedPositions = positions.filter((p) => p.now !== null);
+  const unpricedCount = positions.length - pricedPositions.length;
+  const totalCost = pricedPositions.reduce((s, p) => s + p.entry * p.qty, 0);
+  const totalValue = pricedPositions.reduce((s, p) => s + (p.now as number) * p.qty, 0);
   const unrealized = totalValue - totalCost;
   const unrealizedPct = totalCost ? (unrealized / totalCost) * 100 : 0;
   const realizedYTD = closed.reduce((s, t) => s + t.pnl, 0);
@@ -497,6 +508,11 @@ function Body({
                 {unrealized >= 0 ? "+" : ""}
                 {unrealized.toLocaleString()} unrealized
               </span>
+              {unpricedCount > 0 && (
+                <span style={{ color: T.text3 }}>
+                  {unpricedCount} awaiting price
+                </span>
+              )}
               <span style={{ color: T.text3 }}>last updated manually · just now</span>
             </>
           )
@@ -879,12 +895,16 @@ function buildSectors(
   T: Tokens,
   sectorMap: Record<string, string>,
 ): Array<[string, number, string]> {
-  if (!positions.length) return [];
+  // Allocation by market value — unpriced rows have no defined value, so
+  // they're excluded entirely. The "X awaiting price" note in the header
+  // already surfaces their existence to the user.
+  const priced = positions.filter((p) => p.now !== null);
+  if (!priced.length) return [];
   const totals: Record<string, number> = {};
   let grand = 0;
-  for (const p of positions) {
+  for (const p of priced) {
     const sector = sectorMap[p.sym] ?? "Other";
-    const v = p.now * p.qty;
+    const v = (p.now as number) * p.qty;
     totals[sector] = (totals[sector] ?? 0) + v;
     grand += v;
   }
@@ -917,9 +937,13 @@ function OpenPositionsTable({
     { label: "held", align: "right", width: "70px" },
   ];
   const tableRows: unknown[][] = rows.map((p) => {
-    const pnl = (p.now - p.entry) * p.qty;
-    const ret = ((p.now - p.entry) / p.entry) * 100;
-    return [p.sym, p, p.qty, p.entry, p.now, p.entry * p.qty, p.now * p.qty, pnl, ret, p.date];
+    // null now ⇒ no current price ⇒ no value/pnl/return; render the cell
+    // sentinel that renderCell turns into a muted em-dash. Cost (entry × qty)
+    // is always knowable from logged data and stays numeric.
+    const value = p.now === null ? null : p.now * p.qty;
+    const pnl = p.now === null ? null : (p.now - p.entry) * p.qty;
+    const ret = p.now === null ? null : ((p.now - p.entry) / p.entry) * 100;
+    return [p.sym, p, p.qty, p.entry, p.now, p.entry * p.qty, value, pnl, ret, p.date];
   });
   if (!rows.length) {
     return (
@@ -944,6 +968,12 @@ function OpenPositionsTable({
       rows={tableRows}
       onRowClick={(_, ri) => onRowClick(rows[ri])}
       renderCell={(cell, ci) => {
+        // Cells with cell === null (now/value/pnl/return for an unpriced
+        // row) render as a muted em-dash so the row stays parseable but
+        // doesn't fake a 0% return.
+        const dash = (
+          <span style={{ color: T.text3, fontStyle: "italic" }}>—</span>
+        );
         if (ci === 0)
           return <span style={{ color: T.text, fontWeight: 500 }}>{cell as ReactNode}</span>;
         if (ci === 1) {
@@ -958,11 +988,18 @@ function OpenPositionsTable({
           return <span style={{ color: T.text3, fontSize: 11 }}>manual</span>;
         }
         if (ci === 2) return <span style={{ color: T.text2 }}>{(cell as number).toLocaleString()}</span>;
-        if (ci === 3 || ci === 4)
+        if (ci === 3) return <span style={{ color: T.text2 }}>{(cell as number).toFixed(2)}</span>;
+        if (ci === 4) {
+          if (cell === null) return dash;
           return <span style={{ color: T.text2 }}>{(cell as number).toFixed(2)}</span>;
+        }
         if (ci === 5) return <span style={{ color: T.text3 }}>{(cell as number).toLocaleString()}</span>;
-        if (ci === 6) return <span style={{ color: T.text }}>{(cell as number).toLocaleString()}</span>;
+        if (ci === 6) {
+          if (cell === null) return dash;
+          return <span style={{ color: T.text }}>{(cell as number).toLocaleString()}</span>;
+        }
         if (ci === 7) {
+          if (cell === null) return dash;
           const n = cell as number;
           return (
             <span style={{ color: n >= 0 ? T.gain : T.loss }}>
@@ -972,6 +1009,7 @@ function OpenPositionsTable({
           );
         }
         if (ci === 8) {
+          if (cell === null) return dash;
           const n = cell as number;
           return (
             <span style={{ color: n >= 0 ? T.gain : T.loss }}>
@@ -1363,7 +1401,12 @@ function ClosePositionModal({
   onSubmit: (p: OpenPosition, exit: number, reason: CloseReason) => Promise<boolean>;
 }) {
   const T = useT();
-  const [exit, setExit] = useState(position.now.toFixed(2));
+  // Default the exit field to the latest known price; if the row has no
+  // current_price (unpriced), fall back to entry so the user has a
+  // sensible numeric starting point and can edit before submitting.
+  const [exit, setExit] = useState(
+    (position.now ?? position.entry).toFixed(2),
+  );
   const [reason, setReason] = useState<CloseReason>("Manual close");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);

@@ -43,9 +43,14 @@ function mapCloseReason(r: JournalCloseReason): CloseReason {
 
 function mapPosition(p: OpenPositionResponse): OpenPosition {
   const entry = num(p.entry_price);
-  // current_price falls back to entry so the UI's now-vs-entry math still
-  // renders 0% PnL (instead of -100%) when no EOD data exists yet.
-  const now = p.current_price === null || p.current_price === undefined ? entry : num(p.current_price, entry);
+  // null current_price ⇒ the backend has no EOD row for this symbol yet
+  // (e.g. just-listed ticker, or a brief gap before the next EOD pipeline
+  // run). Pass null through; the UI renders "—" for now/value/pnl in that
+  // case instead of pretending the row is at entry-price.
+  const now =
+    p.current_price === null || p.current_price === undefined
+      ? null
+      : num(p.current_price, entry);
   return {
     id: String(p.id),
     sym: p.symbol,
