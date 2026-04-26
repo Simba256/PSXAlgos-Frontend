@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
@@ -20,6 +20,73 @@ import {
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
 import { enqueueSignalTrade } from "@/lib/signal-log-bridge";
+
+type DirectionFilter = "ALL" | "BUY" | "SELL";
+
+interface FilterCriteria {
+  direction: DirectionFilter;
+  symbolSearch: string;
+  rsiMin: number;
+  rsiMax: number;
+  strategies: string[]; // empty = all strategies
+}
+
+const DEFAULT_FILTER: FilterCriteria = {
+  direction: "ALL",
+  symbolSearch: "",
+  rsiMin: 0,
+  rsiMax: 100,
+  strategies: [],
+};
+
+function isFilterActive(f: FilterCriteria): boolean {
+  return (
+    f.direction !== "ALL" ||
+    f.symbolSearch.trim() !== "" ||
+    f.rsiMin !== 0 ||
+    f.rsiMax !== 100 ||
+    f.strategies.length > 0
+  );
+}
+
+function applyFilter(signals: Signal[], f: FilterCriteria): Signal[] {
+  const search = f.symbolSearch.trim().toLowerCase();
+  return signals.filter((s) => {
+    if (f.direction !== "ALL" && s.dir !== f.direction) return false;
+    if (search && !s.symbol.toLowerCase().includes(search)) return false;
+    if (s.rsi < f.rsiMin || s.rsi > f.rsiMax) return false;
+    if (f.strategies.length > 0 && !f.strategies.includes(s.strategy)) return false;
+    return true;
+  });
+}
+
+function exportSignalsCsv(signals: Signal[]): void {
+  const escape = (v: string) => `"${v.replace(/"/g, '""')}"`;
+  const header = ["time", "strategy", "symbol", "direction", "price", "rsi", "conf", "age", "logged"];
+  const rows = signals.map((s) =>
+    [
+      escape(s.time),
+      escape(s.strategy),
+      escape(s.symbol),
+      s.dir,
+      s.price.toFixed(2),
+      String(s.rsi),
+      s.conf.toFixed(2),
+      escape(s.age),
+      s.logged ? "yes" : "no",
+    ].join(","),
+  );
+  const csv = [header.join(","), ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `signals-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 export interface Signal {
   id: string;
@@ -41,8 +108,17 @@ const todayLabel = (): string => {
 
 export function SignalsView({ initialSignals }: { initialSignals: Signal[] }) {
   const [signals, setSignals] = useState<Signal[]>(initialSignals);
+  const [filter, setFilter] = useState<FilterCriteria>(DEFAULT_FILTER);
+  const [filterOpen, setFilterOpen] = useState(false);
   const [openSignal, setOpenSignal] = useState<Signal | null>(null);
   const { flash, setFlash } = useFlash();
+
+  const filteredSignals = useMemo(() => applyFilter(signals, filter), [signals, filter]);
+  const filterActive = isFilterActive(filter);
+  const availableStrategies = useMemo(
+    () => Array.from(new Set(signals.map((s) => s.strategy))).sort(),
+    [signals],
+  );
 
   function handleLogged(sig: Signal, qty: number) {
     enqueueSignalTrade({
@@ -61,16 +137,51 @@ export function SignalsView({ initialSignals }: { initialSignals: Signal[] }) {
     setFlash(`Logged ${sig.symbol} · ${qty.toLocaleString()} @ ${sig.price.toFixed(2)} to portfolio`);
   }
 
+  function handleExport() {
+    if (filteredSignals.length === 0) {
+      setFlash("No signals to export");
+      return;
+    }
+    exportSignalsCsv(filteredSignals);
+    setFlash(`Exported ${filteredSignals.length} signal${filteredSignals.length === 1 ? "" : "s"} to CSV`);
+  }
+
+  function handleApplyFilter(next: FilterCriteria) {
+    setFilter(next);
+    setFilterOpen(false);
+    if (isFilterActive(next)) {
+      setFlash("Filter applied");
+    } else {
+      setFlash("Filter cleared");
+    }
+  }
+
   const loggedCount = signals.filter((s) => s.logged).length;
 
   return (
     <AppFrame route="/signals">
-      <Body signals={signals} loggedCount={loggedCount} onLog={setOpenSignal} />
+      <Body
+        signals={filteredSignals}
+        totalCount={signals.length}
+        filterActive={filterActive}
+        loggedCount={loggedCount}
+        onLog={setOpenSignal}
+        onOpenFilter={() => setFilterOpen(true)}
+        onExport={handleExport}
+      />
       {openSignal && (
         <LogTradeModal
           signal={openSignal}
           onClose={() => setOpenSignal(null)}
           onLogged={handleLogged}
+        />
+      )}
+      {filterOpen && (
+        <FilterModal
+          initial={filter}
+          strategies={availableStrategies}
+          onClose={() => setFilterOpen(false)}
+          onApply={handleApplyFilter}
         />
       )}
       {flash && <FlashToast message={flash} />}
@@ -80,12 +191,20 @@ export function SignalsView({ initialSignals }: { initialSignals: Signal[] }) {
 
 function Body({
   signals,
+  totalCount,
+  filterActive,
   loggedCount,
   onLog,
+  onOpenFilter,
+  onExport,
 }: {
   signals: Signal[];
+  totalCount: number;
+  filterActive: boolean;
   loggedCount: number;
   onLog: (s: Signal) => void;
+  onOpenFilter: () => void;
+  onExport: () => void;
 }) {
   const T = useT();
   const { bp } = useBreakpoint();
@@ -131,19 +250,29 @@ function Body({
               <span style={{ color: T.text2 }}>09:58:12 PKT</span>
             </span>
             <span>
-              {signals.length} signals · {new Set(signals.map((s) => s.symbol)).size} symbols
+              {filterActive ? `${signals.length} of ${totalCount}` : `${signals.length}`} signals ·{" "}
+              {new Set(signals.map((s) => s.symbol)).size} symbols
             </span>
-            <span>
-              {loggedCount} logged to portfolio
-            </span>
+            <span>{loggedCount} logged to portfolio</span>
           </>
         }
         actions={
           <>
-            <Btn variant="ghost" size="sm">
-              Filter
+            <Btn
+              variant={filterActive ? "primary" : "ghost"}
+              size="sm"
+              onClick={onOpenFilter}
+              title="Filter signals"
+            >
+              {filterActive ? "Filter ●" : "Filter"}
             </Btn>
-            <Btn variant="outline" size="sm">
+            <Btn
+              variant="outline"
+              size="sm"
+              onClick={onExport}
+              title="Export signals to CSV"
+              disabled={signals.length === 0}
+            >
               Export
             </Btn>
           </>
@@ -476,6 +605,248 @@ function ModalField({ label, value, suffix }: { label: string; value: string; su
           <span style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3 }}>{suffix}</span>
         )}
       </div>
+    </div>
+  );
+}
+
+function FilterModal({
+  initial,
+  strategies,
+  onClose,
+  onApply,
+}: {
+  initial: FilterCriteria;
+  strategies: string[];
+  onClose: () => void;
+  onApply: (next: FilterCriteria) => void;
+}) {
+  const T = useT();
+  const [draft, setDraft] = useState<FilterCriteria>(initial);
+
+  function setField<K extends keyof FilterCriteria>(key: K, value: FilterCriteria[K]) {
+    setDraft((d) => ({ ...d, [key]: value }));
+  }
+
+  function toggleStrategy(name: string) {
+    setDraft((d) => {
+      const next = d.strategies.includes(name)
+        ? d.strategies.filter((s) => s !== name)
+        : [...d.strategies, name];
+      return { ...d, strategies: next };
+    });
+  }
+
+  const dirOptions: { value: DirectionFilter; label: string }[] = [
+    { value: "ALL", label: "All" },
+    { value: "BUY", label: "Buy" },
+    { value: "SELL", label: "Sell" },
+  ];
+
+  return (
+    <Modal onClose={onClose} width={560} label="Filter signals">
+      <div style={{ padding: "22px 26px 10px" }}>
+        <Kicker color={T.primaryLight}>refine the feed</Kicker>
+        <h2
+          style={{
+            fontFamily: T.fontHead,
+            fontSize: 26,
+            fontWeight: 500,
+            margin: "10px 0 4px",
+            letterSpacing: -0.5,
+          }}
+        >
+          Filter <span style={{ fontStyle: "italic", color: T.primaryLight }}>signals</span>
+        </h2>
+        <div style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
+          combine criteria · matches all selected
+        </div>
+      </div>
+
+      <div style={{ padding: "14px 26px", display: "flex", flexDirection: "column", gap: 16 }}>
+        <div>
+          <Kicker>Direction</Kicker>
+          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+            {dirOptions.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setField("direction", opt.value)}
+                style={{
+                  flex: 1,
+                  padding: "8px 12px",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontFamily: T.fontSans,
+                  fontSize: 12.5,
+                  fontWeight: 500,
+                  background: draft.direction === opt.value ? T.primary : T.surface,
+                  color: draft.direction === opt.value ? "#fff" : T.text2,
+                  border: `1px solid ${
+                    draft.direction === opt.value ? T.primary : T.outlineFaint
+                  }`,
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <Kicker>Symbol contains</Kicker>
+          <input
+            type="text"
+            value={draft.symbolSearch}
+            onChange={(e) => setField("symbolSearch", e.target.value)}
+            placeholder="e.g. ENGRO"
+            style={{
+              marginTop: 8,
+              width: "100%",
+              padding: "10px 12px",
+              background: T.surface,
+              border: `1px solid ${T.outlineFaint}`,
+              borderRadius: 8,
+              fontFamily: T.fontMono,
+              fontSize: 13,
+              color: T.text,
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
+        </div>
+
+        <div>
+          <Kicker>RSI range</Kicker>
+          <div
+            style={{
+              marginTop: 8,
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 10,
+            }}
+          >
+            <RangeInput
+              label="min"
+              value={draft.rsiMin}
+              onChange={(n) => setField("rsiMin", n)}
+            />
+            <RangeInput
+              label="max"
+              value={draft.rsiMax}
+              onChange={(n) => setField("rsiMax", n)}
+            />
+          </div>
+        </div>
+
+        {strategies.length > 0 && (
+          <div>
+            <Kicker>Strategies {draft.strategies.length === 0 && "(all)"}</Kicker>
+            <div
+              style={{
+                marginTop: 8,
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 6,
+              }}
+            >
+              {strategies.map((name) => {
+                const on = draft.strategies.includes(name);
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => toggleStrategy(name)}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: 999,
+                      cursor: "pointer",
+                      fontFamily: T.fontSans,
+                      fontSize: 11.5,
+                      fontWeight: 500,
+                      background: on ? T.primary : T.surface,
+                      color: on ? "#fff" : T.text2,
+                      border: `1px solid ${on ? T.primary : T.outlineFaint}`,
+                    }}
+                  >
+                    {on ? "✓ " : ""}
+                    {name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div
+        style={{
+          padding: 16,
+          borderTop: `1px solid ${T.outlineFaint}`,
+          display: "flex",
+          gap: 8,
+        }}
+      >
+        <Btn variant="ghost" size="sm" onClick={() => setDraft(DEFAULT_FILTER)}>
+          Reset
+        </Btn>
+        <div style={{ flex: 1 }} />
+        <Btn variant="outline" size="sm" onClick={onClose}>
+          Cancel
+        </Btn>
+        <Btn variant="primary" size="sm" onClick={() => onApply(draft)}>
+          Apply filter →
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function RangeInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (n: number) => void;
+}) {
+  const T = useT();
+  return (
+    <div
+      style={{
+        padding: "8px 12px",
+        background: T.surface,
+        borderRadius: 8,
+        boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+      }}
+    >
+      <span style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3 }}>{label}</span>
+      <input
+        type="number"
+        min={0}
+        max={100}
+        value={value}
+        onChange={(e) => {
+          const raw = Number(e.target.value);
+          if (Number.isNaN(raw)) return;
+          onChange(Math.max(0, Math.min(100, raw)));
+        }}
+        style={{
+          flex: 1,
+          background: "transparent",
+          border: "none",
+          outline: "none",
+          fontFamily: T.fontMono,
+          fontSize: 13,
+          color: T.text,
+          textAlign: "right",
+          width: "100%",
+          minWidth: 0,
+        }}
+      />
     </div>
   );
 }
