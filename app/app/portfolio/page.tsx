@@ -101,6 +101,14 @@ export default async function PortfolioPage() {
     .filter((s) => s.is_active && s.symbol)
     .map((s) => ({ symbol: s.symbol, name: s.name ?? null }));
 
+  // Build a symbol → sector_name lookup from the same /stocks payload that
+  // already feeds the symbol autocomplete. Replaces a hardcoded ~25-entry
+  // SECTOR_MAP that bucketed every other ticker as "Other".
+  const sectorMap: Record<string, string> = {};
+  for (const s of stocks) {
+    if (s.symbol && s.sector_name) sectorMap[s.symbol] = s.sector_name;
+  }
+
   const strategyOptions: StrategyOption[] = strategies.items.map((s) => ({
     id: s.id,
     name: s.name,
@@ -113,6 +121,7 @@ export default async function PortfolioPage() {
       initialClosed={closedRes.trades.map(mapClosed)}
       symbolOptions={symbolOptions}
       strategyOptions={strategyOptions}
+      sectorMap={sectorMap}
     />
   );
 }

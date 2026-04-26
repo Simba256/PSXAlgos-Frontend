@@ -135,21 +135,19 @@ async function readError(resp: Response): Promise<string> {
   return `HTTP ${resp.status}`;
 }
 
-/* ────────── Sector metadata ────────── */
-
-const SECTOR_MAP: Record<string, string> = {
-  OGDC: "Oil & Gas", PPL: "Oil & Gas", POL: "Oil & Gas", MARI: "Oil & Gas",
-  LUCK: "Cement", DGKC: "Cement", MLCF: "Cement", FCCL: "Cement",
-  HBL: "Banks", UBL: "Banks", MCB: "Banks", NBP: "Banks", BAFL: "Banks", BAHL: "Banks", MEBL: "Banks",
-  FFC: "Fertilizer", FFBL: "Fertilizer", ENGRO: "Fertilizer", EFERT: "Fertilizer",
-  PSO: "Oil Marketing", SHEL: "Oil Marketing", APL: "Oil Marketing",
-};
+/* ────────── Sector palette ──────────
+ * Sector names themselves come from the backend /stocks payload (joined by
+ * symbol via the sectorMap prop). The palette below colors a curated set
+ * of large PSX sectors; anything outside it falls back to T.text3, which
+ * matches the previous "Other" treatment. Add entries here if a sector
+ * shows up frequently enough to deserve its own color.
+ */
 const SECTOR_COLOR = (T: Tokens): Record<string, string> => ({
-  "Oil & Gas": T.primary,
+  "Oil & Gas Exploration Companies": T.primary,
+  "Oil & Gas Marketing Companies": T.primaryLight,
   "Cement": T.accent,
-  "Banks": T.deploy,
+  "Commercial Banks": T.deploy,
   "Fertilizer": T.warning,
-  "Oil Marketing": T.primaryLight,
   "Other": T.text3,
 });
 
@@ -171,6 +169,8 @@ interface PortfolioViewProps {
   initialClosed: ClosedTrade[];
   symbolOptions: SymbolOption[];
   strategyOptions: StrategyOption[];
+  // symbol → sector_name from /stocks. Missing entries fall back to "Other".
+  sectorMap: Record<string, string>;
 }
 
 export function PortfolioView({
@@ -178,6 +178,7 @@ export function PortfolioView({
   initialClosed,
   symbolOptions,
   strategyOptions,
+  sectorMap,
 }: PortfolioViewProps) {
   const [positions, setPositions] = useState<OpenPosition[]>(initialPositions);
   const [closed, setClosed] = useState<ClosedTrade[]>(initialClosed);
@@ -390,6 +391,7 @@ export function PortfolioView({
         onImport={triggerImport}
         onRowClick={(p) => setCloseTarget(p)}
         flash={flash}
+        sectorMap={sectorMap}
       />
       {logOpen && (
         <LogTradeModal
@@ -429,6 +431,7 @@ interface BodyProps {
   onImport: () => void;
   onRowClick: (p: OpenPosition) => void;
   flash: string | null;
+  sectorMap: Record<string, string>;
 }
 
 function Body({
@@ -440,6 +443,7 @@ function Body({
   onImport,
   onRowClick,
   flash,
+  sectorMap,
 }: BodyProps) {
   const T = useT();
   const { bp, isMobile } = useBreakpoint();
@@ -458,7 +462,10 @@ function Body({
   const attribution = useMemo(() => buildAttribution(positions, closed), [positions, closed]);
   const signalEdgePkr = attribution.signal.pnl - attribution.manual.pnl;
 
-  const sectors = useMemo(() => buildSectors(positions, T), [positions, T]);
+  const sectors = useMemo(
+    () => buildSectors(positions, T, sectorMap),
+    [positions, T, sectorMap],
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
@@ -870,12 +877,13 @@ function AttributionObservation({
 function buildSectors(
   positions: OpenPosition[],
   T: Tokens,
+  sectorMap: Record<string, string>,
 ): Array<[string, number, string]> {
   if (!positions.length) return [];
   const totals: Record<string, number> = {};
   let grand = 0;
   for (const p of positions) {
-    const sector = SECTOR_MAP[p.sym] ?? "Other";
+    const sector = sectorMap[p.sym] ?? "Other";
     const v = p.now * p.qty;
     totals[sector] = (totals[sector] ?? 0) + v;
     grand += v;
