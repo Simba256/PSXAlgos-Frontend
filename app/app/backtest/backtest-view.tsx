@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
 import type {
+  BacktestEquityPoint,
   BacktestResultResponse,
   BacktestJobPending,
   BacktestJobStatus,
@@ -60,6 +61,39 @@ function formatRan(ms: number): string {
   if (s < 60) return `${s}s ago`;
   const m = Math.round(s / 60);
   return `${m}m ago`;
+}
+
+// Bucket equity_curve by year-month, take the last close per month, then
+// compute month-over-month % change. Backend doesn't ship monthly_returns
+// directly so we derive it here. Returns the most recent 12 buckets.
+function computeMonthlyReturns(
+  equity_curve: BacktestEquityPoint[] | null | undefined,
+): Array<{ label: string; pct: number }> {
+  if (!equity_curve || equity_curve.length === 0) return [];
+  const buckets = new Map<string, { date: Date; equity: number }>();
+  for (const p of equity_curve) {
+    const d = new Date(p.date);
+    if (Number.isNaN(d.getTime())) continue;
+    const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, "0")}`;
+    const eq = num(p.equity);
+    const prev = buckets.get(key);
+    if (!prev || d > prev.date) buckets.set(key, { date: d, equity: eq });
+  }
+  const sorted = Array.from(buckets.values()).sort(
+    (a, b) => a.date.getTime() - b.date.getTime(),
+  );
+  const out: Array<{ label: string; pct: number }> = [];
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1].equity;
+    const cur = sorted[i].equity;
+    if (prev <= 0) continue;
+    const pct = (cur / prev - 1) * 100;
+    const label = sorted[i].date
+      .toLocaleDateString("en-US", { month: "short" })
+      .charAt(0);
+    out.push({ label, pct });
+  }
+  return out.slice(-12);
 }
 
 function resultToTrades(result: BacktestResultResponse | null): Trade[] {
@@ -242,6 +276,10 @@ export function BacktestView({
   const profitFactor = num(result?.profit_factor);
   const avgHold = num(result?.avg_holding_days);
   const equityValues = result?.equity_curve?.map((p) => num(p.equity)) ?? [];
+  const monthlyReturns = useMemo(
+    () => computeMonthlyReturns(result?.equity_curve ?? null),
+    [result?.equity_curve],
+  );
   const slug = strategyId != null ? String(strategyId) : "—";
   const dateRange = result
     ? `${formatDateLabel(result.start_date)} → ${formatDateLabel(result.end_date)}`
@@ -419,149 +457,132 @@ export function BacktestView({
                   </div>
                 )}
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  fontSize: 10,
-                  color: T.text3,
-                  fontFamily: T.fontMono,
-                  marginTop: 4,
-                }}
-              >
-                <span>Apr &apos;25</span>
-                <span>Jul &apos;25</span>
-                <span>Oct &apos;25</span>
-                <span>Jan &apos;26</span>
-                <span>Apr &apos;26</span>
-              </div>
+              {result?.equity_curve && result.equity_curve.length > 1 && (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    fontSize: 10,
+                    color: T.text3,
+                    fontFamily: T.fontMono,
+                    marginTop: 4,
+                  }}
+                >
+                  {(() => {
+                    const c = result.equity_curve!;
+                    const fmt = (iso: string) => {
+                      const d = new Date(iso);
+                      return Number.isNaN(d.getTime())
+                        ? iso
+                        : d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+                    };
+                    const ticks = 5;
+                    return Array.from({ length: ticks }, (_, i) => {
+                      const idx = Math.round((i * (c.length - 1)) / (ticks - 1));
+                      return <span key={i}>{fmt(c[idx].date)}</span>;
+                    });
+                  })()}
+                </div>
+              )}
 
               <div style={{ marginTop: 36 }}>
                 <Ribbon kicker="monthly returns" />
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(12, 1fr)",
-                    gap: 4,
-                    marginTop: 12,
-                    alignItems: "end",
-                  }}
-                >
-                  {[2.1, -1.4, 3.2, 0.8, -2.1, 1.7, 2.9, -0.5, 4.1, -1.2, 2.3, 2.6].map((v, i) => (
-                    <div key={i} style={{ textAlign: "center" }}>
-                      <div
-                        style={{
-                          height: 16 + Math.abs(v) * 8,
-                          background: v >= 0 ? T.gain : T.loss,
-                          opacity: 0.65,
-                          borderRadius: 2,
-                        }}
-                      />
-                      <div
-                        style={{
-                          fontFamily: T.fontMono,
-                          fontSize: 9.5,
-                          color: T.text3,
-                          marginTop: 4,
-                        }}
-                      >
-                        {v >= 0 ? "+" : ""}
-                        {v.toFixed(1)}
+                {monthlyReturns.length > 0 ? (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: `repeat(${monthlyReturns.length}, 1fr)`,
+                      gap: 4,
+                      marginTop: 12,
+                      alignItems: "end",
+                    }}
+                  >
+                    {monthlyReturns.map((m, i) => (
+                      <div key={i} style={{ textAlign: "center" }}>
+                        <div
+                          style={{
+                            height: 16 + Math.min(Math.abs(m.pct), 20) * 8,
+                            background: m.pct >= 0 ? T.gain : T.loss,
+                            opacity: 0.65,
+                            borderRadius: 2,
+                          }}
+                        />
+                        <div
+                          style={{
+                            fontFamily: T.fontMono,
+                            fontSize: 9.5,
+                            color: T.text3,
+                            marginTop: 4,
+                          }}
+                        >
+                          {m.pct >= 0 ? "+" : ""}
+                          {m.pct.toFixed(1)}
+                        </div>
+                        <div
+                          style={{
+                            fontFamily: T.fontMono,
+                            fontSize: 9,
+                            color: T.text3,
+                            marginTop: 2,
+                          }}
+                        >
+                          {m.label}
+                        </div>
                       </div>
-                      <div
-                        style={{
-                          fontFamily: T.fontMono,
-                          fontSize: 9,
-                          color: T.text3,
-                          marginTop: 2,
-                        }}
-                      >
-                        {["M", "J", "J", "A", "S", "O", "N", "D", "J", "F", "M", "A"][i]}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      marginTop: 12,
+                      height: 56,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontFamily: T.fontMono,
+                      fontSize: 11,
+                      color: T.text3,
+                      border: `1px dashed ${T.outlineFaint}`,
+                      borderRadius: 4,
+                    }}
+                  >
+                    {result
+                      ? "not enough history to derive monthly returns"
+                      : "run a backtest to see monthly returns"}
+                  </div>
+                )}
               </div>
             </div>
 
             <div>
-              <Ribbon kicker="by sector" />
-              <div
-                style={{
-                  marginTop: 6,
-                  display: "grid",
-                  gridTemplateColumns: "minmax(0, 1fr) 90px max-content",
-                }}
-              >
-                {(
-                  [
-                    ["Oil & Gas", 18.2, 9],
-                    ["Banks", 11.4, 8],
-                    ["Cement", 15.1, 6],
-                    ["Fertilizer", 9.8, 5],
-                    ["Power", -2.1, 4],
-                    ["Tech", 4.3, 2],
-                  ] as const
-                ).map(([s, r]) => (
-                  <div
-                    key={s}
-                    style={{
-                      display: "grid",
-                      gridColumn: "1 / -1",
-                      gridTemplateColumns: "subgrid",
-                      alignItems: "center",
-                      gap: 10,
-                      padding: "9px 0",
-                      borderBottom: `1px dotted ${T.outlineFaint}`,
-                      fontSize: 12,
-                    }}
-                  >
-                    <span style={{ color: T.text2 }}>{s}</span>
-                    <div style={{ position: "relative", height: 4, background: T.surface3 }}>
-                      <div
-                        style={{
-                          position: "absolute",
-                          left: r >= 0 ? "50%" : `${50 + r * 2}%`,
-                          width: `${Math.abs(r) * 2.5}%`,
-                          height: 4,
-                          background: r >= 0 ? T.gain : T.loss,
-                        }}
-                      />
-                      <div
-                        style={{
-                          position: "absolute",
-                          left: "50%",
-                          top: -2,
-                          width: 1,
-                          height: 8,
-                          background: T.text3,
-                        }}
-                      />
-                    </div>
-                    <span
-                      style={{
-                        fontFamily: T.fontMono,
-                        color: r >= 0 ? T.gain : T.loss,
-                        fontSize: 11,
-                        textAlign: "right",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {r > 0 ? "+" : ""}
-                      {r}%
-                    </span>
-                  </div>
-                ))}
-              </div>
+              {/* Per-sector breakdown is intentionally omitted: the backend's
+                  BacktestResultResponse doesn't carry a sector decomposition,
+                  and inferring one client-side from result.trades would
+                  require a symbol→sector map we don't load on this page. The
+                  panel that lived here previously rendered hardcoded mock
+                  numbers (Oil & Gas +18.2%, Banks +11.4%…) regardless of the
+                  actual run, which is misleading. Add it back once the
+                  backend exposes a real breakdown. */}
 
-              <div style={{ marginTop: 32 }}>
+              <div>
                 <Ribbon kicker="deploy?" color={T.deploy} />
                 <div
                   style={{ fontSize: 13, color: T.text2, lineHeight: 1.55, marginTop: 6 }}
                 >
-                  Sharpe <span style={{ color: T.text }}>1.84</span> and{" "}
-                  <span style={{ color: T.gain }}>+6.1pp</span> edge over KSE-100. Consider
-                  paper-trading via a Bot before committing capital.
+                  {result ? (
+                    <>
+                      Sharpe{" "}
+                      <span style={{ color: T.text }}>{sharpe.toFixed(2)}</span> ·{" "}
+                      total return{" "}
+                      <span style={{ color: totalReturnPct >= 0 ? T.gain : T.loss }}>
+                        {totalReturnPct >= 0 ? "+" : ""}
+                        {totalReturnPct.toFixed(1)}%
+                      </span>
+                      . Consider paper-trading via a Bot before committing capital.
+                    </>
+                  ) : (
+                    <>Run a backtest to see Sharpe and total return for this strategy.</>
+                  )}
                 </div>
                 <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
                   <Btn variant="deploy" size="sm" icon={Icon.spark} onClick={handleDeploy}>

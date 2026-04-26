@@ -14,9 +14,12 @@ type MarketingItem =
   | { kind: "link"; href: string; label: string }
   | { kind: "stub"; label: string };
 
+// Backtest is reached downstream from /strategies (open a strategy → click
+// Backtest pin / Run backtest). A bare nav entry would always land on the
+// "open this from a strategy" empty state because /backtest requires
+// ?strategy_id=N to hydrate.
 const NAV_ITEMS: MarketingItem[] = [
   { kind: "link", href: "/strategies", label: "Strategies" },
-  { kind: "link", href: "/backtest", label: "Backtest" },
   { kind: "link", href: "/signals", label: "Signals" },
   { kind: "link", href: "/bots", label: "Bots" },
   { kind: "link", href: "/portfolio", label: "Portfolio" },
