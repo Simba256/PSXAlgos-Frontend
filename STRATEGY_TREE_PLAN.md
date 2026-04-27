@@ -107,7 +107,7 @@ class ConditionGroup(BaseModel):
     conditions: List[Union["ConditionGroup", SingleCondition]]
 ```
 
-- Use Pydantic v2 discriminated union with a `kind` literal field, OR rely on duck-typing (presence of `logic` ⇒ group). **Pick discriminated** — explicit, faster, less ambiguous in JSON.
+- Use **duck-typing** (presence of `logic` key ⇒ group, otherwise leaf). No `kind` field added to stored JSON. Pydantic v2's `Union[ConditionGroup, SingleCondition]` resolves cleanly because `SingleCondition` requires `indicator/operator/value` and would reject any payload with `logic`. (See Resolved Question 1.)
 - Migrate existing in-database strategies? **No** — old shape (`SingleCondition[]`) is still valid because the union accepts it. Pydantic happily parses old JSON as `List[SingleCondition]`.
 - Verify with one round-trip test of every existing strategy fixture.
 
@@ -444,10 +444,8 @@ Each phase is independently shippable. Stop after any phase = working product, j
 
 ---
 
-## Open questions
+## Resolved questions (2026-04-27)
 
-1. **Discriminated union encoding in JSON** — Pydantic v2 supports `discriminator='kind'` cleanly, but adds a `kind` field to every node in stored JSON. Cleaner long-term but breaks byte-identity of legacy strategies on next save. Alternative: keep duck-typing (presence of `logic` ⇒ group). **Recommend duck-typing for v1** to avoid touching stored JSON; revisit if it causes friction.
-2. **Group name field?** Currently a group has `logic + children` only. Should groups support an optional `name: string` for legibility ("Trend confirmation", "Volume filter")? **Recommend deferring** — easy to add later, not blocking v1.
-3. **Maximum visual width** — at high depths the canvas may grow wider than the viewport. Pan handles this, but is there a horizontal-collapse story? **Defer** — pan + zoom is sufficient for v1.
-
-Lock in answers to (1)–(3) before Phase A starts, or accept the recommendations.
+1. **JSON encoding** — duck-typing wins: a node is a group iff it has a `logic` key, otherwise it's a leaf condition. No `kind` field added to stored JSON. Existing strategies stay byte-identical on next save. **Robustness rationale**: any future tooling that reads stored rules — legacy migrations, ad-hoc SQL queries against the JSON column, third-party exports — will already work without knowing about a discriminator. The shape *is* the discriminator. Pydantic v2 union resolution still works (it tries each member of the union and accepts the first that validates; `SingleCondition` requires `indicator/operator/value` and rejects anything with `logic`, so disambiguation is unambiguous).
+2. **Group name field** — deferred. Groups have only `logic + conditions[]` in v1. If users start authoring deep trees and want labels for legibility, adding an optional `name: string | null` later is purely additive (no migration, no UI breakage).
+3. **Wide trees** — pan + zoom is the v1 answer. Deep/wide trees that exceed the viewport are pannable just like today's canvas. No collapse / minimap / fit-to-viewport features in v1.
