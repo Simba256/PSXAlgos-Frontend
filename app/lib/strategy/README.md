@@ -27,9 +27,11 @@ serializer (`toBackend`) strips them.
 | `removeNode(root, id)` | Immutable removal; cascades children. |
 | `replaceNode(root, id, next)` | Immutable substitution. |
 | `setGroupLogic(root, id, logic)` | Toggles a group's AND/OR. |
+| `ungroupAt(root, id)` | Replaces a group with its children in the parent (Phase E). Root is a no-op — root cannot be ungrouped. |
 | `flattenLeaves(root)` | DFS leaf-only walk (Phase B canvas uses this). |
 | `depth(root)` | Max nesting depth (1-indexed). |
 | `leafCount(root)` / `hasAnyLeaf(root)` | Save-time validation. |
+| `countEmptyGroups(root)` | Number of non-root groups with zero children — used by Phase E save-time soft warning. |
 | `fromBackend(wireGroup)` | Wire → in-memory; tolerates missing `kind`. |
 | `toBackend(root)` | In-memory → wire (strict, with `kind` everywhere). |
 | `normalizeWireGroup(group)` | Recursively re-emit a wire group with `kind`. |

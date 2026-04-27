@@ -174,6 +174,45 @@ export function setGroupLogic(
   return mapGroups(root, (g) => (g.id === id ? { ...g, logic } : g));
 }
 
+// Replaces the group identified by `id` with its own children in the parent's
+// children list, at the same index. The root cannot be ungrouped (it's the
+// strategy itself); calling `ungroupAt(root, root.id)` is a no-op.
+//
+// Semantics: the parent's logic now glues the children together. If the
+// inner group's logic differed from the parent's, callers must surface that
+// semantic shift before invoking this — see GroupDrawer's UngroupConfirmModal.
+export function ungroupAt(root: ConditionGroup, id: CondId): ConditionGroup {
+  if (root.id === id) return root;
+  return mapGroups(root, (g) => {
+    const idx = g.children.findIndex(
+      (c) => c.kind === "group" && c.id === id,
+    );
+    if (idx < 0) return g;
+    const target = g.children[idx];
+    if (target.kind !== "group") return g;
+    const next = g.children.slice();
+    next.splice(idx, 1, ...target.children);
+    return { ...g, children: next };
+  });
+}
+
+// Counts non-root groups with zero children. Used by the save flow to surface
+// a soft warning ("N empty groups will always evaluate to true") — the
+// backend treats `[]` children as `True`, so it's a UX hint rather than a
+// blocker. The root is excluded because its empty case is caught by
+// `hasAnyLeaf`, which hard-blocks save.
+export function countEmptyGroups(root: ConditionGroup): number {
+  let count = 0;
+  const visit = (g: ConditionGroup, isRoot: boolean) => {
+    if (!isRoot && g.children.length === 0) count += 1;
+    for (const c of g.children) {
+      if (c.kind === "group") visit(c, false);
+    }
+  };
+  visit(root, true);
+  return count;
+}
+
 // Walks every group in the tree, returning a new tree with `transform`
 // applied to each group bottom-up. Leaves pass through unchanged. Returns
 // the original reference when `transform` is a no-op so React can skip

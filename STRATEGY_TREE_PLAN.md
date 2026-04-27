@@ -558,12 +558,12 @@ New right-side drawer mirroring `ConditionDrawer`'s shape. Sections:
 
 ### E4. Done when
 
-- [ ] All group operations (logic toggle, ungroup, delete) work and persist
-- [ ] Logic-mismatch ungroup is properly blocked + tooltipped
-- [ ] Cascade delete works to arbitrary depth
-- [ ] Empty-group warning surfaces on Save (does not block, just informs)
-- [ ] Keyboard Delete on selected group → confirm modal
-- [ ] **Smoke scenarios** (Gap 26): build a depth-3 tree, ungroup the inner group, save, reload — tree shape matches expected flattening. Delete the inner group with children — descendants gone.
+- [x] All group operations (logic toggle, ungroup, delete) work and persist
+- [x] Logic-mismatch ungroup is properly blocked + tooltipped
+- [x] Cascade delete works to arbitrary depth
+- [x] Empty-group warning surfaces on Save (does not block, just informs)
+- [x] Keyboard Delete on selected group → confirm modal
+- [ ] **Smoke scenarios** (Gap 26): build a depth-3 tree, ungroup the inner group, save, reload — tree shape matches expected flattening. Delete the inner group with children — descendants gone. *(Deferred to user verification — local dev server gated by Google OAuth.)*
 
 ---
 

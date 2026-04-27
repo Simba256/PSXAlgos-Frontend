@@ -36,6 +36,8 @@ import {
   type CondId,
   type ConditionGroup,
   type ConditionLeaf,
+  type ConditionNode,
+  countEmptyGroups,
   emptyGroup,
   fromBackend,
   hasAnyLeaf,
@@ -49,6 +51,7 @@ import {
   replaceNode,
   setGroupLogic,
   toBackend,
+  ungroupAt,
 } from "@/lib/strategy/tree";
 import {
   EMPTY_SLOT_H,
@@ -138,6 +141,31 @@ function formatOp(op: Operator): string {
 function formatValue(value: ConditionValue): string {
   if (value.type === "constant") return String(value.value);
   return formatIndicator(value.indicator, null);
+}
+
+// Phase E: build a plain-English expression from a tree node, used by the
+// UngroupConfirmModal to show BEFORE / AFTER previews. Parens are emitted
+// only when a sub-group's logic differs from its parent's — that's exactly
+// the semantic-shift case the modal warns about, and matches how a reader
+// would naturally write the expression.
+function describeCondition(c: SingleCondition): string {
+  return `${formatIndicator(c.indicator, c.params ?? null)} ${formatOp(c.operator)} ${formatValue(c.value)}`;
+}
+
+function describeNode(node: ConditionNode, parentLogic: ConditionLogic): string {
+  if (node.kind === "condition") return describeCondition(node.cond);
+  if (node.children.length === 0) return "(empty group)";
+  if (node.children.length === 1) return describeNode(node.children[0], parentLogic);
+  const sep = node.logic === "AND" ? " AND " : " OR ";
+  const inner = node.children.map((c) => describeNode(c, node.logic)).join(sep);
+  return parentLogic === node.logic ? inner : `(${inner})`;
+}
+
+function describeRoot(root: ConditionGroup): string {
+  if (root.children.length === 0) return "(empty)";
+  if (root.children.length === 1) return describeNode(root.children[0], root.logic);
+  const sep = root.logic === "AND" ? " AND " : " OR ";
+  return root.children.map((c) => describeNode(c, root.logic)).join(sep);
 }
 
 function classifyIndicator(ind: string): NodeKind {
@@ -258,6 +286,15 @@ export function EditorView({
   // "delete" = delete-confirmation modal (F7)
   const [confirmModal, setConfirmModal] = useState<null | "save" | "delete">(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  // Phase E: confirmation state for group-level ops. `kind: "ungroup"` fires
+  // the BEFORE/AFTER modal when the inner group's logic differs from the
+  // parent's; `kind: "delete-group"` fires for groups with 2+ children. Both
+  // fall through to a direct mutation when no confirmation is needed.
+  const [groupModal, setGroupModal] = useState<
+    | { kind: "ungroup"; groupId: CondId }
+    | { kind: "delete-group"; groupId: CondId }
+    | null
+  >(null);
   const router = useRouter();
 
   const universeLabel = deriveUniverseLabel(initialStrategy);
@@ -314,7 +351,16 @@ export function EditorView({
       setSavedAt(Date.now());
       setDirty(false);
       setSaveStatus("idle");
-      setFlash("Draft saved");
+      // Phase E / E3: empty groups are allowed but surface a soft warning so
+      // the author knows they evaluate to True (matches backend semantics).
+      const empties = countEmptyGroups(tree);
+      if (empties > 0) {
+        setFlash(
+          `Draft saved · ${empties} empty group${empties === 1 ? "" : "s"} will always evaluate to true`,
+        );
+      } else {
+        setFlash("Draft saved");
+      }
     } catch (err) {
       setSaveStatus("error");
       setFlash(err instanceof Error ? err.message : "Save failed");
@@ -482,12 +528,100 @@ export function EditorView({
   };
 
   // Toggling group logic is shared between the root (clicked via gate glyph
-  // when only the root has a gate) and the GroupDrawer placeholder. Both
-  // collapse to `setGroupLogic` against the in-memory tree.
+  // when only the root has a gate) and the GroupDrawer. Both collapse to
+  // `setGroupLogic` against the in-memory tree.
   const handleSetGroupLogic = (id: CondId, logic: ConditionLogic) => {
     setTree((t) => setGroupLogic(t, id, logic));
     setDirty(true);
   };
+
+  // Phase E: ungroup a sub-group, splicing its children up into the parent.
+  // Skipped on root (no-op). When the group's logic differs from its parent's
+  // we open `<UngroupConfirmModal>` first — the BEFORE/AFTER expressions
+  // change semantically, so it's worth the friction. Matching logics ungroup
+  // immediately (no semantic shift).
+  const performUngroup = (id: CondId) => {
+    const parent = findParent(tree, id);
+    if (!parent) return;
+    setTree((t) => ungroupAt(t, id));
+    if (selection?.kind === "group" && selection.id === id) {
+      setSelection(null);
+    }
+    setGroupModal(null);
+    setDirty(true);
+    setFlash("Group ungrouped");
+  };
+  const handleUngroupGroup = (id: CondId) => {
+    if (id === tree.id) return; // root can't be ungrouped
+    const target = findNode(tree, id);
+    const parent = findParent(tree, id);
+    if (!target || target.kind !== "group" || !parent) return;
+    if (target.logic === parent.logic) {
+      performUngroup(id);
+      return;
+    }
+    setGroupModal({ kind: "ungroup", groupId: id });
+  };
+
+  // Phase E: cascade-delete a group + all descendants. Confirmation modal
+  // fires when the group has 2+ children (one-child / empty groups are
+  // low-stakes). Save validation also runs — if the deletion would leave
+  // the strategy with zero leaves, we block and flash the standard message.
+  const performDeleteGroup = (id: CondId) => {
+    if (id === tree.id) return; // root can't be deleted
+    const next = removeNode(tree, id);
+    if (!hasAnyLeaf(next)) {
+      setFlash("A strategy needs at least one condition");
+      setGroupModal(null);
+      return;
+    }
+    setTree(next);
+    if (selection?.kind === "group" && selection.id === id) {
+      setSelection(null);
+    }
+    setGroupModal(null);
+    setDirty(true);
+    setFlash("Group deleted");
+  };
+  const handleDeleteGroup = (id: CondId) => {
+    if (id === tree.id) return;
+    const target = findNode(tree, id);
+    if (!target || target.kind !== "group") return;
+    if (target.children.length >= 2) {
+      setGroupModal({ kind: "delete-group", groupId: id });
+      return;
+    }
+    performDeleteGroup(id);
+  };
+
+  // Phase E / E2: pressing Delete or Backspace with a group selected opens
+  // the same delete flow the drawer's button uses. Skipped while any modal
+  // is open (focus is captured) and while the user is typing in an input.
+  useEffect(() => {
+    if (selection?.kind !== "group") return;
+    if (groupModal !== null) return;
+    if (confirmModal !== null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          (t as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      handleDeleteGroup(selection.id);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+    // handleDeleteGroup closes over `tree` / `selection` — recreated each
+    // render, but the listener attaches/detaches in the same effect cycle so
+    // it always reads the current values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection, groupModal, confirmModal, tree]);
 
   const selectedLeaf: ConditionLeaf | null = (() => {
     if (selection?.kind !== "condition") return null;
@@ -611,7 +745,10 @@ export function EditorView({
             <GroupDrawer
               key={selection.id}
               group={selectedGroup}
+              isRoot={selectedGroup.id === tree.id}
               onSetLogic={(logic) => handleSetGroupLogic(selectedGroup.id, logic)}
+              onUngroup={() => handleUngroupGroup(selectedGroup.id)}
+              onDelete={() => handleDeleteGroup(selectedGroup.id)}
               onClose={close}
             />
           )}
@@ -638,6 +775,32 @@ export function EditorView({
           onConfirm={performDelete}
         />
       )}
+      {groupModal?.kind === "ungroup" && (() => {
+        const target = findNode(tree, groupModal.groupId);
+        if (!target || target.kind !== "group") return null;
+        const before = describeRoot(tree);
+        const after = describeRoot(ungroupAt(tree, groupModal.groupId));
+        return (
+          <UngroupConfirmModal
+            before={before}
+            after={after}
+            onCancel={() => setGroupModal(null)}
+            onConfirm={() => performUngroup(groupModal.groupId)}
+          />
+        );
+      })()}
+      {groupModal?.kind === "delete-group" && (() => {
+        const target = findNode(tree, groupModal.groupId);
+        if (!target || target.kind !== "group") return null;
+        const childCount = target.children.length;
+        return (
+          <DeleteGroupConfirmModal
+            childCount={childCount}
+            onCancel={() => setGroupModal(null)}
+            onConfirm={() => performDeleteGroup(groupModal.groupId)}
+          />
+        );
+      })()}
     </AppFrame>
   );
 }
@@ -3071,25 +3234,34 @@ function fmtDays(n: number | null | undefined): string {
   return n == null ? "21 days" : `${n} days`;
 }
 
-// Phase C placeholder for the eventual GroupDrawer (Phase E adds Ungroup
-// and Delete-group). For now it surfaces just the AND/OR logic toggle so
-// clicking a group's gate or box border still has an effect — same affordance
-// the pre-Phase-C root gate had, generalised to any group in the tree.
+// Phase E GroupDrawer — mirrors ConditionDrawer's shape. Exposes the AND/OR
+// logic toggle, a read-only children summary, and the Ungroup / Delete
+// actions. Root groups can do neither (root is the strategy itself); the
+// buttons render disabled with explanatory tooltips so the affordance is
+// still visible.
 function GroupDrawer({
   group,
+  isRoot,
   onSetLogic,
+  onUngroup,
+  onDelete,
   onClose,
 }: {
   group: ConditionGroup;
+  isRoot: boolean;
   onSetLogic: (logic: ConditionLogic) => void;
+  onUngroup: () => void;
+  onDelete: () => void;
   onClose: () => void;
 }) {
   const T = useT();
-  const childCount = group.children.length;
+  const total = group.children.length;
+  const conds = group.children.filter((c) => c.kind === "condition").length;
+  const subs = total - conds;
   const summary =
-    childCount === 0
+    total === 0
       ? "empty group"
-      : `${childCount} child${childCount === 1 ? "" : "ren"}`;
+      : `${total} child${total === 1 ? "" : "ren"} — ${conds} condition${conds === 1 ? "" : "s"}, ${subs} sub-group${subs === 1 ? "" : "s"}`;
   return (
     <DrawerContainer>
       <div
@@ -3107,7 +3279,7 @@ function GroupDrawer({
             textTransform: "uppercase",
           }}
         >
-          group
+          {isRoot ? "root group" : "group"}
         </div>
         <div
           style={{
@@ -3119,7 +3291,10 @@ function GroupDrawer({
             letterSpacing: -0.2,
           }}
         >
-          {group.logic} · <span style={{ color: T.text3, fontSize: 13 }}>{summary}</span>
+          {group.logic}
+        </div>
+        <div style={{ color: T.text3, fontSize: 12, marginTop: 4 }}>
+          {summary}
         </div>
       </div>
       <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
@@ -3189,17 +3364,220 @@ function GroupDrawer({
       <div
         style={{
           marginTop: "auto",
-          padding: 16,
+          padding: 14,
           borderTop: `1px solid ${T.outlineFaint}`,
           display: "flex",
-          justifyContent: "flex-end",
+          gap: 8,
         }}
       >
+        <Btn
+          variant="danger"
+          size="sm"
+          onClick={onDelete}
+          disabled={isRoot}
+          title={isRoot ? "Root group can't be deleted" : "Delete this group and its children"}
+        >
+          Delete
+        </Btn>
+        <div style={{ flex: 1 }} />
+        <Btn
+          variant="outline"
+          size="sm"
+          onClick={onUngroup}
+          disabled={isRoot}
+          title={isRoot ? "Root group can't be ungrouped" : "Replace this group with its children"}
+        >
+          Ungroup
+        </Btn>
         <Btn variant="ghost" size="sm" onClick={onClose}>
           Close
         </Btn>
       </div>
     </DrawerContainer>
+  );
+}
+
+// Phase E / Gap 21: BEFORE / AFTER preview when ungrouping a sub-group whose
+// logic differs from its parent's. Cancel takes the autoFocus so a reflex
+// `Enter` press is non-destructive; Ungroup is `outline`-styled (not primary)
+// so muscle-memory doesn't fire it.
+function UngroupConfirmModal({
+  before,
+  after,
+  onCancel,
+  onConfirm,
+}: {
+  before: string;
+  after: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const T = useT();
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
+  return (
+    <Modal onClose={onCancel} label="Ungroup this group?">
+      <div style={{ padding: 24 }}>
+        <div
+          style={{
+            fontFamily: T.fontHead,
+            fontSize: 20,
+            fontWeight: 500,
+            letterSpacing: -0.3,
+            marginBottom: 8,
+          }}
+        >
+          Ungroup this group?
+        </div>
+        <p
+          style={{
+            margin: "0 0 18px",
+            fontSize: 13,
+            color: T.text2,
+            lineHeight: 1.55,
+          }}
+        >
+          The inner group's logic differs from its parent's, so flattening it
+          changes how the strategy fires. Review the new expression below.
+        </p>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "70px 1fr",
+            gap: "10px 12px",
+            alignItems: "baseline",
+            marginBottom: 18,
+            fontFamily: T.fontMono,
+            fontSize: 12.5,
+          }}
+        >
+          <div style={{ color: T.text3, letterSpacing: 0.6, textTransform: "uppercase", fontSize: 10 }}>
+            Before
+          </div>
+          <div
+            style={{
+              color: T.text,
+              padding: "10px 12px",
+              background: T.surfaceLow,
+              borderRadius: 8,
+              border: `1px solid ${T.outlineFaint}`,
+              wordBreak: "break-word",
+            }}
+          >
+            {before}
+          </div>
+          <div style={{ color: T.text3, letterSpacing: 0.6, textTransform: "uppercase", fontSize: 10 }}>
+            After
+          </div>
+          <div
+            style={{
+              color: T.text,
+              padding: "10px 12px",
+              background: T.surfaceLow,
+              borderRadius: 8,
+              border: `1px solid ${T.warning}55`,
+              wordBreak: "break-word",
+            }}
+          >
+            {after}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button
+            ref={cancelRef}
+            type="button"
+            onClick={onCancel}
+            style={{
+              background: T.primary,
+              color: "#fff",
+              border: `1px solid ${T.primary}`,
+              borderRadius: 4,
+              padding: "6px 12px",
+              fontFamily: T.fontSans,
+              fontSize: 11.5,
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+          <Btn variant="outline" size="sm" onClick={onConfirm}>
+            Ungroup
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Phase E: cascade-delete confirmation. Fires only for groups with 2+ direct
+// children — single-child / empty groups are low-stakes and skip the modal.
+function DeleteGroupConfirmModal({
+  childCount,
+  onCancel,
+  onConfirm,
+}: {
+  childCount: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const T = useT();
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
+  return (
+    <Modal onClose={onCancel} label="Delete this group?">
+      <div style={{ padding: 24 }}>
+        <div
+          style={{
+            fontFamily: T.fontHead,
+            fontSize: 20,
+            fontWeight: 500,
+            letterSpacing: -0.3,
+            marginBottom: 8,
+          }}
+        >
+          Delete this group?
+        </div>
+        <p
+          style={{
+            margin: "0 0 18px",
+            fontSize: 13,
+            color: T.text2,
+            lineHeight: 1.55,
+          }}
+        >
+          This removes the group and all {childCount} of its children from the
+          strategy. You can undo only by reverting unsaved changes.
+        </p>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button
+            ref={cancelRef}
+            type="button"
+            onClick={onCancel}
+            style={{
+              background: T.primary,
+              color: "#fff",
+              border: `1px solid ${T.primary}`,
+              borderRadius: 4,
+              padding: "6px 12px",
+              fontFamily: T.fontSans,
+              fontSize: 11.5,
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+          <Btn variant="danger" size="sm" onClick={onConfirm}>
+            Delete group
+          </Btn>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
