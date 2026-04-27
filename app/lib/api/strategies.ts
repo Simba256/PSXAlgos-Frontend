@@ -48,14 +48,14 @@ export interface IndicatorValue {
 
 export type ConditionValue = ConstantValue | IndicatorValue;
 
-// `kind` is the discriminator that the recursive condition-tree backend
-// (see STRATEGY_TREE_PLAN.md) will require post-Phase A. Phase B.0 emits it
-// from every payload the frontend sends. It's optional here only because
-// today's backend response objects don't carry it yet — once Phase A lands
-// and existing rows are migrated, every value will have it. Phase B will
-// replace these flat shapes with a recursive discriminated union.
+// Wire shape for the recursive condition tree (STRATEGY_TREE_PLAN.md). After
+// Phase A the backend stores every node with its `kind` discriminator and
+// `ConditionGroup.conditions` may itself contain groups — so the type is a
+// recursive discriminated union. The editor's in-memory representation in
+// `lib/strategy/tree.ts` wraps each node with a stable client-side ID for
+// React keys / selection, but only the wire shape below is sent on the wire.
 export interface SingleCondition {
-  kind?: "condition";
+  kind: "condition";
   indicator: Indicator;
   operator: Operator;
   value: ConditionValue;
@@ -63,9 +63,9 @@ export interface SingleCondition {
 }
 
 export interface ConditionGroup {
-  kind?: "group";
+  kind: "group";
   logic: ConditionLogic;
-  conditions: SingleCondition[];
+  conditions: Array<SingleCondition | ConditionGroup>;
 }
 
 // ============ Rules / sizing / risk / filters ============

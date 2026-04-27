@@ -32,15 +32,26 @@ import type {
   StrategyDependentBot,
   StrategyDependentsResponse,
 } from "@/lib/api/strategies";
+import {
+  type CondId,
+  type ConditionGroup,
+  type ConditionLeaf,
+  flattenLeaves,
+  fromBackend,
+  hasAnyLeaf,
+  insertChild,
+  leafCount,
+  leafFromCond,
+  findNode,
+  findParent,
+  normalizeWireGroup,
+  removeNode,
+  replaceNode,
+  toBackend,
+} from "@/lib/strategy/tree";
 
 type SelKind = "condition" | "execution" | "group";
-type Selection = { kind: SelKind; id: string } | null;
-
-type RuleId = string;
-interface RuleNode {
-  id: RuleId;
-  cond: SingleCondition;
-}
+type Selection = { kind: SelKind; id: CondId } | null;
 
 type NodeKind = "momentum" | "trend" | "volume";
 
@@ -135,40 +146,27 @@ function classifyIndicator(ind: string): NodeKind {
 type SaveStatus = "idle" | "saving" | "error";
 
 // Pure serializer — kept module-level so it's straightforward to unit test
-// in isolation (Phase 8 / PR-2). Everything that can be edited in the
-// canvas/drawers travels through here on its way to the backend.
+// in isolation. Everything that can be edited in the canvas/drawers travels
+// through here on its way to the backend.
 //
-// Phase B.0: every emitted node carries its `kind` discriminator so the
-// payload is forward-compatible with the recursive backend schema landing
-// in Phase A (see STRATEGY_TREE_PLAN.md). Today's backend ignores the field
-// (Pydantic Extra.ignore default), so this is a safe no-op until Phase A.
+// Post-Phase B: the entry tree is the canonical state. `toBackend` strips
+// client-side IDs and emits the recursive wire shape required by the
+// post-Phase-A backend (see STRATEGY_TREE_PLAN.md). Exit conditions aren't
+// edited as a tree in the editor — `normalizeWireGroup` re-emits them with
+// `kind` discriminators in case the strategy was authored before Phase A.
 export function buildUpdateBody(
   name: string,
-  rules: RuleNode[],
-  logic: ConditionLogic,
+  tree: ConditionGroup,
   exit: ExitRules,
   sizing: PositionSizing,
 ): StrategyUpdateBody {
-  const exitConditions = exit.conditions
-    ? {
-        kind: "group" as const,
-        logic: exit.conditions.logic,
-        conditions: exit.conditions.conditions.map((c) => ({
-          kind: "condition" as const,
-          ...c,
-        })),
-      }
-    : exit.conditions;
   return {
     name,
-    entry_rules: {
-      conditions: {
-        kind: "group",
-        logic,
-        conditions: rules.map((r) => ({ kind: "condition", ...r.cond })),
-      },
+    entry_rules: { conditions: toBackend(tree) },
+    exit_rules: {
+      ...exit,
+      conditions: exit.conditions ? normalizeWireGroup(exit.conditions) : exit.conditions,
     },
-    exit_rules: { ...exit, conditions: exitConditions },
     position_sizing: sizing,
   };
 }
@@ -203,19 +201,15 @@ export function EditorView({
   });
   const [flash, setFlash] = useState<string | null>(null);
 
-  // Lifted graph state — Phase 1 hydrates from initialStrategy and renders
-  // the canvas off it. Phase 2/3 wire drawers to mutate this state and
-  // Phase 4 sends `dirty` back to the backend via PUT /strategies/{id}.
-  // _-prefixed state is held for later phases (see STRATEGY_EDITOR_WIRING_PLAN.md).
-  const [rules, setRules] = useState<RuleNode[]>(() =>
-    initialStrategy.entry_rules.conditions.conditions.map((c, i) => ({
-      id: `r${i}`,
-      cond: c,
-    }))
+  // Lifted graph state. Post-Phase B the canvas reads off a single recursive
+  // `tree`, hydrated once from `initialStrategy` with stable client-side IDs
+  // attached. The Phase B canvas still flattens leaves left-to-right; Phase C
+  // is the boxed-group visual rewrite. IDs never round-trip — `toBackend`
+  // strips them on the way out.
+  const [tree, setTree] = useState<ConditionGroup>(() =>
+    fromBackend(initialStrategy.entry_rules.conditions),
   );
-  const [logic, setLogic] = useState<ConditionLogic>(
-    initialStrategy.entry_rules.conditions.logic
-  );
+  const leaves = useMemo(() => flattenLeaves(tree), [tree]);
   const [exit, setExit] = useState<ExitRules>(initialStrategy.exit_rules);
   const [sizing, setSizing] = useState<PositionSizing>(initialStrategy.position_sizing);
   const [dirty, setDirty] = useState(false);
@@ -262,7 +256,7 @@ export function EditorView({
   // it directly after confirmation, bypassing the pre-flight check.
   const performSave = async () => {
     if (!dirty || saveStatus === "saving") return;
-    const body = buildUpdateBody(name, rules, logic, exit, sizing);
+    const body = buildUpdateBody(name, tree, exit, sizing);
     setSaveStatus("saving");
     try {
       const res = await fetch(`/api/strategies/${initialStrategy.id}`, {
@@ -334,7 +328,8 @@ export function EditorView({
   };
 
   const handleValidate = () => {
-    setFlash(`Strategy is valid · ${rules.length} condition${rules.length === 1 ? "" : "s"} connected`);
+    const n = leafCount(tree);
+    setFlash(`Strategy is valid · ${n} condition${n === 1 ? "" : "s"} connected`);
   };
 
   const handleDeploy = async () => {
@@ -361,56 +356,64 @@ export function EditorView({
     setFlash(`Restored ${label}`);
   };
 
-  // Create-mode wiring — clicking "+ condition" stages a draft
-  // SingleCondition that the drawer renders against. Save appends, Close
-  // cancels with no canvas-state change. The default mirrors the most
-  // common starter rule (RSI < 50).
-  const [creating, setCreating] = useState<SingleCondition | null>(null);
-  const handleAddCondition = () => {
+  // Create-mode wiring — clicking "+ condition" stages a draft cond and the
+  // parent group it should be appended to. Save appends, Close cancels.
+  // Phase B's corner pill always targets the root; Phase D's inline `+`
+  // slots will pass nested group ids.
+  const [creating, setCreating] = useState<{ parentId: CondId; cond: SingleCondition } | null>(null);
+  const handleAddCondition = (parentId: CondId = tree.id) => {
     setSelection(null);
     setCreating({
-      indicator: "rsi",
-      operator: "<",
-      value: { type: "constant", value: 50 },
-      params: null,
+      parentId,
+      cond: {
+        kind: "condition",
+        indicator: "rsi",
+        operator: "<",
+        value: { type: "constant", value: 50 },
+        params: null,
+      },
     });
   };
 
-  const handleDeleteRule = (id: RuleId) => {
-    if (rules.length <= 1) {
+  const handleDeleteNode = (id: CondId) => {
+    const next = removeNode(tree, id);
+    if (!hasAnyLeaf(next)) {
       setFlash("A strategy needs at least one condition");
       return;
     }
-    setRules((rs) => rs.filter((r) => r.id !== id));
+    setTree(next);
     setDirty(true);
     close();
     setFlash("Condition deleted");
   };
 
-  const handleDuplicateRule = (id: RuleId) => {
-    const src = rules.find((r) => r.id === id);
-    if (!src) return;
-    const copy: RuleNode = {
-      id: `r${Date.now()}`,
-      cond: {
-        ...src.cond,
-        value: { ...src.cond.value },
-        params: src.cond.params ? { ...src.cond.params } : null,
-      },
-    };
-    setRules((rs) => [...rs, copy]);
+  const handleDuplicateNode = (id: CondId) => {
+    const node = findNode(tree, id);
+    if (!node || node.kind !== "condition") return;
+    const parent = findParent(tree, id) ?? tree;
+    const idx = parent.children.findIndex((c) => c.id === id);
+    const copy: ConditionLeaf = leafFromCond({
+      ...node.cond,
+      value: { ...node.cond.value },
+      params: node.cond.params ? { ...node.cond.params } : null,
+    });
+    setTree(insertChild(tree, parent.id, copy, idx + 1));
     setDirty(true);
     close();
     setFlash("Condition duplicated");
   };
 
-  const handleToggleLogic = () => {
-    setLogic((l) => (l === "AND" ? "OR" : "AND"));
+  const handleToggleRootLogic = () => {
+    setTree((t) => ({ ...t, logic: t.logic === "AND" ? "OR" : "AND" }));
     setDirty(true);
   };
 
-  const selectedRule =
-    selection?.kind === "condition" ? rules.find((r) => r.id === selection.id) : null;
+  const selectedLeaf: ConditionLeaf | null = (() => {
+    if (selection?.kind !== "condition") return null;
+    const node = findNode(tree, selection.id);
+    if (!node || node.kind !== "condition") return null;
+    return node;
+  })();
 
   return (
     <AppFrame route="/strategies">
@@ -442,27 +445,27 @@ export function EditorView({
           }}
         >
           <Canvas
-            rules={rules}
-            logic={logic}
+            leaves={leaves}
+            logic={tree.logic}
             selection={selection}
             onSelect={onSelect}
-            onToggleLogic={handleToggleLogic}
+            onToggleLogic={handleToggleRootLogic}
             drawerOpen={selection !== null || creating !== null}
             deployed={deployed}
             onValidate={handleValidate}
             onDeploy={handleDeploy}
-            onAddCondition={handleAddCondition}
+            onAddCondition={() => handleAddCondition(tree.id)}
             strategyId={initialStrategy.id}
           />
           {creating && (
             <ConditionDrawer
               key="create"
-              cond={creating}
+              cond={creating.cond}
               displayName="New condition"
               indicatorMeta={indicatorMeta}
               onApply={(nextCond) => {
-                const id = `r${Date.now()}`;
-                setRules((rs) => [...rs, { id, cond: nextCond }]);
+                const leaf = leafFromCond(nextCond);
+                setTree((t) => insertChild(t, creating.parentId, leaf));
                 setDirty(true);
                 setCreating(null);
                 setFlash(
@@ -472,27 +475,30 @@ export function EditorView({
               onClose={() => setCreating(null)}
             />
           )}
-          {!creating && selection?.kind === "condition" && selectedRule && (
+          {!creating && selection?.kind === "condition" && selectedLeaf && (
             <ConditionDrawer
               key={selection.id}
-              cond={selectedRule.cond}
+              cond={selectedLeaf.cond}
               displayName={formatIndicator(
-                selectedRule.cond.indicator,
-                selectedRule.cond.params ?? null
+                selectedLeaf.cond.indicator,
+                selectedLeaf.cond.params ?? null
               )}
               indicatorMeta={indicatorMeta}
               onApply={(nextCond) => {
-                setRules((rs) =>
-                  rs.map((r) => (r.id === selection.id ? { ...r, cond: nextCond } : r))
-                );
+                const next: ConditionLeaf = {
+                  kind: "condition",
+                  id: selectedLeaf.id,
+                  cond: { ...nextCond, kind: "condition", params: nextCond.params ?? null },
+                };
+                setTree((t) => replaceNode(t, selectedLeaf.id, next));
                 setDirty(true);
                 close();
                 setFlash(
                   `Saved · ${formatIndicator(nextCond.indicator, nextCond.params ?? null)}`
                 );
               }}
-              onDelete={() => handleDeleteRule(selection.id)}
-              onDuplicate={() => handleDuplicateRule(selection.id)}
+              onDelete={() => handleDeleteNode(selectedLeaf.id)}
+              onDuplicate={() => handleDuplicateNode(selectedLeaf.id)}
               onClose={close}
             />
           )}
@@ -1061,7 +1067,7 @@ function HistoryPopover({ onRestore }: { onRestore: (label: string) => void }) {
 }
 
 function Canvas({
-  rules,
+  leaves,
   logic,
   selection,
   onSelect,
@@ -1073,10 +1079,10 @@ function Canvas({
   onAddCondition,
   strategyId,
 }: {
-  rules: RuleNode[];
+  leaves: ConditionLeaf[];
   logic: ConditionLogic;
   selection: Selection;
-  onSelect: (kind: SelKind, id: string) => void;
+  onSelect: (kind: SelKind, id: CondId) => void;
   onToggleLogic: () => void;
   drawerOpen: boolean;
   deployed: boolean;
@@ -1085,7 +1091,7 @@ function Canvas({
   onAddCondition: () => void;
   strategyId: number;
 }) {
-  const isSelected = (kind: SelKind, id: string) =>
+  const isSelected = (kind: SelKind, id: CondId) =>
     selection?.kind === kind && selection.id === id;
   const T = useT();
   const [pan, setPan] = useState({ x: 40, y: 20 });
@@ -1255,10 +1261,11 @@ function Canvas({
         }}
       >
         {(() => {
-          // Geometry derived from rules.length so the canvas reshapes when
-          // conditions are added/removed (Phase 5). Y values centered on
-          // the gate glyph; with a single rule the gate is hidden and the
-          // condition wires directly into ExecNode.
+          // Geometry derived from `leaves.length` so the canvas reshapes when
+          // conditions are added/removed. Y values centered on the gate glyph;
+          // with a single leaf the gate is hidden and the condition wires
+          // directly into ExecNode. Phase B still flattens the tree for
+          // rendering — Phase C is the boxed-group visual rewrite.
           const NODE_X = 40;
           const NODE_W = 200;
           const NODE_H = 108;
@@ -1266,7 +1273,7 @@ function Canvas({
           const NODE_GAP = 120;
           const condTopY = (i: number) => NODE_Y0 + i * NODE_GAP;
           const condPinY = (i: number) => condTopY(i) + NODE_H / 2;
-          const N = rules.length;
+          const N = leaves.length;
           const gateY = N > 0 ? (condPinY(0) + condPinY(N - 1)) / 2 : 200;
           const showGate = N > 1;
           const execY = gateY - 54;
@@ -1291,14 +1298,14 @@ function Canvas({
                   overflow: "visible",
                 }}
               >
-                {rules.map((r, i) => {
+                {leaves.map((leaf, i) => {
                   const cy = condPinY(i);
                   const tx = showGate ? gateLeftX : 620;
                   const ty = showGate ? gateY : execPinY;
                   const midX = condRightX + 80;
                   return (
                     <Connector
-                      key={r.id}
+                      key={leaf.id}
                       d={`M ${condRightX} ${cy} C ${midX} ${cy} ${midX} ${ty} ${tx} ${ty}`}
                       dashed
                       T={T}
@@ -1333,16 +1340,16 @@ function Canvas({
                 />
               </svg>
 
-              {rules.map((r, i) => {
-                const meta = condToMeta(r.cond);
+              {leaves.map((leaf, i) => {
+                const meta = condToMeta(leaf.cond);
                 return (
                   <CondNode
-                    key={r.id}
+                    key={leaf.id}
                     x={NODE_X}
                     y={condTopY(i)}
                     {...meta}
-                    selected={isSelected("condition", r.id)}
-                    onClick={() => onSelect("condition", r.id)}
+                    selected={isSelected("condition", leaf.id)}
+                    onClick={() => onSelect("condition", leaf.id)}
                   />
                 );
               })}
@@ -2031,6 +2038,7 @@ function ConditionDrawer({
       nextValue = { type: "constant", value: threshold };
     }
     const next: SingleCondition = {
+      kind: "condition",
       indicator,
       operator: op,
       value: nextValue,
