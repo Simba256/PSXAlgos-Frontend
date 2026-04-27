@@ -137,6 +137,11 @@ type SaveStatus = "idle" | "saving" | "error";
 // Pure serializer — kept module-level so it's straightforward to unit test
 // in isolation (Phase 8 / PR-2). Everything that can be edited in the
 // canvas/drawers travels through here on its way to the backend.
+//
+// Phase B.0: every emitted node carries its `kind` discriminator so the
+// payload is forward-compatible with the recursive backend schema landing
+// in Phase A (see STRATEGY_TREE_PLAN.md). Today's backend ignores the field
+// (Pydantic Extra.ignore default), so this is a safe no-op until Phase A.
 export function buildUpdateBody(
   name: string,
   rules: RuleNode[],
@@ -144,12 +149,26 @@ export function buildUpdateBody(
   exit: ExitRules,
   sizing: PositionSizing,
 ): StrategyUpdateBody {
+  const exitConditions = exit.conditions
+    ? {
+        kind: "group" as const,
+        logic: exit.conditions.logic,
+        conditions: exit.conditions.conditions.map((c) => ({
+          kind: "condition" as const,
+          ...c,
+        })),
+      }
+    : exit.conditions;
   return {
     name,
     entry_rules: {
-      conditions: { logic, conditions: rules.map((r) => r.cond) },
+      conditions: {
+        kind: "group",
+        logic,
+        conditions: rules.map((r) => ({ kind: "condition", ...r.cond })),
+      },
     },
-    exit_rules: exit,
+    exit_rules: { ...exit, conditions: exitConditions },
     position_sizing: sizing,
   };
 }

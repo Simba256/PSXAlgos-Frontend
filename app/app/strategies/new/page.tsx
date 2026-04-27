@@ -154,40 +154,40 @@ function presetToEntryRules(key: PresetKey): EntryRules {
   switch (key) {
     case "mean_reversion":
       conditions = [
-        { indicator: "rsi", operator: "<", value: { type: "constant", value: 30 } },
+        { kind: "condition", indicator: "rsi", operator: "<", value: { type: "constant", value: 30 } },
       ];
       break;
     case "momentum_breakout":
       // Backend doesn't have a "20-day high" indicator — closest stand-in is
       // close > sma_20. Editor lets users tighten this once they're in.
       conditions = [
-        { indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "sma_20" } },
+        { kind: "condition", indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "sma_20" } },
       ];
       break;
     case "golden_cross":
       conditions = [
-        { indicator: "sma_50", operator: "crosses_above", value: { type: "indicator", indicator: "sma_200" } },
+        { kind: "condition", indicator: "sma_50", operator: "crosses_above", value: { type: "indicator", indicator: "sma_200" } },
       ];
       break;
     case "bollinger_squeeze":
       conditions = [
-        { indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "bb_upper" } },
+        { kind: "condition", indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "bb_upper" } },
       ];
       break;
     case "macd_cross":
       conditions = [
-        { indicator: "macd", operator: "crosses_above", value: { type: "indicator", indicator: "macd_signal" } },
+        { kind: "condition", indicator: "macd", operator: "crosses_above", value: { type: "indicator", indicator: "macd_signal" } },
       ];
       break;
     case "blank":
       // Backend requires at least one condition. Pick a deliberately mild one
       // so the user *will* want to edit it.
       conditions = [
-        { indicator: "rsi", operator: "<", value: { type: "constant", value: 50 } },
+        { kind: "condition", indicator: "rsi", operator: "<", value: { type: "constant", value: 50 } },
       ];
       break;
   }
-  return { conditions: { logic: "AND", conditions } };
+  return { conditions: { kind: "group", logic: "AND", conditions } };
 }
 
 function universeToFilters(key: UniverseKey): {
