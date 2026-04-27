@@ -32,6 +32,14 @@ export const ROOT_HGAP = 170;
 export const ROOT_CHILD_X = 40;
 export const ROOT_CHILD_Y = 40;
 
+// Phase D: insertion-slot icon size. Matches the small `+` button rendered
+// between siblings and at the end of a group's children list.
+export const SLOT_SIZE = 16;
+// Empty-group placeholder is a wider drop target so users have an obvious
+// click area when a group has no children yet.
+export const EMPTY_SLOT_W = 140;
+export const EMPTY_SLOT_H = NODE_H;
+
 export interface LeafLayout {
   kind: "condition";
   id: string;
@@ -248,6 +256,90 @@ export function walkGroups(root: GroupLayout): GroupLayout[] {
   };
   for (const c of root.children) visit(c);
   return out;
+}
+
+// Phase D: an authoring slot the user can click to insert a new child.
+// `parentId` + `index` together describe where `insertChild` should drop
+// the new node. `variant` lets the renderer choose between a small `+`
+// (between/end) and a larger placeholder for empty groups.
+export interface InsertionSlot {
+  parentId: string;
+  index: number;
+  variant: "between" | "end" | "empty";
+  // Center coordinates of the slot's interactive region. Renderer offsets
+  // by half-size to position absolutely.
+  cx: number;
+  cy: number;
+  // Slot box dimensions. `between`/`end` use SLOT_SIZE; `empty` uses the
+  // wider EMPTY_SLOT_W/H so the click target matches the visual.
+  w: number;
+  h: number;
+}
+
+// Walks every group (including the root) in a placed layout and emits
+// insertion slots: between every pair of adjacent children, after the last
+// child, or — for empty groups — a single centered placeholder. Slot
+// coordinates use the same canvas coords as `walkLeaves` / `walkGroups`,
+// so the renderer can drop them straight into the world layer.
+export function collectSlots(root: GroupLayout): InsertionSlot[] {
+  const slots: InsertionSlot[] = [];
+
+  const visit = (g: GroupLayout) => {
+    const childInnerX = g.isRoot ? ROOT_CHILD_X : g.x + GROUP_PAD;
+    const childInnerY = g.isRoot ? ROOT_CHILD_Y : g.y + GROUP_PAD + GROUP_LABEL_H;
+    // Center the small `+` slots on the node column (children are aligned
+    // left at childInnerX with width NODE_W).
+    const slotCx = childInnerX + NODE_W / 2;
+
+    if (g.children.length === 0) {
+      // Empty group: a single large placeholder centered where the first
+      // child would land.
+      slots.push({
+        parentId: g.id,
+        index: 0,
+        variant: "empty",
+        cx: childInnerX + EMPTY_SLOT_W / 2,
+        cy: childInnerY + EMPTY_SLOT_H / 2,
+        w: EMPTY_SLOT_W,
+        h: EMPTY_SLOT_H,
+      });
+    } else {
+      // Between every adjacent pair: slot centered in the gap region.
+      for (let i = 0; i < g.children.length - 1; i++) {
+        const a = g.children[i];
+        const b = g.children[i + 1];
+        const cy = (a.y + a.h + b.y) / 2;
+        slots.push({
+          parentId: g.id,
+          index: i + 1,
+          variant: "between",
+          cx: slotCx,
+          cy,
+          w: SLOT_SIZE,
+          h: SLOT_SIZE,
+        });
+      }
+      // End slot: just below the last child, in the natural place a new
+      // child would land (so the layout shift on insert is minimal).
+      const last = g.children[g.children.length - 1];
+      slots.push({
+        parentId: g.id,
+        index: g.children.length,
+        variant: "end",
+        cx: slotCx,
+        cy: last.y + last.h + GAP / 2,
+        w: SLOT_SIZE,
+        h: SLOT_SIZE,
+      });
+    }
+
+    for (const c of g.children) {
+      if (c.kind === "group") visit(c);
+    }
+  };
+
+  visit(root);
+  return slots;
 }
 
 // Total bounding box in canvas coords. Used to size the SVG wire layer

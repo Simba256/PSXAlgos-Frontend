@@ -36,6 +36,7 @@ import {
   type CondId,
   type ConditionGroup,
   type ConditionLeaf,
+  emptyGroup,
   fromBackend,
   hasAnyLeaf,
   insertChild,
@@ -50,13 +51,18 @@ import {
   toBackend,
 } from "@/lib/strategy/tree";
 import {
+  EMPTY_SLOT_H,
+  EMPTY_SLOT_W,
   GATE_H,
   GATE_W,
   GROUP_LABEL_H,
   GROUP_PAD,
   type GroupLayout,
+  type InsertionSlot,
   type LeafLayout,
   type NodeLayout,
+  SLOT_SIZE,
+  collectSlots,
   layoutTree,
   walkGroups,
   walkLeaves,
@@ -183,6 +189,23 @@ export function buildUpdateBody(
   };
 }
 
+// Phase D: detects "no hover, coarse pointer" environments (mobile / tablet
+// touch) so inline `+` slots can render at full opacity instead of hiding
+// behind a hover-reveal that touch users can't trigger. Falls back to
+// pointer/hover-aware behavior on desktop.
+function useTouchPointer(): boolean {
+  const [touch, setTouch] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(hover: none) and (pointer: coarse)");
+    setTouch(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setTouch(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return touch;
+}
+
 function deriveUniverseLabel(s: StrategyResponse): string {
   if (s.stock_symbols && s.stock_symbols.length > 0) {
     if (s.stock_symbols.length <= 2) return s.stock_symbols.join(", ");
@@ -267,6 +290,15 @@ export function EditorView({
   // it directly after confirmation, bypassing the pre-flight check.
   const performSave = async () => {
     if (!dirty || saveStatus === "saving") return;
+    // Phase D / Gap 20: tree-aware leaf check. The corner pill is gone, so
+    // a strategy can be authored entirely through inline `+` and end up
+    // structurally valid (groups present) but semantically empty (no leaf
+    // anywhere). Block the save before it reaches the backend, which
+    // rejects it independently with a 422.
+    if (!hasAnyLeaf(tree)) {
+      setFlash("A strategy needs at least one condition");
+      return;
+    }
     const body = buildUpdateBody(name, tree, exit, sizing);
     setSaveStatus("saving");
     try {
@@ -367,15 +399,20 @@ export function EditorView({
     setFlash(`Restored ${label}`);
   };
 
-  // Create-mode wiring — clicking "+ condition" stages a draft cond and the
-  // parent group it should be appended to. Save appends, Close cancels.
-  // Phase B's corner pill always targets the root; Phase D's inline `+`
-  // slots will pass nested group ids.
-  const [creating, setCreating] = useState<{ parentId: CondId; cond: SingleCondition } | null>(null);
-  const handleAddCondition = (parentId: CondId = tree.id) => {
+  // Create-mode wiring — clicking an inline `+` stages a draft cond and
+  // remembers (parentId, index) so the new leaf lands exactly where the
+  // user pointed. `index === undefined` falls back to "append to end",
+  // which is what every legacy code path already expected.
+  const [creating, setCreating] = useState<{
+    parentId: CondId;
+    index?: number;
+    cond: SingleCondition;
+  } | null>(null);
+  const handleAddCondition = (parentId: CondId = tree.id, index?: number) => {
     setSelection(null);
     setCreating({
       parentId,
+      index,
       cond: {
         kind: "condition",
         indicator: "rsi",
@@ -384,6 +421,36 @@ export function EditorView({
         params: null,
       },
     });
+  };
+
+  // Phase D: inserting an empty group from the inline picker. Auto-selects
+  // the new group so the GroupDrawer opens, and arms `pendingPicker` so the
+  // newly-rendered empty-group slot opens its own picker on first paint —
+  // user is never left staring at a dangling empty group.
+  const [pendingPicker, setPendingPicker] = useState<{
+    parentId: CondId;
+    index: number;
+  } | null>(null);
+  const handleAddGroup = (
+    parentId: CondId,
+    index: number,
+    logic: ConditionLogic,
+  ) => {
+    const fresh = emptyGroup(logic);
+    setTree((t) => insertChild(t, parentId, fresh, index));
+    setSelection({ kind: "group", id: fresh.id });
+    setPendingPicker({ parentId: fresh.id, index: 0 });
+    setDirty(true);
+  };
+  // Auto-clear pendingPicker once consumed so re-renders don't reopen it.
+  const consumePendingPicker = (parentId: CondId, index: number) => {
+    if (
+      pendingPicker &&
+      pendingPicker.parentId === parentId &&
+      pendingPicker.index === index
+    ) {
+      setPendingPicker(null);
+    }
   };
 
   const handleDeleteNode = (id: CondId) => {
@@ -473,7 +540,10 @@ export function EditorView({
             deployed={deployed}
             onValidate={handleValidate}
             onDeploy={handleDeploy}
-            onAddCondition={() => handleAddCondition(tree.id)}
+            onAddCondition={handleAddCondition}
+            onAddGroup={handleAddGroup}
+            pendingPicker={pendingPicker}
+            consumePendingPicker={consumePendingPicker}
             strategyId={initialStrategy.id}
           />
           {creating && (
@@ -484,7 +554,9 @@ export function EditorView({
               indicatorMeta={indicatorMeta}
               onApply={(nextCond) => {
                 const leaf = leafFromCond(nextCond);
-                setTree((t) => insertChild(t, creating.parentId, leaf));
+                const parentId = creating.parentId;
+                const index = creating.index;
+                setTree((t) => insertChild(t, parentId, leaf, index));
                 setDirty(true);
                 setCreating(null);
                 setFlash(
@@ -1102,6 +1174,9 @@ function Canvas({
   onValidate,
   onDeploy,
   onAddCondition,
+  onAddGroup,
+  pendingPicker,
+  consumePendingPicker,
   strategyId,
 }: {
   tree: ConditionGroup;
@@ -1111,15 +1186,23 @@ function Canvas({
   deployed: boolean;
   onValidate: () => void;
   onDeploy: () => void;
-  onAddCondition: () => void;
+  onAddCondition: (parentId: CondId, index?: number) => void;
+  onAddGroup: (parentId: CondId, index: number, logic: ConditionLogic) => void;
+  pendingPicker: { parentId: CondId; index: number } | null;
+  consumePendingPicker: (parentId: CondId, index: number) => void;
   strategyId: number;
 }) {
   const isSelected = (kind: SelKind, id: CondId) =>
     selection?.kind === kind && selection.id === id;
   const T = useT();
+  const isTouch = useTouchPointer();
   const [pan, setPan] = useState({ x: 40, y: 20 });
   const [zoom, setZoom] = useState(1);
   const [isDragging, setIsDragging] = useState(false);
+  // Phase D: pointer position in world coords, used by inline `+` slots
+  // for the proximity-reveal effect (Gap 19). Null means pointer is off
+  // the canvas. Touch viewports skip this entirely (slots are always-on).
+  const [pointerWorld, setPointerWorld] = useState<{ x: number; y: number } | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
   const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -1187,6 +1270,24 @@ function Canvas({
       panStartRef.current = null;
     }
     e.preventDefault();
+  };
+
+  // Track pointer in world coords for the inline `+` proximity reveal.
+  // Runs unconditionally (not gated on pointer-capture) so hover-only
+  // movement updates slot opacities even when the user isn't dragging.
+  const onCanvasPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (isTouch) return;
+    const el = canvasRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const { pan: cp, zoom: cz } = viewRef.current;
+    setPointerWorld({
+      x: (e.clientX - rect.left - cp.x) / cz,
+      y: (e.clientY - rect.top - cp.y) / cz,
+    });
+  };
+  const onCanvasPointerLeave = () => {
+    setPointerWorld(null);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -1259,7 +1360,11 @@ function Canvas({
     <div
       ref={canvasRef}
       onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
+      onPointerMove={(e) => {
+        onCanvasPointerMove(e);
+        onPointerMove(e);
+      }}
+      onPointerLeave={onCanvasPointerLeave}
       onPointerUp={endPointer}
       onPointerCancel={endPointer}
       style={{
@@ -1293,6 +1398,10 @@ function Canvas({
           const root = layoutTree(tree);
           const allLeaves = walkLeaves(root);
           const nestedGroups = walkGroups(root); // excludes root
+          // Phase D: every group exposes between/end/empty slots that
+          // serve as click targets for the inline `+` picker.
+          const slots = collectSlots(root);
+          const isTreeEmpty = tree.children.length === 0;
 
           // Pre-built id → group lookup so the wire pass can resolve each
           // node's `parentGateId` to a target gate position in O(1).
@@ -1464,6 +1573,31 @@ function Canvas({
                 ) : null,
               )}
 
+              {/* Phase D inline-add slots. Rendered last in the world layer
+                  so they sit above wires/boxes (slots are interactive; wires
+                  aren't). The picker pops out from the slot itself. */}
+              {slots.map((slot) => (
+                <InsertSlot
+                  key={`slot-${slot.parentId}-${slot.index}`}
+                  slot={slot}
+                  isTouch={isTouch}
+                  pointerWorld={pointerWorld}
+                  isTreeEmpty={isTreeEmpty && slot.parentId === root.id}
+                  autoOpen={
+                    pendingPicker !== null &&
+                    pendingPicker.parentId === slot.parentId &&
+                    pendingPicker.index === slot.index
+                  }
+                  onAutoOpenConsumed={() =>
+                    consumePendingPicker(slot.parentId, slot.index)
+                  }
+                  onAddCondition={() => onAddCondition(slot.parentId, slot.index)}
+                  onAddGroup={(logic) =>
+                    onAddGroup(slot.parentId, slot.index, logic)
+                  }
+                />
+              ))}
+
               <ExecNode
                 x={620}
                 y={execY}
@@ -1508,19 +1642,6 @@ function Canvas({
             </>
           );
         })()}
-      </div>
-
-      <div
-        style={{
-          position: "absolute",
-          bottom: 76,
-          left: 24,
-          display: "flex",
-          gap: 6,
-          zIndex: 5,
-        }}
-      >
-        <AddPill onClick={onAddCondition}>condition</AddPill>
       </div>
 
       <div
@@ -2021,44 +2142,403 @@ function OutputPin({
   );
 }
 
-function AddPill({
-  children,
-  onClick,
+// Phase D: inline `+` slot. Renders one of three variants:
+//   • `between` — small 16px `+` in the gap between two adjacent children
+//   • `end`     — small 16px `+` after the last child of a group
+//   • `empty`   — wider placeholder for groups with no children yet
+//
+// Reveal model (Gap 19):
+//   • Touch viewports — always visible at full opacity
+//   • Pointer viewports — opacity = 1 within 80px (world coords) of the
+//     cursor, fading out smoothly past that. The picker, once opened, is
+//     always opaque regardless of pointer distance so the user can move
+//     to it without the slot vanishing.
+function InsertSlot({
+  slot,
+  isTouch,
+  pointerWorld,
+  isTreeEmpty,
+  autoOpen,
+  onAutoOpenConsumed,
+  onAddCondition,
+  onAddGroup,
 }: {
-  children: React.ReactNode;
-  onClick?: () => void;
+  slot: InsertionSlot;
+  isTouch: boolean;
+  pointerWorld: { x: number; y: number } | null;
+  // True only for the root group's empty placeholder — drives the
+  // user-facing copy ("Click + to add your first condition or group").
+  isTreeEmpty: boolean;
+  autoOpen: boolean;
+  onAutoOpenConsumed: () => void;
+  onAddCondition: () => void;
+  onAddGroup: (logic: ConditionLogic) => void;
 }) {
   const T = useT();
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [hover, setHover] = useState(false);
+
+  // Auto-open the picker when the parent flagged this slot (e.g. after
+  // adding an empty group, surface the first-child picker so the user
+  // isn't left with a dangling empty box).
+  useEffect(() => {
+    if (autoOpen) {
+      setPickerOpen(true);
+      onAutoOpenConsumed();
+    }
+  }, [autoOpen, onAutoOpenConsumed]);
+
+  // Proximity opacity for pointer viewports. Empty-variant slots stay
+  // fully visible (they ARE the affordance the user is supposed to click).
+  let opacity = 1;
+  if (!isTouch && !pickerOpen && !hover && slot.variant !== "empty") {
+    if (!pointerWorld) {
+      opacity = 0;
+    } else {
+      const dx = pointerWorld.x - slot.cx;
+      const dy = pointerWorld.y - slot.cy;
+      const dist = Math.hypot(dx, dy);
+      const REVEAL_RADIUS = 80;
+      opacity = Math.max(0, Math.min(1, 1 - dist / REVEAL_RADIUS));
+    }
+  }
+
+  const x = slot.cx - slot.w / 2;
+  const y = slot.cy - slot.h / 2;
+
+  if (slot.variant === "empty") {
+    return (
+      <div
+        style={{
+          position: "absolute",
+          left: x,
+          top: y,
+          width: slot.w,
+          height: slot.h,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+        }}
+      >
+        <div style={{ position: "relative" }}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setPickerOpen((v) => !v);
+            }}
+            aria-label="Add a condition or group"
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              border: `1px dashed ${hover ? T.outlineVariant : T.outlineFaint}`,
+              background: T.surface2 + "cc",
+              color: T.text2,
+              cursor: "pointer",
+              fontFamily: T.fontMono,
+              fontSize: 22,
+              lineHeight: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              transition: "border-color 120ms ease",
+            }}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+          >
+            +
+          </button>
+          {pickerOpen && (
+            <InsertPicker
+              topOffset={50}
+              onAddCondition={() => {
+                setPickerOpen(false);
+                onAddCondition();
+              }}
+              onAddGroup={(logic) => {
+                setPickerOpen(false);
+                onAddGroup(logic);
+              }}
+              onClose={() => setPickerOpen(false)}
+            />
+          )}
+        </div>
+        {isTreeEmpty && (
+          <div
+            style={{
+              fontFamily: T.fontMono,
+              fontSize: 11,
+              color: T.text3,
+              textAlign: "center",
+              maxWidth: 180,
+              lineHeight: 1.4,
+              userSelect: "none",
+            }}
+          >
+            Click + to add your first condition or group.
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Between / end variant: small 16px `+`.
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       style={{
-        padding: "6px 12px",
-        borderRadius: 999,
-        fontSize: 11.5,
-        color: T.text3,
-        background: T.surface2 + "cc",
-        border: `1px dashed ${T.outlineVariant}`,
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 5,
-        fontFamily: T.fontMono,
-        backdropFilter: "blur(6px)",
-        cursor: onClick ? "pointer" : "default",
-      }}
-      onMouseEnter={(e) => {
-        if (!onClick) return;
-        (e.currentTarget as HTMLButtonElement).style.color = T.text2;
-        (e.currentTarget as HTMLButtonElement).style.borderStyle = "solid";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.color = T.text3;
-        (e.currentTarget as HTMLButtonElement).style.borderStyle = "dashed";
+        position: "absolute",
+        left: x,
+        top: y,
+        width: slot.w,
+        height: slot.h,
+        opacity,
+        transition: pickerOpen ? "none" : "opacity 120ms ease",
+        pointerEvents: opacity > 0 || pickerOpen ? "auto" : "none",
       }}
     >
-      + {children}
-    </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setPickerOpen((v) => !v);
+        }}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        aria-label={
+          slot.variant === "end"
+            ? "Add a condition or group at the end"
+            : "Insert a condition or group here"
+        }
+        style={{
+          width: SLOT_SIZE,
+          height: SLOT_SIZE,
+          borderRadius: 999,
+          border: "none",
+          background: T.surface3,
+          color: T.text3,
+          cursor: "pointer",
+          padding: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: T.fontMono,
+          fontSize: 12,
+          lineHeight: 1,
+          fontWeight: 500,
+        }}
+      >
+        +
+      </button>
+      {pickerOpen && (
+        <InsertPicker
+          topOffset={22}
+          onAddCondition={() => {
+            setPickerOpen(false);
+            onAddCondition();
+          }}
+          onAddGroup={(logic) => {
+            setPickerOpen(false);
+            onAddGroup(logic);
+          }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Phase D: floating two-item picker that pops out of an inline `+` slot.
+// Item 1 inserts a draft condition (handled by the parent's create-mode
+// ConditionDrawer); item 2 reveals an AND/OR submenu and inserts an empty
+// group. Keyboard: ↑/↓ cycle, Enter confirms, Esc closes, → opens submenu
+// on the "Empty group" item.
+function InsertPicker({
+  topOffset,
+  onAddCondition,
+  onAddGroup,
+  onClose,
+}: {
+  // Vertical offset (px) from the picker's anchor (the relative-positioned
+  // shell wrapping the slot's button). For the 16px between/end button the
+  // caller passes 22; for the 44px empty-group button it passes 50 — both
+  // produce a 6px breathing-room gap between button and popover.
+  topOffset: number;
+  onAddCondition: () => void;
+  onAddGroup: (logic: ConditionLogic) => void;
+  onClose: () => void;
+}) {
+  const T = useT();
+  const [focusIdx, setFocusIdx] = useState(0); // 0 = condition, 1 = group
+  const [submenuOpen, setSubmenuOpen] = useState(false);
+  const [submenuIdx, setSubmenuIdx] = useState(0); // 0 = AND, 1 = OR
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click. Capture-phase so a click on another slot's
+  // toggle doesn't end up opening a second picker on top of this one.
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener("mousedown", onDoc, true);
+    return () => document.removeEventListener("mousedown", onDoc, true);
+  }, [onClose]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (submenuOpen) setSubmenuOpen(false);
+      else onClose();
+      return;
+    }
+    if (submenuOpen) {
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        setSubmenuIdx((i) => (i === 0 ? 1 : 0));
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        setSubmenuOpen(false);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        onAddGroup(submenuIdx === 0 ? "AND" : "OR");
+      }
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setFocusIdx((i) => (i === 1 ? 0 : 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setFocusIdx((i) => (i === 0 ? 1 : 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (focusIdx === 0) onAddCondition();
+      else setSubmenuOpen(true);
+    } else if (e.key === "ArrowRight" && focusIdx === 1) {
+      e.preventDefault();
+      setSubmenuOpen(true);
+    }
+  };
+
+  const itemBase: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "8px 12px",
+    border: "none",
+    background: "transparent",
+    color: T.text2,
+    fontFamily: T.fontMono,
+    fontSize: 12,
+    cursor: "pointer",
+    width: "100%",
+    textAlign: "left",
+  };
+  const focusedBg = T.surface3;
+
+  return (
+    <div
+      ref={(el) => {
+        rootRef.current = el;
+        // Auto-focus the menu container so arrow-key nav works without
+        // the user clicking inside first. tabIndex=-1 keeps it out of
+        // the regular tab order.
+        if (el && document.activeElement !== el) el.focus();
+      }}
+      onKeyDown={handleKeyDown}
+      tabIndex={-1}
+      role="menu"
+      style={{
+        position: "absolute",
+        top: topOffset,
+        left: 0,
+        minWidth: 168,
+        background: T.surface2,
+        borderRadius: 10,
+        boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 12px 32px -10px rgba(0,0,0,0.6)`,
+        padding: 4,
+        zIndex: 50,
+        display: "flex",
+        flexDirection: "column",
+        outline: "none",
+      }}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onAddCondition}
+        onMouseEnter={() => setFocusIdx(0)}
+        style={{
+          ...itemBase,
+          borderRadius: 6,
+          background: focusIdx === 0 ? focusedBg : "transparent",
+        }}
+      >
+        <span style={{ color: T.text3 }}>+</span> Condition
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        aria-haspopup="menu"
+        aria-expanded={submenuOpen}
+        onClick={() => setSubmenuOpen((v) => !v)}
+        onMouseEnter={() => setFocusIdx(1)}
+        style={{
+          ...itemBase,
+          borderRadius: 6,
+          background: focusIdx === 1 ? focusedBg : "transparent",
+          justifyContent: "space-between",
+        }}
+      >
+        <span>
+          <span style={{ color: T.text3 }}>+</span> Empty group
+        </span>
+        <span style={{ color: T.text3, fontSize: 11 }}>▸</span>
+      </button>
+      {submenuOpen && (
+        <div
+          role="menu"
+          aria-label="Empty group logic"
+          style={{
+            position: "absolute",
+            left: "100%",
+            top: 32,
+            marginLeft: 4,
+            background: T.surface2,
+            borderRadius: 10,
+            boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 12px 32px -10px rgba(0,0,0,0.6)`,
+            padding: 4,
+            minWidth: 96,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          {(["AND", "OR"] as const).map((logic, i) => (
+            <button
+              key={logic}
+              type="button"
+              role="menuitem"
+              onClick={() => onAddGroup(logic)}
+              onMouseEnter={() => setSubmenuIdx(i)}
+              style={{
+                ...itemBase,
+                borderRadius: 6,
+                background: submenuIdx === i ? focusedBg : "transparent",
+                fontFamily: T.fontHead,
+                fontSize: 13,
+                fontWeight: 500,
+              }}
+            >
+              {logic}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
