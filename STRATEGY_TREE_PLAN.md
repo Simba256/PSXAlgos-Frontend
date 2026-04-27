@@ -174,22 +174,95 @@ def evaluate_condition_group(group, current_data, previous_data) -> bool:
 
 Short-circuit eval (`all(...)` / `any(...)` are already short-circuiting in Python over generators — keep using them on the materialized list since recursion may be cheap).
 
-### A3. Tests
+### A3. Data migration (Alembic)
+
+The `strategies.entry_rules` and `strategies.exit_rules` columns are `Column(JSON)` — no `ALTER TABLE` is needed since the column type doesn't change. But existing rows have the legacy shape (no `kind` fields). Two complementary moves:
+
+1. **Read-time normalizer** at the strategies router boundary (covered above). Required because during deploy, in-flight reads could land before the migration completes.
+2. **One-shot Alembic data migration** that walks every row and backfills `kind` so storage becomes homogeneous.
+
+New migration `backend/alembic/versions/YYYYMMDD_NNNNNN_NNN_backfill_condition_kind.py`:
+
+```python
+"""backfill condition kind discriminator on strategy rules"""
+from alembic import op
+import sqlalchemy as sa
+import json
+
+revision = "..."
+down_revision = "..."
+
+def _backfill(node):
+    if isinstance(node, dict):
+        if "logic" in node and "kind" not in node:
+            node["kind"] = "group"
+        elif "indicator" in node and "kind" not in node:
+            node["kind"] = "condition"
+        for child in node.get("conditions", []) or []:
+            _backfill(child)
+    return node
+
+def upgrade():
+    bind = op.get_bind()
+    rows = bind.execute(sa.text("SELECT id, entry_rules, exit_rules FROM strategies")).fetchall()
+    for row_id, entry, exit_ in rows:
+        new_entry = _backfill(json.loads(entry) if isinstance(entry, str) else entry)
+        new_exit = _backfill(json.loads(exit_) if isinstance(exit_, str) else exit_) if exit_ else None
+        bind.execute(
+            sa.text("UPDATE strategies SET entry_rules = :e, exit_rules = :x WHERE id = :id"),
+            {"e": json.dumps(new_entry), "x": json.dumps(new_exit) if new_exit else None, "id": row_id},
+        )
+
+def downgrade():
+    # Reversible: strip kind fields. Normalizer would re-add on next read,
+    # but kept symmetric for completeness.
+    bind = op.get_bind()
+    def _strip(node):
+        if isinstance(node, dict):
+            node.pop("kind", None)
+            for child in node.get("conditions", []) or []:
+                _strip(child)
+        return node
+    rows = bind.execute(sa.text("SELECT id, entry_rules, exit_rules FROM strategies")).fetchall()
+    for row_id, entry, exit_ in rows:
+        bind.execute(
+            sa.text("UPDATE strategies SET entry_rules = :e, exit_rules = :x WHERE id = :id"),
+            {
+                "e": json.dumps(_strip(json.loads(entry) if isinstance(entry, str) else entry)),
+                "x": json.dumps(_strip(json.loads(exit_) if isinstance(exit_, str) else exit_)) if exit_ else None,
+                "id": row_id,
+            },
+        )
+```
+
+- **Idempotent** — `_backfill` only adds `kind` if absent, so running the migration twice is a no-op on already-migrated rows.
+- **Same code path on both Railway and local** — Alembic runs at deploy on Railway, manually on local DB.
+- **Retain the normalizer afterwards.** Don't remove it for at least one release cycle: belt-and-suspenders against any rows that slip in via direct SQL or rollback scenarios.
+
+### A4. Tests
 
 Add to `backend/tests/services/test_condition_evaluator.py`:
 
 - depth-2 nested tree: `(A AND B) OR (C AND D)` — verify all four truth-table combinations
 - depth-3 nested tree: `((A AND B) OR C) AND D` — verify edge cases
-- legacy flat shape still evaluates identically
+- legacy flat shape (no `kind` fields) still evaluates identically after normalizer
 - empty group at any depth returns `True`
 
-### A4. Done when
+Add to `backend/tests/migrations/test_backfill_condition_kind.py` (or wherever migration tests live):
+
+- Migration runs idempotently on a fixture DB containing legacy + already-normalized rows
+- Downgrade restores legacy shape
+- Mixed `entry_rules` (already has `kind`) + `exit_rules` (legacy) row migrates correctly
+
+### A5. Done when
 
 - [ ] Schema PR opens, all 423+ existing backend tests still green
-- [ ] New evaluator tests green
+- [ ] New evaluator + migration tests green
+- [ ] Migration runs cleanly against a snapshot of the production DB (manual smoke test before merging)
 - [ ] Manual round-trip: load a Phase-A-built nested strategy via `/api/strategies/{id}`, save, reload — JSON identical
+- [ ] Pre-existing strategies still load and evaluate (signal scanner, backtester, bot engine smoke test)
 
-**Phase A does NOT touch any frontend code.** The legacy frontend continues to send flat trees and the backend keeps accepting them.
+**Phase A does NOT touch any frontend code.** The legacy frontend continues to send flat trees and the backend keeps accepting them via the normalizer.
 
 ---
 
