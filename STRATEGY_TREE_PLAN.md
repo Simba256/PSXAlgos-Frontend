@@ -135,10 +135,10 @@ ConditionGroup.model_rebuild()  # resolve forward ref
 
 - **`ConditionGroup.model_rebuild()`** is required after class definition because of the recursive forward ref. Without it, validation raises `PydanticUndefinedAnnotation`. (Gap 2.)
 - **Discriminator `kind`** routes Pydantic v2's union resolution directly (no trial-and-error per branch). Validation errors on malformed input now point at the correct schema instead of confusing the user with leaf-vs-group ambiguity. (See Resolved Question 1.)
-- **Legacy backfill at read time.** Existing strategies in the DB don't have `kind` fields. Add a normalizer at the boundary — `backend/app/services/strategy_service.py` (or wherever strategies are hydrated from the JSON column) — that walks the tree and fills `kind = "group"` if the node has a `logic` key, else `kind = "condition"`. On the next save the normalized JSON persists. One-shot data migration is also acceptable but unnecessary; lazy backfill is simpler.
+- **No read-time normalizer.** Strict validation only. Legacy data is migrated once (Phase A3); all clients (editor + wizard) ship `kind` in their payloads. POSTs without `kind` return 422. (Gap 10.)
 - **Depth ceiling.** Add a `@model_validator(mode="after")` on `EntryRules` and `ExitRules` that walks the tree and rejects depth > 32. Same validator enforces "at least one leaf condition exists somewhere in the tree" — strategies of all-empty-groups must not save (they'd evaluate to `True` and fire on every bar). (Gaps 1, 3.)
 - **Empty `conditions: []`** is permitted at non-root depths (authoring flow needs it). The "at least one leaf" validator runs on the root only. (Gap 4.)
-- Verify with one round-trip test of every existing strategy fixture: load → normalize → validate → re-serialize → values equal.
+- Verify with one round-trip test of every existing strategy fixture: load (post-migration) → validate → re-serialize → values equal.
 
 ### A2. Evaluator change
 
@@ -177,12 +177,17 @@ def evaluate_condition_group(group, current_data, previous_data) -> bool:
 
 Short-circuit eval (`all(...)` / `any(...)` are already short-circuiting in Python over generators — keep using them on the materialized list since recursion may be cheap).
 
-### A3. Data migration (Alembic)
+### A3. Data migration (Alembic) — critical-path
 
-The `strategies.entry_rules` and `strategies.exit_rules` columns are `Column(JSON)` — no `ALTER TABLE` is needed since the column type doesn't change. But existing rows have the legacy shape (no `kind` fields). Two complementary moves:
+The `strategies.entry_rules` and `strategies.exit_rules` columns are `Column(JSON)` — no `ALTER TABLE` is needed since the column type doesn't change. Existing rows have the legacy shape (no `kind` fields). Since we deliberately do **not** ship a runtime normalizer (Gap 10), the migration is the **single mechanism** for transforming legacy data, and it must complete before the new app version starts serving traffic.
 
-1. **Read-time normalizer** at the strategies router boundary (covered above). Required because during deploy, in-flight reads could land before the migration completes.
-2. **One-shot Alembic data migration** that walks every row and backfills `kind` so storage becomes homogeneous.
+**Deploy ordering:**
+
+1. **Frontend update lands first** (`/strategies/new` wizard emits `kind`; editor's `buildUpdateBody` emits `kind` — both shipped via the small Phase B.0 prep PR below). On the current backend, Pydantic ignores the unknown `kind` field, so this is a no-op on production behavior.
+2. **Backend Phase A merges**, Railway runs the Alembic migration as a release command before swapping traffic. New app version with strict validation only sees migrated data.
+3. **No window of mixed-shape traffic.** Migration completes atomically before the new app accepts requests.
+
+**One-shot Alembic data migration** that walks every row and backfills `kind` so storage becomes homogeneous:
 
 New migration `backend/alembic/versions/YYYYMMDD_NNNNNN_NNN_backfill_condition_kind.py`:
 
@@ -239,9 +244,10 @@ def downgrade():
 ```
 
 - **Idempotent** — `_backfill` only adds `kind` if absent, so running the migration twice is a no-op on already-migrated rows.
-- **Same code path on both Railway and local** — Alembic runs at deploy on Railway, manually on local DB.
-- **Retain the normalizer afterwards.** Don't remove it for at least one release cycle: belt-and-suspenders against any rows that slip in via direct SQL or rollback scenarios.
+- **Same code path on both Railway and local** — Alembic runs at deploy on Railway, manually on local DB before starting the new server.
+- **No runtime normalizer to fall back on** (deliberate, Gap 10). If a row somehow ends up without `kind` post-migration (manual SQL, restored backup, etc.), reads will 422 — caught fast and loud rather than silently papered over.
 - **Concurrency window.** Railway runs Alembic as a release command before traffic switches to the new deploy, so the migration completes before any new request hits. Local DB runs the migration manually before starting the new server. **No row-level locks needed**; migration is single-pass and bounded by the row count. (Gap 7.)
+- **Rollback story.** If Phase A merges and we need to roll back: the OLD app code reads JSON and iterates `for cond in conditions:`, accessing `cond["indicator"]` etc. — it ignores any extra `kind` keys. So migrated data is forward-readable by the old app. Rollback is safe.
 - **Cache safety.** Redis `get_cache()` only stores backtest job state (`backtest_job:{job_id}`), never strategy rules. No cache invalidation required. (Gap 24.)
 - **Other tables**: confirmed `entry_rules` / `exit_rules` exist only on `strategies` — bots reference `strategy_id` and read live, backtests don't snapshot rules. Migration touches one table. (Gap 6.)
 
@@ -251,8 +257,8 @@ Add to `backend/tests/services/test_condition_evaluator.py`:
 
 - depth-2 nested tree: `(A AND B) OR (C AND D)` — verify all four truth-table combinations
 - depth-3 nested tree: `((A AND B) OR C) AND D` — verify edge cases
-- legacy flat shape (no `kind` fields) still evaluates identically after normalizer
-- empty group at any depth returns `True`
+- payloads without `kind` fields **return 422** (no normalizer fallback)
+- empty group at any depth returns `True` at runtime (root-level empty rejected at validation)
 - **depth-32 tree validates; depth-33 rejects with a clear error** (Gap 1)
 - **all-empty-groups tree rejects at the root EntryRules validator** (Gap 3)
 
@@ -280,7 +286,26 @@ Add to `backend/tests/migrations/test_backfill_condition_kind.py` (or wherever m
 - [ ] Pre-existing strategies still load and evaluate (**smoke**: signal scanner runs against ≥1 active strategy, 12-month backtest of one ACTIVE strategy completes, one ACTIVE bot's `evaluate_entry_rules` cycle passes)
 - [ ] **Docs updated**: `backend/BACKEND.md` (rules schema section), `backend/app/schemas/README.md`, `backend/app/models/README.md` if it referenced rules shape (Gap 9)
 
-**Phase A does NOT touch any frontend code.** The legacy frontend continues to send flat trees and the backend keeps accepting them via the normalizer. The wizard at `/strategies/new` also continues to emit flat shape — its output rides the normalizer (Gap 10, decision **(a)**).
+**Phase A is preceded by a small frontend prep PR (Phase B.0)** that updates `/strategies/new` wizard's `presetToEntryRules` and editor's `buildUpdateBody` to emit `kind` discriminators. That prep PR is a no-op on the current backend (Pydantic ignores unknown fields) but is required so the moment Phase A's strict validation goes live, every client is already speaking the new shape. (Gap 10.)
+
+---
+
+## Phase B.0 — Frontend prep (ships before Phase A)
+
+**Branch**: `feat/condition-tree-emit-kind`
+**Repo**: `psx-ui`
+**Output**: tiny PR. Required precursor to Phase A — without this, Phase A's strict validation breaks all wizard POSTs and editor saves the moment it deploys.
+
+Two changes:
+
+1. **`/strategies/new/page.tsx:152-191`** — `presetToEntryRules` outputs each leaf as `{ kind: "condition", indicator, operator, value, params }` and the wrapping group as `{ kind: "group", logic: "AND", conditions: [...] }`. ~10 lines of mechanical edits.
+2. **`editor-view.tsx:140`** — `buildUpdateBody`'s inline serializer adds `kind: "condition"` to each rule and `kind: "group"` to the wrapping group. ~5 lines.
+
+**Verification**: against the **current** backend (pre-Phase-A), Pydantic's default `Extra.ignore` drops the unknown `kind` field and validation passes. So this PR is observably a no-op until Phase A merges. After Phase A, every payload from psx-ui already has the canonical shape and strict validation passes.
+
+This is the cheapest possible safety mechanism for the order-of-deploy problem.
+
+**Done when**: build green, smoke test on `/strategies/new` and `/strategies/[id]` editor against current production backend confirms no regression.
 
 ---
 
@@ -515,7 +540,7 @@ New right-side drawer mirroring `ConditionDrawer`'s shape. Sections:
 - **Children summary** — read-only count: *"3 children — 2 conditions, 1 sub-group"*
 - **Actions** —
   - **Ungroup** — replaces this group with its children in the parent. Disabled if this is the root.
-    - **Logic-mismatch guard** (Gap 21): if `this.logic !== parent.logic`, the action is disabled with a tooltip *"Logic mismatch — change parent to {this.logic} first, then ungroup"*. Allowing it would silently change evaluation semantics (e.g., flattening an AND-group into an OR-parent ORs siblings that were previously ANDed).
+    - **Logic-mismatch confirmation** (Gap 21): if `this.logic !== parent.logic`, opens a `<UngroupConfirmModal>` that shows the BEFORE and AFTER expressions in plain English. Example: BEFORE = *"Trade when X **OR** (Y **AND** Z)"*, AFTER = *"Trade when X **OR** Y **OR** Z"*. Cancel is the default focus. The destructive Ungroup confirm button is right-positioned (not primary-styled) so muscle-memory `Enter` doesn't fire it. If `this.logic === parent.logic`, ungroup proceeds without a modal (no semantic change). Power-user intent is respected; semantic change is made unmissable.
   - **Delete** — removes the group and all descendants. Confirmation modal if it has 2+ children. Disabled if this is the root and removing it would leave the strategy with zero conditions (root must always exist; can be empty though).
 
 **No undo history in v1** (Gap 22). Destructive ops (Delete with N children, Ungroup with semantic shift) are gated by confirmation modals or disabled outright. Soft-delete at the strategy level is the safety net for "I deleted everything by accident."
@@ -586,7 +611,8 @@ Trees are bounded by author intent — practically <100 nodes even for the most 
 
 | Phase | Repo | Files touched (approx) | Behavior change |
 |---|---|---|---|
-| **A** | `psxDataPortal` | `schemas/strategy.py`, `services/backtesting/condition_evaluator.py`, tests | None visible — backend now accepts nested trees, but no client sends them yet |
+| **B.0** | `psx-ui` | `app/strategies/new/page.tsx` (presetToEntryRules), `app/strategies/[id]/editor-view.tsx` (buildUpdateBody) | None visible — payloads now include `kind`, current backend ignores it |
+| **A** | `psxDataPortal` | `schemas/strategy.py`, `services/backtesting/condition_evaluator.py`, alembic migration, tests | None visible — backend now accepts nested trees with strict validation, all clients already speak the new shape |
 | **B** | `psx-ui` | `lib/strategy/tree.ts` (new), `editor-view.tsx`, `lib/api/strategies.ts` (types) | None visible — internal model swap |
 | **C** | `psx-ui` | `editor-view.tsx`, new `<GroupBox>` component | Visual: existing strategies look identical, but the canvas now correctly renders nested trees if hand-built |
 | **D** | `psx-ui` | `editor-view.tsx` | Authoring: corner pill replaced with inline `+` everywhere |
@@ -614,14 +640,14 @@ Surfaced after grepping the actual code on both sides. Items marked **[FIX]** ar
 
 ### Frontend / state
 
-10. **[DECIDE]** **`/strategies/new` wizard's `presetToEntryRules` (`new/page.tsx:152-191`)** still emits the legacy flat shape with no `kind` field. Two options: **(a)** leave it as-is — backend's read-time normalizer adds `kind` on POST; **(b)** update the wizard to emit `kind` so the wire format is uniform. Recommend **(a)** — the wizard's output is conceptually identical to existing strategies and the normalizer's whole job is to handle this. Confirms once.
+10. **[RESOLVED → (b)]** **`/strategies/new` wizard's `presetToEntryRules` (`new/page.tsx:152-191`)** is updated to emit `kind` discriminators. Decision: drop the normalizer entirely; legacy data is transformed by the data migration; new clients all emit the canonical shape. Cleaner mental model, fewer code paths, no two-shape compatibility logic. **Order-of-deploy matters**: frontend update ships first (no-op on current backend since Pydantic ignores unknown fields by default), then Phase A backend ships with strict validation. See **A1** + **B3**.
 11. **[FIX]** **`buildUpdateBody` at `editor-view.tsx:140`.** The current serializer returns `{ entry_rules: { conditions: { logic, conditions: rules.map(r => r.cond) } } }` (flat). Phase B must rewrite this to walk the tree. Added to **B3**.
 12. **[FIX]** **ID generation.** Plan said `newId(prefix)` but didn't spec it. Use `crypto.randomUUID()` (server-and-client-safe, prefixed for debug-readability). Stable across re-renders by living in tree state, regenerated once at `fromBackend` time. Added to **B1**.
 13. **[FIX]** **Selection model edge case.** Clicking a group's gate glyph vs the group's box — does the gate have its own selection? Spec: clicking either selects the parent group (one selection target per group, not two). Logic is toggleable from the GroupDrawer (Phase E) and from a small click-affordance on the gate itself. Added to **C4** + **E1**.
 
 ### Canvas / layout
 
-14. **[DECIDE]** **Wire routing at deep nesting.** At depth ≥3, a Bezier curve from an inner gate to an outer gate may cross sibling group boxes. Two approaches: **(a)** simple Bezier and accept occasional crossings (they look ugly but don't mislead — the source/target are unambiguous); **(b)** orthogonal Manhattan routing (`L`-shaped paths around boxes — clean but ~80 lines of routing code). Recommend **(a) for v1** — ship simple, revisit if it actually looks bad in real strategies. Added to **C1**.
+14. **[RESOLVED → simple Bezier, no special routing]** Gate consolidation makes this a non-issue: each group emits **one** wire from its gate, not many. The only crossings that can occur are wire-on-wire (two siblings' single output wires intersecting on their way to a parent gate) — these are normal in node graphs and unambiguous. Box-on-wire crossings — the actually-confusing kind — don't happen with the auto-layout. Simple Bezier curves throughout. Added to **C1**.
 15. **[FIX]** **Vertical centering of group gates with mixed-height children.** Define explicitly: gate Y = midpoint of (first child's center) and (last child's center), not bounding-box center. With one short leaf and one tall nested group as children, this puts the gate visually between them rather than skewed toward the heavy child. Added to **C1**.
 16. **[FIX]** **Group visual states.** Spec: default (`T.outlineFaint` dashed border), hover (`T.outlineVariant` solid), selected (`T.primaryLight` solid + soft glow). Added to **C2**.
 17. **[FIX]** **Non-root empty group rendering.** Plan covered root-empty placeholder copy; non-root empty groups need a smaller `+` placeholder centered in the box (no copy — too noisy at depth). Added to **C2** + **D4**.
@@ -629,12 +655,12 @@ Surfaced after grepping the actual code on both sides. Items marked **[FIX]** ar
 ### Inline `+` / authoring
 
 18. **[FIX]** **Picker positioning auto-flip.** When a `+` is near the canvas viewport edge, the picker popover must flip up/right to stay in-bounds. Added to **D2**.
-19. **[DECIDE]** **Mobile / touch behavior for inline `+`.** Hover-reveal doesn't exist on touch. Three options: **(a)** always-visible `+` on touch viewports (busier canvas, but discoverable); **(b)** tap-empty-canvas-to-reveal-all-`+`-then-tap-one (hidden state, two-tap to add); **(c)** keep desktop as authoring surface, mobile is read-only. Recommend **(a)** — mobile users will thank us. Added to **D1**.
+19. **[RESOLVED → (a)]** **Mobile / touch behavior for inline `+`.** Always-visible at full opacity on touch viewports (detected via `(hover: none) and (pointer: coarse)`). Busier canvas on phones is preferable to invisible-controls. Added to **D1**.
 20. **[FIX]** **Save-time validation walks the tree.** Today the validator is `rules.length > 0`. Phase D must replace this with a recursive "exists at least one leaf in the tree" check. Added to **D4**.
 
 ### Group editing
 
-21. **[DECIDE]** **Ungroup with logic mismatch.** Outer = OR, inner = AND, user clicks Ungroup → children move up but they were AND-combined; promoting them into the OR parent **changes evaluation semantics**. Three options: **(a)** block the action with a tooltip "Logic mismatch — change parent to AND first"; **(b)** show a confirmation modal explaining the semantic change; **(c)** silently allow it (worst — silently breaks user's intent). Recommend **(a)** — block + explain. Added to **E1**.
+21. **[RESOLVED → (b)]** **Ungroup with logic mismatch.** Confirmation modal (not block) — respects power-user intent to deliberately flatten a sub-expression. The modal must communicate the semantic change concretely: shows the BEFORE expression in plain English (e.g., *"Trade when X **OR** (Y **AND** Z)"*), the AFTER expression (*"Trade when X **OR** Y **OR** Z"*), Cancel is the default focus, and the destructive Ungroup confirm button is right-positioned (not primary) so muscle-memory `Enter` doesn't fire it. Users who know what they're doing can confirm with intent; users who don't will see the actual change before clicking through. Added to **E1**.
 22. **[ACCEPT]** **No undo history in v1.** Destructive ops (delete group with N children, ungroup with semantic shift) are gated by confirmations. Adding undo means lifting an event log into editor state — meaningful work, deferred. Soft-delete at the strategy level remains the safety net. Documented in **E1**.
 
 ### Cross-cutting

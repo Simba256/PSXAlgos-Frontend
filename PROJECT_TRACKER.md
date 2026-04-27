@@ -12,11 +12,12 @@ PSX Algos — marketing site + in-app experience for a no-code strategy authorin
 - [ ] **Backend wiring — Phase 4: production cutover** — Vercel project, env vars (NEXTAUTH_SECRET must match Railway byte-for-byte), CORS origin add to backend, DNS, decommission old project. No frontend code changes here.
 
 ## Upcoming / Planned
-- [ ] **Condition tree — Phase A (backend, recursive schema + evaluator)** — see `STRATEGY_TREE_PLAN.md`. `psxDataPortal` repo, no frontend impact yet.
+- [ ] **Condition tree — Phase B.0 (frontend prep: emit `kind` from wizard + editor)** — small precursor PR, ships before Phase A so strict validation doesn't break clients on deploy.
+- [ ] **Condition tree — Phase A (backend, recursive schema + evaluator + migration)** — see `STRATEGY_TREE_PLAN.md`. `psxDataPortal` repo, no runtime normalizer (strict validation only). Migration is critical-path.
 - [ ] **Condition tree — Phase B (frontend tree state + serialization)** — internal model swap, no visual change.
 - [ ] **Condition tree — Phase C (canvas re-layout + boxed groups)** — visual rewrite of the strategy editor canvas.
-- [ ] **Condition tree — Phase D (inline `+` insertion)** — replaces corner pill with on-graph add affordances.
-- [ ] **Condition tree — Phase E (group editing: rename logic / ungroup / cascade delete)** — closes out the feature.
+- [ ] **Condition tree — Phase D (inline `+` insertion)** — replaces corner pill with on-graph add affordances. Always-visible `+` on touch viewports.
+- [ ] **Condition tree — Phase E (group editing: logic toggle / ungroup / cascade delete)** — closes out the feature. Ungroup with logic mismatch shows BEFORE/AFTER expression modal.
 
 ## Recently Completed
 - [x] **`STRATEGY_TREE_PLAN.md` — full plan for arbitrary-depth boolean condition trees.** User wants `(A AND B) OR (C AND D)`-style nested authoring with inline `+` insertion. Plan locks in 5 decisions (arbitrary depth, empty-group-then-fill flow, auto-layout no drag, boxed groups, phased rollout) and breaks the work into 5 shippable phases (A backend, B frontend state, C canvas, D inline add, E group editing). Backwards-compat falls out for free — flat strategies are valid depth-1 trees in both schema and renderer. Lifts the flat-schema constraint from ADR-10. **No code changes yet — plan only.** — (2026-04-27)
