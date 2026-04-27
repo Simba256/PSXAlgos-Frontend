@@ -82,11 +82,21 @@ type ConditionNode =
 type EntryRules = { conditions: ConditionNode }; // root is always a group
 ```
 
-### Backwards compatibility (free)
+### Backwards compatibility
 
-The current flat shape `{ logic: "AND", conditions: [c1, c2, c3] }` is **already a valid depth-1 tree** under the new model: a root group of logic AND with three condition children. Existing strategies hydrate without migration.
+The current flat shape `{ logic: "AND", conditions: [c1, c2, c3] }` is **structurally a depth-1 tree** under the new model — a root group of logic AND with N condition children. Pydantic doesn't see it that way out of the box because the children lack the `kind` discriminator, so we add a **read-time normalizer** at the strategies router boundary:
 
-When sending to the backend, the same is true in reverse: a depth-1 tree serializes to exactly the legacy JSON, so old consumers (signal scanner / backtester / bot engine) keep working through Phase A.
+```python
+def _backfill_kind(node: dict) -> dict:
+    if "logic" in node:
+        node["kind"] = "group"
+        node["conditions"] = [_backfill_kind(c) for c in node.get("conditions", [])]
+    else:
+        node["kind"] = "condition"
+    return node
+```
+
+Run it once on the `entry_rules.conditions` (and `exit_rules.conditions` if present) before validation. From there everything goes through the normal Pydantic pipeline. On the next save, the normalized JSON (with `kind` fields) persists. Old consumers (signal scanner / backtester / bot engine) all read through the same normalizer, so they keep working seamlessly during the rollout.
 
 ---
 
@@ -98,18 +108,34 @@ When sending to the backend, the same is true in reverse: a depth-1 tree seriali
 
 ### A1. Schema change
 
-`backend/app/schemas/strategy.py:131`:
+`backend/app/schemas/strategy.py:123` and `:131`:
 
 ```python
+class SingleCondition(BaseModel):
+    """A single condition comparing an indicator to a value."""
+    kind: Literal["condition"] = "condition"
+    indicator: Indicator
+    operator: Operator
+    value: ConditionValue
+    params: Optional[Dict[str, int]] = None
+
+
 class ConditionGroup(BaseModel):
     """Recursive: children are conditions OR sub-groups."""
+    kind: Literal["group"] = "group"
     logic: ConditionLogic = ConditionLogic.AND
-    conditions: List[Union["ConditionGroup", SingleCondition]]
+    conditions: List[Annotated[
+        Union["ConditionGroup", SingleCondition],
+        Field(discriminator="kind"),
+    ]]
+
+
+ConditionGroup.model_rebuild()  # resolve forward ref
 ```
 
-- Use **duck-typing** (presence of `logic` key ⇒ group, otherwise leaf). No `kind` field added to stored JSON. Pydantic v2's `Union[ConditionGroup, SingleCondition]` resolves cleanly because `SingleCondition` requires `indicator/operator/value` and would reject any payload with `logic`. (See Resolved Question 1.)
-- Migrate existing in-database strategies? **No** — old shape (`SingleCondition[]`) is still valid because the union accepts it. Pydantic happily parses old JSON as `List[SingleCondition]`.
-- Verify with one round-trip test of every existing strategy fixture.
+- **Discriminator `kind`** routes Pydantic v2's union resolution directly (no trial-and-error per branch). Validation errors on malformed input now point at the correct schema instead of confusing the user with leaf-vs-group ambiguity. (See Resolved Question 1.)
+- **Legacy backfill at read time.** Existing strategies in the DB don't have `kind` fields. Add a normalizer at the boundary — `backend/app/services/strategy_service.py` (or wherever strategies are hydrated from the JSON column) — that walks the tree and fills `kind = "group"` if the node has a `logic` key, else `kind = "condition"`. On the next save the normalized JSON persists. One-shot data migration is also acceptable but unnecessary; lazy backfill is simpler.
+- Verify with one round-trip test of every existing strategy fixture: load → normalize → validate → re-serialize → values equal.
 
 ### A2. Evaluator change
 
@@ -213,12 +239,12 @@ All ops are **immutable** (return a new tree). Trees are small (bounded by user 
 ### B2. Hydrate / serialize
 
 ```ts
-// Tolerate both legacy flat and new nested
+// Tolerate both legacy (no `kind`) and new (with `kind`) shapes
 export function fromBackend(rules: EntryRulesResponse): ConditionGroup;
 export function toBackend(root: ConditionGroup): EntryRulesPayload;
 ```
 
-`fromBackend` recognizes a flat list (no `logic` field on children) and wraps it as a depth-1 group. `toBackend` always emits the nested form; if the tree happens to be depth-1, the JSON is byte-identical to the legacy shape.
+`fromBackend` walks the input, treats any node with a `logic` key as a group and any node with `indicator` as a leaf, and assigns the `kind` discriminator + a fresh client-side `id` to each. `toBackend` strips client-only `id`s and emits `{ kind, logic, conditions }` for groups and `{ kind, indicator, operator, value, params }` for leaves. The backend's read-time normalizer is the safety net — even if we ever forget `kind` on the wire, the backend backfills it before validation.
 
 Unit-test the round-trip: every existing strategy fixture round-trips byte-for-byte.
 
@@ -446,6 +472,6 @@ Each phase is independently shippable. Stop after any phase = working product, j
 
 ## Resolved questions (2026-04-27)
 
-1. **JSON encoding** — duck-typing wins: a node is a group iff it has a `logic` key, otherwise it's a leaf condition. No `kind` field added to stored JSON. Existing strategies stay byte-identical on next save. **Robustness rationale**: any future tooling that reads stored rules — legacy migrations, ad-hoc SQL queries against the JSON column, third-party exports — will already work without knowing about a discriminator. The shape *is* the discriminator. Pydantic v2 union resolution still works (it tries each member of the union and accepts the first that validates; `SingleCondition` requires `indicator/operator/value` and rejects anything with `logic`, so disambiguation is unambiguous).
-2. **Group name field** — deferred. Groups have only `logic + conditions[]` in v1. If users start authoring deep trees and want labels for legibility, adding an optional `name: string | null` later is purely additive (no migration, no UI breakage).
+1. **JSON encoding** — **discriminator field** `kind: "group" | "condition"` on every node. Pydantic v2 uses `Field(discriminator="kind")` for direct dispatch (no trial-and-error union resolution, faster, validation errors point at the right schema). TypeScript mirrors with a discriminated union so `switch (node.kind)` gets compile-time exhaustiveness. Self-describing JSON — any tooling inspecting stored rules can see node type at a glance. Future-proof: adding a third node type later (`kind: "preset"`, `kind: "macro"`) doesn't require disambiguation hacks. Legacy strategies (which lack `kind`) get backfilled at read time by a one-line normalizer in the strategies router (`kind = "group"` if payload has `logic`, else `"condition"`); on next save the normalized JSON persists. Cost: ~18 bytes per node in stored JSON, negligible.
+2. **Group name field** — deferred. Groups have only `kind + logic + conditions[]` in v1. If users start authoring deep trees and want labels for legibility, adding an optional `name: string | null` later is purely additive (no migration, no UI breakage).
 3. **Wide trees** — pan + zoom is the v1 answer. Deep/wide trees that exceed the viewport are pannable just like today's canvas. No collapse / minimap / fit-to-viewport features in v1.
