@@ -36,7 +36,6 @@ import {
   type CondId,
   type ConditionGroup,
   type ConditionLeaf,
-  flattenLeaves,
   fromBackend,
   hasAnyLeaf,
   insertChild,
@@ -47,8 +46,21 @@ import {
   normalizeWireGroup,
   removeNode,
   replaceNode,
+  setGroupLogic,
   toBackend,
 } from "@/lib/strategy/tree";
+import {
+  GATE_H,
+  GATE_W,
+  GROUP_LABEL_H,
+  GROUP_PAD,
+  type GroupLayout,
+  type LeafLayout,
+  type NodeLayout,
+  layoutTree,
+  walkGroups,
+  walkLeaves,
+} from "@/lib/strategy/layout";
 
 type SelKind = "condition" | "execution" | "group";
 type Selection = { kind: SelKind; id: CondId } | null;
@@ -209,7 +221,6 @@ export function EditorView({
   const [tree, setTree] = useState<ConditionGroup>(() =>
     fromBackend(initialStrategy.entry_rules.conditions),
   );
-  const leaves = useMemo(() => flattenLeaves(tree), [tree]);
   const [exit, setExit] = useState<ExitRules>(initialStrategy.exit_rules);
   const [sizing, setSizing] = useState<PositionSizing>(initialStrategy.position_sizing);
   const [dirty, setDirty] = useState(false);
@@ -403,8 +414,11 @@ export function EditorView({
     setFlash("Condition duplicated");
   };
 
-  const handleToggleRootLogic = () => {
-    setTree((t) => ({ ...t, logic: t.logic === "AND" ? "OR" : "AND" }));
+  // Toggling group logic is shared between the root (clicked via gate glyph
+  // when only the root has a gate) and the GroupDrawer placeholder. Both
+  // collapse to `setGroupLogic` against the in-memory tree.
+  const handleSetGroupLogic = (id: CondId, logic: ConditionLogic) => {
+    setTree((t) => setGroupLogic(t, id, logic));
     setDirty(true);
   };
 
@@ -412,6 +426,13 @@ export function EditorView({
     if (selection?.kind !== "condition") return null;
     const node = findNode(tree, selection.id);
     if (!node || node.kind !== "condition") return null;
+    return node;
+  })();
+
+  const selectedGroup: ConditionGroup | null = (() => {
+    if (selection?.kind !== "group") return null;
+    const node = findNode(tree, selection.id);
+    if (!node || node.kind !== "group") return null;
     return node;
   })();
 
@@ -445,11 +466,9 @@ export function EditorView({
           }}
         >
           <Canvas
-            leaves={leaves}
-            logic={tree.logic}
+            tree={tree}
             selection={selection}
             onSelect={onSelect}
-            onToggleLogic={handleToggleRootLogic}
             drawerOpen={selection !== null || creating !== null}
             deployed={deployed}
             onValidate={handleValidate}
@@ -513,6 +532,14 @@ export function EditorView({
                 close();
                 setFlash("Saved · Execution");
               }}
+              onClose={close}
+            />
+          )}
+          {selection?.kind === "group" && selectedGroup && (
+            <GroupDrawer
+              key={selection.id}
+              group={selectedGroup}
+              onSetLogic={(logic) => handleSetGroupLogic(selectedGroup.id, logic)}
               onClose={close}
             />
           )}
@@ -1067,11 +1094,9 @@ function HistoryPopover({ onRestore }: { onRestore: (label: string) => void }) {
 }
 
 function Canvas({
-  leaves,
-  logic,
+  tree,
   selection,
   onSelect,
-  onToggleLogic,
   drawerOpen,
   deployed,
   onValidate,
@@ -1079,11 +1104,9 @@ function Canvas({
   onAddCondition,
   strategyId,
 }: {
-  leaves: ConditionLeaf[];
-  logic: ConditionLogic;
+  tree: ConditionGroup;
   selection: Selection;
   onSelect: (kind: SelKind, id: CondId) => void;
-  onToggleLogic: () => void;
   drawerOpen: boolean;
   deployed: boolean;
   onValidate: () => void;
@@ -1261,31 +1284,89 @@ function Canvas({
         }}
       >
         {(() => {
-          // Geometry derived from `leaves.length` so the canvas reshapes when
-          // conditions are added/removed. Y values centered on the gate glyph;
-          // with a single leaf the gate is hidden and the condition wires
-          // directly into ExecNode. Phase B still flattens the tree for
-          // rendering — Phase C is the boxed-group visual rewrite.
-          const NODE_X = 40;
-          const NODE_W = 200;
-          const NODE_H = 108;
-          const NODE_Y0 = 40;
-          const NODE_GAP = 120;
-          const condTopY = (i: number) => NODE_Y0 + i * NODE_GAP;
-          const condPinY = (i: number) => condTopY(i) + NODE_H / 2;
-          const N = leaves.length;
-          const gateY = N > 0 ? (condPinY(0) + condPinY(N - 1)) / 2 : 200;
-          const showGate = N > 1;
-          const execY = gateY - 54;
-          const execPinY = gateY;
-          const out1Y = gateY - 224; // Backtest pin at gateY-204
-          const out2Y = gateY - 36;  // Live signals pin at gateY-16
-          const out3Y = gateY + 136; // Automate pin at gateY+156
-          const gateBlockX = 410;
-          const gateBlockW = 110;
-          const condRightX = NODE_X + NODE_W;
-          const gateLeftX = 385;
-          const gateRightX = 545;
+          // Phase C: tree-aware auto-layout. The flat-list math from B is
+          // replaced by `layoutTree` (recursive size + place) which returns
+          // (x, y) for every node and per-group gate coordinates. For a
+          // depth-1 tree the layout produces near-identical pixel positions
+          // to the pre-Phase-C canvas; nested groups get boxed containers
+          // with their own gate glyph.
+          const root = layoutTree(tree);
+          const allLeaves = walkLeaves(root);
+          const nestedGroups = walkGroups(root); // excludes root
+
+          // Pre-built id → group lookup so the wire pass can resolve each
+          // node's `parentGateId` to a target gate position in O(1).
+          const groupMap = new Map<string, GroupLayout>();
+          groupMap.set(root.id, root);
+          for (const g of nestedGroups) groupMap.set(g.id, g);
+
+          // ExecNode and output pins still anchor to fixed coordinates —
+          // they live outside the entry tree. The exec X stays at 620 to
+          // match the pre-Phase-C right-side stack; its Y tracks the root
+          // gate (or single-child pin) so the connection stays clean.
+          const execPinY = root.pinY;
+          const execY = execPinY - 54;
+          const out1Y = execPinY - 224;
+          const out2Y = execPinY - 36;
+          const out3Y = execPinY + 136;
+
+          // Each non-root group with a visible gate, plus each leaf,
+          // contributes one wire to its parent gate. Groups whose own gate
+          // is hidden (n=1) are intentionally skipped — the single child
+          // wires straight through to the grandparent's gate.
+          const wires: Array<{
+            id: string;
+            d: string;
+            dashed: boolean;
+            color?: string;
+            width?: number;
+          }> = [];
+          const pushWire = (
+            from: { x: number; y: number },
+            to: { x: number; y: number },
+            opts: { id: string; dashed: boolean; color?: string; width?: number },
+          ) => {
+            const midX = from.x + 80;
+            wires.push({
+              id: opts.id,
+              d: `M ${from.x} ${from.y} C ${midX} ${from.y} ${midX} ${to.y} ${to.x} ${to.y}`,
+              dashed: opts.dashed,
+              color: opts.color,
+              width: opts.width,
+            });
+          };
+          const visit = (n: NodeLayout) => {
+            if (n.kind === "condition") {
+              const parent = groupMap.get(n.parentGateId);
+              if (parent && parent.showGate) {
+                pushWire(
+                  { x: n.pinX, y: n.pinY },
+                  { x: parent.gateX, y: parent.gateY },
+                  { id: `wire-${n.id}`, dashed: true },
+                );
+              }
+              return;
+            }
+            if (n.showGate && n.parentGateId) {
+              const parent = groupMap.get(n.parentGateId);
+              if (parent && parent.showGate) {
+                pushWire(
+                  { x: n.gateX + GATE_W, y: n.gateY },
+                  { x: parent.gateX, y: parent.gateY },
+                  { id: `wire-${n.id}`, dashed: false, color: T.primaryLight, width: 2 },
+                );
+              }
+            }
+            for (const c of n.children) visit(c);
+          };
+          for (const c of root.children) visit(c);
+
+          // Root → ExecNode wire. Origin depends on whether the root gate
+          // is visible (≥2 children) — otherwise the deepest single-child
+          // pin propagated up via `root.pinX/pinY`.
+          const rootOriginX = root.showGate ? root.gateX + GATE_W : root.pinX;
+          const rootOriginY = root.showGate ? root.gateY : root.pinY;
+
           return (
             <>
               <svg
@@ -1298,28 +1379,22 @@ function Canvas({
                   overflow: "visible",
                 }}
               >
-                {leaves.map((leaf, i) => {
-                  const cy = condPinY(i);
-                  const tx = showGate ? gateLeftX : 620;
-                  const ty = showGate ? gateY : execPinY;
-                  const midX = condRightX + 80;
-                  return (
-                    <Connector
-                      key={leaf.id}
-                      d={`M ${condRightX} ${cy} C ${midX} ${cy} ${midX} ${ty} ${tx} ${ty}`}
-                      dashed
-                      T={T}
-                    />
-                  );
-                })}
-                {showGate && (
+                {wires.map((w) => (
                   <Connector
-                    d={`M ${gateRightX} ${gateY} C 585 ${gateY} 585 ${execPinY} 620 ${execPinY}`}
-                    color={T.primaryLight}
-                    width={2}
+                    key={w.id}
+                    d={w.d}
+                    dashed={w.dashed}
+                    color={w.color}
+                    width={w.width}
                     T={T}
                   />
-                )}
+                ))}
+                <Connector
+                  d={`M ${rootOriginX} ${rootOriginY} C ${rootOriginX + 40} ${rootOriginY} ${rootOriginX + 40} ${execPinY} 620 ${execPinY}`}
+                  color={T.primaryLight}
+                  width={2}
+                  T={T}
+                />
                 <Connector
                   d={`M 860 ${execPinY} C 870 ${execPinY} 870 ${out1Y + 20} 880 ${out1Y + 20}`}
                   color={T.primary}
@@ -1340,13 +1415,22 @@ function Canvas({
                 />
               </svg>
 
-              {leaves.map((leaf, i) => {
-                const meta = condToMeta(leaf.cond);
+              {nestedGroups.map((g) => (
+                <GroupBox
+                  key={`box-${g.id}`}
+                  group={g}
+                  selected={isSelected("group", g.id)}
+                  onSelect={() => onSelect("group", g.id)}
+                />
+              ))}
+
+              {allLeaves.map((leaf) => {
+                const meta = condToMeta(leaf.node.cond);
                 return (
                   <CondNode
                     key={leaf.id}
-                    x={NODE_X}
-                    y={condTopY(i)}
+                    x={leaf.x}
+                    y={leaf.y}
                     {...meta}
                     selected={isSelected("condition", leaf.id)}
                     onClick={() => onSelect("condition", leaf.id)}
@@ -1354,29 +1438,30 @@ function Canvas({
                 );
               })}
 
-              {showGate && (
-                <button
-                  type="button"
-                  onClick={onToggleLogic}
-                  aria-label={`Toggle gate logic (currently ${logic})`}
-                  title={`Click to toggle ${logic === "AND" ? "→ OR" : "→ AND"}`}
-                  style={{
-                    position: "absolute",
-                    left: gateBlockX,
-                    top: gateY - gateBlockW / 2,
-                    width: gateBlockW,
-                    height: gateBlockW,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    border: "none",
-                    background: "transparent",
-                    cursor: "pointer",
-                    padding: 0,
-                  }}
-                >
-                  <GateGlyph logic={logic} size={68} />
-                </button>
+              {/* Gate glyph buttons. Render after boxes/leaves so they sit
+                  on top. Root gate visible only when ≥2 children; nested
+                  group gates follow the same rule. Clicking selects the
+                  group (Gap 13: gate and box border share one target). */}
+              {root.showGate && (
+                <GateButton
+                  x={root.gateX}
+                  y={root.gateY}
+                  logic={root.node.logic}
+                  selected={isSelected("group", root.id)}
+                  onClick={() => onSelect("group", root.id)}
+                />
+              )}
+              {nestedGroups.map((g) =>
+                g.showGate ? (
+                  <GateButton
+                    key={`gate-${g.id}`}
+                    x={g.gateX}
+                    y={g.gateY}
+                    logic={g.node.logic}
+                    selected={isSelected("group", g.id)}
+                    onClick={() => onSelect("group", g.id)}
+                  />
+                ) : null,
               )}
 
               <ExecNode
@@ -1724,6 +1809,126 @@ function ExecNode({ x, y, selected, onClick }: { x: number; y: number; selected?
       <Pin x={-4} y={50} color={T.primaryLight} />
       <Pin x={236} y={50} color={T.accent} />
     </div>
+  );
+}
+
+// Boxed container for nested groups. The root group renders without a box
+// (its gate sits at the same canvas position the pre-Phase-C global gate
+// occupied), so this only renders for depth ≥1 nodes. Border styling is
+// state-driven (default / hover / selected) and clicking the box selects
+// the group — the gate glyph is its own click target but selects the same
+// group (Gap 13: one selection target, two affordances).
+function GroupBox({
+  group,
+  selected,
+  onSelect,
+}: {
+  group: GroupLayout;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const T = useT();
+  const [hover, setHover] = useState(false);
+  const border = selected
+    ? `1.5px solid ${T.primaryLight}`
+    : hover
+      ? `1px solid ${T.outlineVariant}`
+      : `1px dashed ${T.outlineFaint}`;
+  const shadow = selected
+    ? `0 0 0 4px ${T.primary}20`
+    : undefined;
+  return (
+    <div
+      onClick={(e) => {
+        // Only trigger when the box itself is clicked, not a child node
+        // bubbling up. The leaf/group children stop propagation by virtue
+        // of having their own onClick handlers.
+        if (e.target === e.currentTarget || (e.target as HTMLElement).dataset?.boxLabel === "true") {
+          onSelect();
+        }
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        position: "absolute",
+        left: group.x,
+        top: group.y,
+        width: group.w,
+        height: group.h,
+        borderRadius: 14,
+        border,
+        background: T.surfaceLow + "40",
+        boxShadow: shadow,
+        cursor: "pointer",
+        boxSizing: "border-box",
+      }}
+    >
+      <div
+        data-box-label="true"
+        style={{
+          position: "absolute",
+          left: GROUP_PAD,
+          top: 6,
+          fontFamily: T.fontMono,
+          fontSize: 10,
+          color: T.text3,
+          letterSpacing: 0.6,
+          textTransform: "uppercase",
+          height: GROUP_LABEL_H,
+          lineHeight: `${GROUP_LABEL_H}px`,
+          pointerEvents: "none",
+          userSelect: "none",
+        }}
+      >
+        group · {group.node.logic}
+      </div>
+    </div>
+  );
+}
+
+// Gate glyph as a click button. Both the root and any nested group use
+// this — clicking selects the corresponding group. Phase E will swap the
+// click handler for an in-drawer atomic logic toggle; for Phase C the
+// drawer placeholder owns the toggle.
+function GateButton({
+  x,
+  y,
+  logic,
+  selected,
+  onClick,
+}: {
+  x: number;
+  y: number;
+  logic: ConditionLogic;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`Group logic gate (currently ${logic})`}
+      title={`Click to edit group logic (${logic})`}
+      style={{
+        position: "absolute",
+        left: x,
+        top: y - GATE_H / 2,
+        width: GATE_W,
+        height: GATE_H,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        border: "none",
+        background: "transparent",
+        cursor: "pointer",
+        padding: 0,
+        outline: selected ? "2px solid currentColor" : "none",
+        outlineOffset: 4,
+        borderRadius: 12,
+      }}
+    >
+      <GateGlyph logic={logic} size={GATE_W} />
+    </button>
   );
 }
 
@@ -2384,6 +2589,138 @@ function fmtPct(n: number | null | undefined): string {
 
 function fmtDays(n: number | null | undefined): string {
   return n == null ? "21 days" : `${n} days`;
+}
+
+// Phase C placeholder for the eventual GroupDrawer (Phase E adds Ungroup
+// and Delete-group). For now it surfaces just the AND/OR logic toggle so
+// clicking a group's gate or box border still has an effect — same affordance
+// the pre-Phase-C root gate had, generalised to any group in the tree.
+function GroupDrawer({
+  group,
+  onSetLogic,
+  onClose,
+}: {
+  group: ConditionGroup;
+  onSetLogic: (logic: ConditionLogic) => void;
+  onClose: () => void;
+}) {
+  const T = useT();
+  const childCount = group.children.length;
+  const summary =
+    childCount === 0
+      ? "empty group"
+      : `${childCount} child${childCount === 1 ? "" : "ren"}`;
+  return (
+    <DrawerContainer>
+      <div
+        style={{
+          padding: "18px 20px 14px",
+          borderBottom: `1px solid ${T.outlineFaint}`,
+        }}
+      >
+        <div
+          style={{
+            fontFamily: T.fontMono,
+            fontSize: 10,
+            color: T.text3,
+            letterSpacing: 0.6,
+            textTransform: "uppercase",
+          }}
+        >
+          group
+        </div>
+        <div
+          style={{
+            fontFamily: T.fontHead,
+            fontSize: 18,
+            fontWeight: 500,
+            color: T.text,
+            marginTop: 4,
+            letterSpacing: -0.2,
+          }}
+        >
+          {group.logic} · <span style={{ color: T.text3, fontSize: 13 }}>{summary}</span>
+        </div>
+      </div>
+      <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
+        <div
+          style={{
+            fontFamily: T.fontMono,
+            fontSize: 10,
+            color: T.text3,
+            letterSpacing: 0.6,
+            textTransform: "uppercase",
+          }}
+        >
+          logic
+        </div>
+        <div
+          role="radiogroup"
+          aria-label="Group logic"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 8,
+            background: T.surfaceLow,
+            borderRadius: 10,
+            padding: 4,
+            border: `1px solid ${T.outlineFaint}`,
+          }}
+        >
+          {(["AND", "OR"] as const).map((opt) => {
+            const active = group.logic === opt;
+            return (
+              <button
+                key={opt}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                onClick={() => onSetLogic(opt)}
+                style={{
+                  background: active ? T.primary : "transparent",
+                  color: active ? T.surfaceLowest : T.text2,
+                  border: "none",
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  fontFamily: T.fontHead,
+                  fontSize: 14,
+                  fontWeight: 500,
+                  cursor: "pointer",
+                }}
+              >
+                {opt}
+              </button>
+            );
+          })}
+        </div>
+        <p
+          style={{
+            margin: 0,
+            color: T.text3,
+            fontSize: 12,
+            lineHeight: 1.5,
+          }}
+        >
+          {group.logic === "AND"
+            ? "All child conditions must hold for this group to fire."
+            : "Any one child firing makes this group fire."}
+        </p>
+      </div>
+      <div
+        style={{
+          marginTop: "auto",
+          padding: 16,
+          borderTop: `1px solid ${T.outlineFaint}`,
+          display: "flex",
+          justifyContent: "flex-end",
+        }}
+      >
+        <Btn variant="ghost" size="sm" onClick={onClose}>
+          Close
+        </Btn>
+      </div>
+    </DrawerContainer>
+  );
 }
 
 // Controlled ExecutionDrawer — Direction (long-only) and Exit-signal (no

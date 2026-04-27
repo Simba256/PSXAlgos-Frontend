@@ -42,3 +42,24 @@ edit are simpler and fast enough.
 
 `MAX_CONDITION_DEPTH = 32` — mirrors the backend constant in
 `backend/app/schemas/strategy.py`. Update both together if it ever moves.
+
+## `./layout.ts` — auto-layout for the canvas
+
+Phase C's two-pass layout algorithm. `layoutTree(root)` returns a parallel
+`GroupLayout` / `LeafLayout` tree with absolute pixel coordinates: `(x, y)`
+on every node, plus per-group `gateX`/`gateY` and outgoing-pin coordinates.
+
+| Function | Purpose |
+|---|---|
+| `layoutTree(root)` | Bottom-up size + top-down place. Anchors root at `(ROOT_CHILD_X, ROOT_CHILD_Y)` so depth-1 trees match the pre-Phase-C canvas pixel-for-pixel at the gate. |
+| `walkLeaves(root)` | DFS leaf walk over the placed layout — used to render `<CondNode>`s. |
+| `walkGroups(root)` | DFS walk over nested (non-root) groups — used to render `<GroupBox>`es and per-group gate buttons. |
+| `layoutBounds(root)` | Tight bounding box of the placed tree, for SVG sizing. |
+
+Constants: `NODE_W=200, NODE_H=108, GAP=12, GROUP_PAD=18, GROUP_LABEL_H=22,
+GATE_W=68, GATE_H=68, INNER_HGAP=80, ROOT_HGAP=170`.
+
+Single-child groups (n=1) hide their gate; the only child's wire is routed
+through the box directly to the grandparent's gate. The root never renders
+a box — its gate sits at the same canvas position the pre-Phase-C global
+gate occupied (`x ≈ 410` for a depth-1 tree).
