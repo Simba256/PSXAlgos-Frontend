@@ -56,6 +56,7 @@ import {
 import {
   EMPTY_SLOT_H,
   EMPTY_SLOT_W,
+  END_SLOT_H,
   GATE_H,
   GATE_W,
   GROUP_LABEL_H,
@@ -2351,10 +2352,13 @@ function InsertSlot({
     }
   }, [autoOpen, onAutoOpenConsumed]);
 
-  // Proximity opacity for pointer viewports. Empty-variant slots stay
-  // fully visible (they ARE the affordance the user is supposed to click).
+  // Proximity opacity for pointer viewports. `empty` and `end` variants
+  // stay fully visible — they're the discoverability path for "add the
+  // first / next condition" and would defeat the purpose at opacity 0.
+  // Only `between` slots fade in/out by cursor proximity, so dense trees
+  // don't get visually cluttered with permanent `+` buttons in every gap.
   let opacity = 1;
-  if (!isTouch && !pickerOpen && !hover && slot.variant !== "empty") {
+  if (!isTouch && !pickerOpen && !hover && slot.variant === "between") {
     if (!pointerWorld) {
       opacity = 0;
     } else {
@@ -2448,7 +2452,76 @@ function InsertSlot({
     );
   }
 
-  // Between / end variant: small 16px `+`.
+  // End variant: wide always-visible "+ Add condition" button below the
+  // last child. This is the primary discoverability path for adding more
+  // nodes — phase D's small hover-reveal pixel was too easy to miss when
+  // the tree had only one condition.
+  if (slot.variant === "end") {
+    return (
+      <div
+        style={{
+          position: "absolute",
+          left: x,
+          top: y,
+          width: slot.w,
+          height: slot.h,
+        }}
+      >
+        <div style={{ position: "relative", width: "100%", height: "100%" }}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setPickerOpen((v) => !v);
+            }}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+            aria-label="Add a condition or group"
+            style={{
+              width: "100%",
+              height: "100%",
+              borderRadius: 8,
+              border: `1px dashed ${hover || pickerOpen ? T.outlineVariant : T.outlineFaint}`,
+              background: hover || pickerOpen ? T.surface2 : T.surface2 + "aa",
+              color: T.text2,
+              cursor: "pointer",
+              padding: "0 12px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              fontFamily: T.fontMono,
+              fontSize: 12,
+              lineHeight: 1,
+              fontWeight: 500,
+              letterSpacing: 0.2,
+              transition: "border-color 120ms ease, background 120ms ease",
+            }}
+          >
+            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
+            <span>Add condition</span>
+          </button>
+          {pickerOpen && (
+            <InsertPicker
+              topOffset={END_SLOT_H + 6}
+              onAddCondition={() => {
+                setPickerOpen(false);
+                onAddCondition();
+              }}
+              onAddGroup={(logic) => {
+                setPickerOpen(false);
+                onAddGroup(logic);
+              }}
+              onClose={() => setPickerOpen(false)}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Between variant: small 16px `+` revealed on cursor proximity. Stays
+  // small to avoid clutter in groups with many siblings.
   return (
     <div
       style={{
@@ -2470,11 +2543,7 @@ function InsertSlot({
         }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
-        aria-label={
-          slot.variant === "end"
-            ? "Add a condition or group at the end"
-            : "Insert a condition or group here"
-        }
+        aria-label="Insert a condition or group here"
         style={{
           width: SLOT_SIZE,
           height: SLOT_SIZE,

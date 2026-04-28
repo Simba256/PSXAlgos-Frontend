@@ -61,7 +61,8 @@ on every node, plus per-group `gateX`/`gateY` and outgoing-pin coordinates.
 
 Constants: `NODE_W=200, NODE_H=108, GAP=12, GROUP_PAD=18, GROUP_LABEL_H=22,
 GATE_W=68, GATE_H=68, INNER_HGAP=80, ROOT_HGAP=170, SLOT_SIZE=16,
-EMPTY_SLOT_W=140, EMPTY_SLOT_H=108`.
+END_SLOT_W=140, END_SLOT_H=32, END_SLOT_OFFSET=12, EMPTY_SLOT_W=140,
+EMPTY_SLOT_H=108`.
 
 Single-child groups (n=1) hide their gate; the only child's wire is routed
 through the box directly to the grandparent's gate. The root never renders
@@ -71,11 +72,15 @@ gate occupied (`x ≈ 410` for a depth-1 tree).
 ### Slot variants (`collectSlots`)
 
 - **`between`** — `(children.length - 1)` slots, each centered in the
-  vertical gap between two adjacent children. Inserts at `index = i + 1`.
-- **`end`** — one slot just below the last child. Inserts at
+  vertical gap between two adjacent children. `SLOT_SIZE` (16px) round
+  pip; cursor-proximity reveal (opacity = 1 − dist/80px) so dense trees
+  don't get cluttered. Inserts at `index = i + 1`.
+- **`end`** — one wide button (`END_SLOT_W` × `END_SLOT_H` = 140×32) sitting
+  one full `END_SLOT_OFFSET` (= `GAP`) below the last child. **Always
+  visible** — this is the primary discoverability path for "add another
+  condition", so it doesn't hide behind hover-reveal. Inserts at
   `index = children.length`.
 - **`empty`** — one wider placeholder centered where the first child
   would land, emitted only when the group has zero children. Always
-  visible (variant is always-on at full opacity); the editor adds the
-  *"Click + to add your first condition or group"* copy when this is the
-  root group.
+  visible at full opacity; the editor adds the *"Click + to add your
+  first condition or group"* copy when this is the root group.

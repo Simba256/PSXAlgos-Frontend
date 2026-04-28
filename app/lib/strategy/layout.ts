@@ -32,9 +32,18 @@ export const ROOT_HGAP = 170;
 export const ROOT_CHILD_X = 40;
 export const ROOT_CHILD_Y = 40;
 
-// Phase D: insertion-slot icon size. Matches the small `+` button rendered
-// between siblings and at the end of a group's children list.
+// Phase D: between-sibling slot icon size. Stays small + hover-reveal so
+// dense trees don't get visually cluttered with `+` buttons everywhere.
 export const SLOT_SIZE = 16;
+// Phase D follow-up: the end-slot is the discoverability path for
+// "add another condition/group", so it renders as a wide always-visible
+// button instead of the tiny hover-reveal pixel. One per group (after the
+// last child); a depth-1 single-condition tree shows exactly one.
+export const END_SLOT_W = 140;
+export const END_SLOT_H = 32;
+// Vertical breathing room between the last child and the end-slot button.
+// Matches `GAP` so the slot sits one full sibling-gap below the node.
+export const END_SLOT_OFFSET = GAP;
 // Empty-group placeholder is a wider drop target so users have an obvious
 // click area when a group has no children yet.
 export const EMPTY_SLOT_W = 140;
@@ -319,17 +328,18 @@ export function collectSlots(root: GroupLayout): InsertionSlot[] {
           h: SLOT_SIZE,
         });
       }
-      // End slot: just below the last child, in the natural place a new
-      // child would land (so the layout shift on insert is minimal).
+      // End slot: a wide always-visible button sitting one full GAP below
+      // the last child, so it reads as an "Add another" affordance rather
+      // than visually attached to the node above it.
       const last = g.children[g.children.length - 1];
       slots.push({
         parentId: g.id,
         index: g.children.length,
         variant: "end",
         cx: slotCx,
-        cy: last.y + last.h + GAP / 2,
-        w: SLOT_SIZE,
-        h: SLOT_SIZE,
+        cy: last.y + last.h + END_SLOT_OFFSET + END_SLOT_H / 2,
+        w: END_SLOT_W,
+        h: END_SLOT_H,
       });
     }
 
@@ -368,5 +378,17 @@ export function layoutBounds(root: GroupLayout): {
   if (root.showGate) {
     maxX = Math.max(maxX, root.gateX + GATE_W);
   }
+  // Every populated group renders an always-visible end-slot one full GAP
+  // below its last child. Extend maxY so the world layer doesn't clip it.
+  const visitForEndSlot = (g: GroupLayout) => {
+    if (g.children.length > 0) {
+      const last = g.children[g.children.length - 1];
+      maxY = Math.max(maxY, last.y + last.h + END_SLOT_OFFSET + END_SLOT_H);
+    }
+    for (const c of g.children) {
+      if (c.kind === "group") visitForEndSlot(c);
+    }
+  };
+  visitForEndSlot(root);
   return { minX, minY, maxX, maxY };
 }
