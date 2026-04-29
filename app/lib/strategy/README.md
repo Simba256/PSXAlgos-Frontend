@@ -69,6 +69,12 @@ through the box directly to the grandparent's gate. The root never renders
 a box — its gate sits at the same canvas position the pre-Phase-C global
 gate occupied (`x ≈ 410` for a depth-1 tree).
 
+Populated groups reserve `END_SLOT_OFFSET + END_SLOT_H` (= 44px) of inner
+height for their always-visible end-slot button, so the slot is part of
+the group's bounding box. Without this reservation the slot pokes below
+the box and overlaps the next sibling, or collides with the parent's own
+end-slot.
+
 ### Slot variants (`collectSlots`)
 
 - **`between`** — `(children.length - 1)` slots, each centered in the

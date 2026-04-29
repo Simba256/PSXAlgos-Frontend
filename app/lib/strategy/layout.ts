@@ -109,6 +109,12 @@ function size(node: ConditionNode, isRoot: boolean): Size {
       sumH += sz.h;
     }
     sumH += GAP * (childCount - 1);
+    // Reserve vertical space for the always-visible end-slot button
+    // ("+ Add condition") that `collectSlots` emits after the last child.
+    // Without this, the slot pokes out below the group's bounding box and
+    // overlaps the next sibling — or the parent's own end-slot lands on
+    // top of this group's end-slot.
+    sumH += END_SLOT_OFFSET + END_SLOT_H;
     inner = { w: maxW, h: sumH };
   }
 
