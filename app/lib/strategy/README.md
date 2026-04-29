@@ -90,6 +90,11 @@ ADD_SLOT_H=32, ADD_SLOT_GAP=12, ROOT_GATE_X=410, ROOT_CHILD_Y=40`.
   `GROUP_LABEL_H` on top for the `GROUP · AND/OR` label. Box outlines
   reflect the real visual extent rather than a fixed column.
 - **Add-slot is per-gate.** Every group (root, populated, empty) has
-  exactly one slot, positioned at the bottom of the group's children
-  band, horizontally centered on the gate column. Always-visible —
-  there is no proximity-reveal, no between-sibling slots.
+  exactly one slot, positioned **directly below the gate glyph** (one
+  `ADD_SLOT_GAP` gap below the gate's bottom edge), horizontally
+  centered on the gate. For tall groups this lands the slot mid-tree
+  (between the children that flank the gate vertically) — that's
+  intentional: the slot reads as "add an input to *this* gate". It
+  stays inside the gate's column band, so it never overlaps a sibling
+  subtree horizontally. Always-visible — no proximity-reveal, no
+  between-sibling slots.

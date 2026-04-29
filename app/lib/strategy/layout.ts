@@ -185,7 +185,9 @@ function place(
     const placeholderY = startY;
     const gateY = placeholderY + NODE_H / 2;
     const slotCx = gateLeftX + GATE_W / 2;
-    const slotCy = placeholderY + NODE_H + ADD_SLOT_GAP + ADD_SLOT_H / 2;
+    // Slot sits directly below where the gate glyph would render so the
+    // affordance reads as "add an input to *this* gate".
+    const slotCy = gateY + GATE_H / 2 + ADD_SLOT_GAP + ADD_SLOT_H / 2;
     let minX = colX;
     let maxX = gateLeftX + GATE_W;
     let minY = placeholderY;
@@ -233,9 +235,6 @@ function place(
     placedChildren.push(place(child, cy, childParentGate, level + 1));
     cy += subtreeHeight(child) + GAP;
   }
-  // `cy` now sits one GAP past the last child's bottom edge — wind it
-  // back to get the actual bottom of the children band.
-  const childrenBottom = cy - GAP;
 
   // Gate Y: midpoint between first and last child's pin Y so wires
   // fan in symmetrically. For single-child groups (gate hidden) we
@@ -249,11 +248,14 @@ function place(
     gateY = (firstY + lastY) / 2;
   }
 
-  // Add-slot: bottom of the children band, horizontally centered on
-  // the gate. Visually inside the group box, attached to the gate
-  // column. Always-visible.
+  // Add-slot: just below the gate glyph (AND/OR text), horizontally
+  // centered on the gate. The user reads it as "add an input to this
+  // gate" because it's visually attached to the gate. For tall groups
+  // the slot lands mid-tree (between the children that flank the gate
+  // vertically) but stays inside the gate's column band, so it doesn't
+  // overlap any sibling subtree horizontally.
   const slotCx = gateLeftX + GATE_W / 2;
-  const slotCy = childrenBottom + ADD_SLOT_GAP + ADD_SLOT_H / 2;
+  const slotCy = gateY + GATE_H / 2 + ADD_SLOT_GAP + ADD_SLOT_H / 2;
 
   // Outgoing pin: gate right edge if visible, else the single child's
   // own pin (wire passes straight through the hidden gate).
