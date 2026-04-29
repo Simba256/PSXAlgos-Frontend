@@ -62,8 +62,11 @@ inputs flow left-to-right through gates toward the output.
 | `layoutBounds(root)` | Tight bounding box of the placed tree, for SVG sizing and the canvas `fit` button. |
 
 Constants: `NODE_W=200, NODE_H=108, GAP=12, GROUP_PAD=18, GROUP_LABEL_H=22,
-GATE_W=68, GATE_H=68, COLUMN_GAP=80, COLUMN_PITCH=280, ADD_SLOT_W=140,
-ADD_SLOT_H=32, ADD_SLOT_GAP=12, ROOT_GATE_X=410, ROOT_CHILD_Y=40`.
+GATE_W=104, GATE_H=76, COLUMN_GAP=80, COLUMN_PITCH=280, ADD_SLOT_W=140,
+ADD_SLOT_H=32, ADD_SLOT_GAP=12, ROOT_GATE_X=410, ROOT_CHILD_Y=40`. The
+gate glyph (`<GateGlyph size={GATE_W * 0.5}>`) is sized at half the box
+width so the italic AND/OR text sits comfortably inside the gate
+rectangle instead of spilling out.
 
 ### Layered layout invariants
 

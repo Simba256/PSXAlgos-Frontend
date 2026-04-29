@@ -2260,7 +2260,7 @@ function GateButton({
         borderRadius: 12,
       }}
     >
-      <GateGlyph logic={logic} size={GATE_W} />
+      <GateGlyph logic={logic} size={GATE_W * 0.5} />
     </button>
   );
 }

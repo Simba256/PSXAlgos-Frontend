@@ -33,8 +33,8 @@ import type {
 export const NODE_W = 200;
 export const NODE_H = 108;
 export const GAP = 12;
-export const GATE_W = 68;
-export const GATE_H = 68;
+export const GATE_W = 104;
+export const GATE_H = 76;
 export const GROUP_PAD = 18;
 export const GROUP_LABEL_H = 22;
 
