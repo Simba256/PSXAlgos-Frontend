@@ -468,10 +468,13 @@ export function EditorView({
     });
   };
 
-  // Phase D: inserting an empty group from the inline picker. Auto-selects
-  // the new group so the GroupDrawer opens, and arms `pendingPicker` so the
-  // newly-rendered empty-group slot opens its own picker on first paint —
-  // user is never left staring at a dangling empty group.
+  // Phase D: inserting an empty group from the inline picker. Arms
+  // `pendingPicker` so the newly-rendered empty-group slot opens its own
+  // picker on first paint — the user immediately sees the
+  // condition/sub-group choice for the new group, instead of being shoved
+  // into the GroupDrawer (which is for editing logic/ungroup, not for
+  // first-population). Selection is left untouched so the drawer stays
+  // closed; the user can click the gate or group box to open it later.
   const [pendingPicker, setPendingPicker] = useState<{
     parentId: CondId;
     index: number;
@@ -483,7 +486,6 @@ export function EditorView({
   ) => {
     const fresh = emptyGroup(logic);
     setTree((t) => insertChild(t, parentId, fresh, index));
-    setSelection({ kind: "group", id: fresh.id });
     setPendingPicker({ parentId: fresh.id, index: 0 });
     setDirty(true);
   };
