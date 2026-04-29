@@ -1573,10 +1573,24 @@ function Canvas({
           groupMap.set(root.id, root);
           for (const g of nestedGroups) groupMap.set(g.id, g);
 
-          // ExecNode and output pins still anchor to fixed coordinates —
-          // they live outside the entry tree. The exec X stays at 620 to
-          // match the pre-Phase-C right-side stack; its Y tracks the root
-          // gate (or single-child pin) so the connection stays clean.
+          // ExecNode and output pins live outside the entry tree but their
+          // X is derived from the tree so deeper/wider strategies don't
+          // overrun the output column. The wire origin (`rootOriginX`)
+          // sits at the root gate's right edge for multi-child trees and
+          // at the single-child's pin otherwise; exec trails by
+          // ROOT_TO_EXEC_GAP and the output stack trails exec by
+          // EXEC_TO_OUTPUT_GAP. With ROOT_TO_EXEC_GAP=142, a multi-child
+          // depth-1 tree still lands at execX=620 (pre-Phase-C anchor);
+          // deeper trees push the output column right naturally.
+          const ROOT_TO_EXEC_GAP = 142;
+          const EXEC_W = 240;
+          const EXEC_TO_OUTPUT_GAP = 260;
+          const rootOriginX = root.showGate ? root.gateX + GATE_W : root.pinX;
+          const rootOriginY = root.showGate ? root.gateY : root.pinY;
+          const execX = rootOriginX + ROOT_TO_EXEC_GAP;
+          const execPinRightX = execX + 236; // matches ExecNode's right Pin offset
+          const outputX = execX + EXEC_TO_OUTPUT_GAP;
+          const outputCurveCtrlX = outputX - 10;
           const execPinY = root.pinY;
           const execY = execPinY - 54;
           const out1Y = execPinY - 224;
@@ -1634,11 +1648,8 @@ function Canvas({
           };
           for (const c of root.children) visit(c);
 
-          // Root → ExecNode wire. Origin depends on whether the root gate
-          // is visible (≥2 children) — otherwise the deepest single-child
-          // pin propagated up via `root.pinX/pinY`.
-          const rootOriginX = root.showGate ? root.gateX + GATE_W : root.pinX;
-          const rootOriginY = root.showGate ? root.gateY : root.pinY;
+          // Root → ExecNode wire. Origin (rootOriginX/Y) was computed up
+          // top so execX could derive from it; reuse here for the wire.
 
           return (
             <>
@@ -1663,25 +1674,25 @@ function Canvas({
                   />
                 ))}
                 <Connector
-                  d={`M ${rootOriginX} ${rootOriginY} C ${rootOriginX + 40} ${rootOriginY} ${rootOriginX + 40} ${execPinY} 620 ${execPinY}`}
+                  d={`M ${rootOriginX} ${rootOriginY} C ${rootOriginX + 40} ${rootOriginY} ${rootOriginX + 40} ${execPinY} ${execX} ${execPinY}`}
                   color={T.primaryLight}
                   width={2}
                   T={T}
                 />
                 <Connector
-                  d={`M 860 ${execPinY} C 870 ${execPinY} 870 ${out1Y + 20} 880 ${out1Y + 20}`}
+                  d={`M ${execPinRightX} ${execPinY} C ${outputCurveCtrlX} ${execPinY} ${outputCurveCtrlX} ${out1Y + 20} ${outputX} ${out1Y + 20}`}
                   color={T.primary}
                   width={1.3}
                   T={T}
                 />
                 <Connector
-                  d={`M 860 ${execPinY} C 870 ${execPinY} 870 ${out2Y + 20} 880 ${out2Y + 20}`}
+                  d={`M ${execPinRightX} ${execPinY} C ${outputCurveCtrlX} ${execPinY} ${outputCurveCtrlX} ${out2Y + 20} ${outputX} ${out2Y + 20}`}
                   color={T.deploy}
                   width={1.6}
                   T={T}
                 />
                 <Connector
-                  d={`M 860 ${execPinY} C 870 ${execPinY} 870 ${out3Y + 20} 880 ${out3Y + 20}`}
+                  d={`M ${execPinRightX} ${execPinY} C ${outputCurveCtrlX} ${execPinY} ${outputCurveCtrlX} ${out3Y + 20} ${outputX} ${out3Y + 20}`}
                   color={T.accent}
                   width={1.3}
                   T={T}
@@ -1763,14 +1774,14 @@ function Canvas({
               ))}
 
               <ExecNode
-                x={620}
+                x={execX}
                 y={execY}
                 selected={isSelected("execution", "exec")}
                 onClick={() => onSelect("execution", "exec")}
               />
 
               <OutputPin
-                x={880}
+                x={outputX}
                 y={out1Y}
                 tint={T.primary}
                 glyph="⎈"
@@ -1781,7 +1792,7 @@ function Canvas({
                 href={`/backtest?strategy_id=${strategyId}`}
               />
               <OutputPin
-                x={880}
+                x={outputX}
                 y={out2Y}
                 tint={deployed ? T.deploy : T.text3}
                 glyph="◉"
@@ -1793,7 +1804,7 @@ function Canvas({
                 href="/signals"
               />
               <OutputPin
-                x={880}
+                x={outputX}
                 y={out3Y}
                 tint={T.accent}
                 glyph="◇"
