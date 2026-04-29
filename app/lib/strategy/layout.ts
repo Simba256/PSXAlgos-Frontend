@@ -1,18 +1,28 @@
-// Auto-layout for the condition-tree canvas.
+// Layered (Sugiyama-style) auto-layout for the strategy condition tree.
 //
-// Two-pass: a bottom-up `size` pass computes each subtree's bounding box,
-// then a top-down `place` pass assigns absolute (x, y) coordinates and the
-// per-group gate position. Output is a parallel layout tree that the
-// renderer walks once for box/leaf/gate placement and once for wire paths.
+// Every node gets a `level` = depth from root (root = 0). X is derived
+// purely from level: each level has its own column, with the root gate
+// at the rightmost column and the deepest leaves at the leftmost. This
+// matches how a logic-gate / circuit diagram is conventionally drawn —
+// inputs flow left-to-right through gates toward the output.
 //
-// The root is special: it never renders a box or label, and its children
-// land at fixed canvas coordinates (NODE_X=40, NODE_Y0=40) so that flat
-// (depth-1) strategies stay pixel-near-identical to the pre-Phase-C
-// hand-tuned layout. Nested groups get the natural recursive geometry.
+// Y is assigned top-down by recursive packing: each child's subtree
+// occupies a vertical band of `subtreeHeight(child)` and siblings are
+// stacked with `GAP` between bands. The gate of a populated group sits
+// at the vertical midpoint of its children's pin Ys (so wires fan in
+// symmetrically).
 //
-// Constants are tuned against the pre-Phase-C layout: ROOT_HGAP=170 places
-// the root gate at x≈410 (matching the old `gateBlockX`); GAP=12 matches
-// the old NODE_GAP - NODE_H spacing between siblings.
+// Each group also gets a single "add input" slot attached to its gate
+// — a wide always-visible "+ Add condition" button. There is exactly
+// one slot per group; clicking it appends a new child to that group.
+// This replaces the Phase D between/end/empty slot variants with a
+// per-gate authoring affordance, which makes the binding explicit:
+// you're adding an input to *this* gate, not somewhere on a column rail.
+//
+// The root gate's X is fixed (`ROOT_GATE_X`) so the output column
+// (ExecNode + OutputPins, which derive their X from `rootOriginX`)
+// doesn't drift with tree depth — deeper trees push leaves further
+// left instead.
 
 import type {
   ConditionGroup,
@@ -23,31 +33,33 @@ import type {
 export const NODE_W = 200;
 export const NODE_H = 108;
 export const GAP = 12;
-export const GROUP_PAD = 18;
-export const GROUP_LABEL_H = 22;
 export const GATE_W = 68;
 export const GATE_H = 68;
-export const INNER_HGAP = 80;
-export const ROOT_HGAP = 170;
-export const ROOT_CHILD_X = 40;
-export const ROOT_CHILD_Y = 40;
+export const GROUP_PAD = 18;
+export const GROUP_LABEL_H = 22;
 
-// Phase D: between-sibling slot icon size. Stays small + hover-reveal so
-// dense trees don't get visually cluttered with `+` buttons everywhere.
-export const SLOT_SIZE = 16;
-// Phase D follow-up: the end-slot is the discoverability path for
-// "add another condition/group", so it renders as a wide always-visible
-// button instead of the tiny hover-reveal pixel. One per group (after the
-// last child); a depth-1 single-condition tree shows exactly one.
-export const END_SLOT_W = 140;
-export const END_SLOT_H = 32;
-// Vertical breathing room between the last child and the end-slot button.
-// Matches `GAP` so the slot sits one full sibling-gap below the node.
-export const END_SLOT_OFFSET = GAP;
-// Empty-group placeholder is a wider drop target so users have an obvious
-// click area when a group has no children yet.
-export const EMPTY_SLOT_W = 140;
-export const EMPTY_SLOT_H = NODE_H;
+// Layered layout constants. COLUMN_PITCH is the horizontal distance
+// between two adjacent column centers; deeper levels are placed
+// `COLUMN_PITCH` further to the left of their parent. NODE_W + COLUMN_GAP
+// keeps a constant `COLUMN_GAP` between a leaf's right edge and the
+// parent gate's left edge (where the wire connects).
+export const COLUMN_GAP = 80;
+export const COLUMN_PITCH = NODE_W + COLUMN_GAP;
+
+// Per-group "add input" slot. One per group, attached to the gate so
+// the user understands "this slot adds an input to this gate".
+export const ADD_SLOT_W = 140;
+export const ADD_SLOT_H = 32;
+export const ADD_SLOT_GAP = GAP;
+
+// Anchor: root gate sits at this X regardless of tree depth. Output
+// column (Exec/Backtest/Live/Automate) anchors off `rootOriginX` so it
+// stays stable; deep trees just extend leftward into negative X if
+// needed (canvas is pannable).
+export const ROOT_GATE_X = 410;
+// Top of the canvas content. Leaves and gates are placed downward from
+// here.
+export const ROOT_CHILD_Y = 40;
 
 export interface LeafLayout {
   kind: "condition";
@@ -60,12 +72,17 @@ export interface LeafLayout {
   pinX: number;
   pinY: number;
   parentGateId: string;
+  level: number;
 }
 
 export interface GroupLayout {
   kind: "group";
   id: string;
   node: ConditionGroup;
+  // Group's bounding box (used for the dashed `<GroupBox>` wrapper).
+  // Wraps every descendant's visual + this group's own gate + the
+  // add-slot button. Non-root groups also include GROUP_PAD margin and
+  // GROUP_LABEL_H for the "GROUP · AND/OR" label.
   x: number;
   y: number;
   w: number;
@@ -74,181 +91,244 @@ export interface GroupLayout {
   showBox: boolean;
   showGate: boolean;
   children: NodeLayout[];
+  // Gate position. Right-aligned within the group's column band
+  // (gateX = leafColumnX + NODE_W - GATE_W) so the gate sits where the
+  // wire would naturally land coming in from the leaf's right pin.
   gateX: number;
   gateY: number;
+  // Outgoing pin (right side of the gate, or single-child's pin if
+  // the gate is hidden).
   pinX: number;
   pinY: number;
   parentGateId: string | null;
+  level: number;
+  // Add-slot center. Always present (every group, including empty,
+  // gets one).
+  addSlotCx: number;
+  addSlotCy: number;
 }
 
 export type NodeLayout = LeafLayout | GroupLayout;
 
-interface Size {
-  w: number;
-  h: number;
+// Subtree vertical extent in pixels. For populated groups the slot is
+// always reserved below the children so siblings don't collide with
+// it — even when the gate (and visually the slot) sit between children
+// vertically, we keep the bounding band predictable.
+function subtreeHeight(node: ConditionNode): number {
+  if (node.kind === "condition") return NODE_H;
+  const n = node.children.length;
+  if (n === 0) {
+    // Empty group: a placeholder row + the add-slot stacked below it.
+    return NODE_H + ADD_SLOT_GAP + ADD_SLOT_H;
+  }
+  let sum = 0;
+  for (const c of node.children) sum += subtreeHeight(c);
+  sum += GAP * (n - 1);
+  // Reserve the slot below the children so the next sibling never
+  // overlaps the slot. The slot itself renders at the bottom of the
+  // children band (see `place`).
+  return sum + ADD_SLOT_GAP + ADD_SLOT_H;
 }
 
-// Max bounding box of a subtree rooted at `node`. Empty groups still claim
-// a slot wide enough for an inline `+` placeholder (Phase D wires that to
-// real insertion); for now the slot just keeps the layout from collapsing.
-function size(node: ConditionNode, isRoot: boolean): Size {
-  if (node.kind === "condition") return { w: NODE_W, h: NODE_H };
-  const childCount = node.children.length;
-  const hgap = isRoot ? ROOT_HGAP : INNER_HGAP;
-  const showGate = childCount > 1;
-
-  let inner: Size;
-  if (childCount === 0) {
-    inner = { w: NODE_W, h: NODE_H };
-  } else {
-    let maxW = 0;
-    let sumH = 0;
-    for (const child of node.children) {
-      const sz = size(child, false);
-      if (sz.w > maxW) maxW = sz.w;
-      sumH += sz.h;
-    }
-    sumH += GAP * (childCount - 1);
-    // Reserve vertical space for the always-visible end-slot button
-    // ("+ Add condition") that `collectSlots` emits after the last child.
-    // Without this, the slot pokes out below the group's bounding box and
-    // overlaps the next sibling — or the parent's own end-slot lands on
-    // top of this group's end-slot.
-    sumH += END_SLOT_OFFSET + END_SLOT_H;
-    inner = { w: maxW, h: sumH };
-  }
-
-  const gateExtra = showGate ? hgap + GATE_W : 0;
-  const innerW = inner.w + gateExtra;
-  const innerH = inner.h;
-
-  if (isRoot) {
-    return { w: innerW, h: innerH };
-  }
-  return {
-    w: innerW + 2 * GROUP_PAD,
-    h: innerH + 2 * GROUP_PAD + GROUP_LABEL_H,
-  };
+// Column X for a given level. Level 0 (root) sits at ROOT_GATE_X minus
+// the leaf-column-to-gate offset; deeper levels are progressively
+// further left.
+function columnLeftX(level: number): number {
+  // Leaves at level L should have their LEFT edge at this X. Their
+  // right edge sits at columnLeftX(L) + NODE_W. The parent gate at
+  // level L-1 has its LEFT edge at columnLeftX(L) + COLUMN_PITCH +
+  // (NODE_W - GATE_W) — i.e., ROOT_GATE_X for level 1, which is what
+  // we want.
+  // Solve so that gate at level 0 lands at ROOT_GATE_X:
+  //   gateLeftX(0) = columnLeftX(0) + NODE_W - GATE_W = ROOT_GATE_X
+  //   columnLeftX(0) = ROOT_GATE_X - NODE_W + GATE_W
+  // For level L: shift left by L * COLUMN_PITCH.
+  return ROOT_GATE_X - NODE_W + GATE_W - level * COLUMN_PITCH;
 }
 
 function place(
   node: ConditionNode,
-  frameX: number,
-  frameY: number,
-  isRoot: boolean,
+  startY: number,
   parentGateId: string | null,
+  level: number,
 ): NodeLayout {
+  const colX = columnLeftX(level);
+
   if (node.kind === "condition") {
     return {
       kind: "condition",
       id: node.id,
       node,
-      x: frameX,
-      y: frameY,
+      x: colX,
+      y: startY,
       w: NODE_W,
       h: NODE_H,
-      pinX: frameX + NODE_W,
-      pinY: frameY + NODE_H / 2,
+      pinX: colX + NODE_W,
+      pinY: startY + NODE_H / 2,
       parentGateId: parentGateId ?? "",
+      level,
     };
   }
 
-  const sz = size(node, isRoot);
+  // Group node.
   const childCount = node.children.length;
   const showGate = childCount > 1;
-  const hgap = isRoot ? ROOT_HGAP : INNER_HGAP;
+  const isRoot = level === 0;
+  // Gate is right-aligned within the node-width column band so the
+  // gate's left edge sits at the same X for every level (consistent
+  // wire entry point).
+  const gateLeftX = colX + NODE_W - GATE_W;
 
-  const childInnerX = isRoot ? ROOT_CHILD_X : frameX + GROUP_PAD;
-  const childInnerY = isRoot ? ROOT_CHILD_Y : frameY + GROUP_PAD + GROUP_LABEL_H;
-
-  // Children inherit the current group's id as their parent gate target.
-  // When this group's gate is hidden (n <= 1) we redirect them up to the
-  // grandparent so the wire skips the empty gate.
-  const childParentGate = showGate ? node.id : parentGateId ?? "";
-  const placedChildren: NodeLayout[] = [];
-  let cy = childInnerY;
-  for (const child of node.children) {
-    placedChildren.push(place(child, childInnerX, cy, false, childParentGate));
-    const childSz = size(child, false);
-    cy += childSz.h + GAP;
+  // Empty group: a placeholder row plus the slot below it. No gate
+  // (nothing to gate yet); the slot is the sole authoring path.
+  if (childCount === 0) {
+    const placeholderY = startY;
+    const gateY = placeholderY + NODE_H / 2;
+    const slotCx = gateLeftX + GATE_W / 2;
+    const slotCy = placeholderY + NODE_H + ADD_SLOT_GAP + ADD_SLOT_H / 2;
+    let minX = colX;
+    let maxX = gateLeftX + GATE_W;
+    let minY = placeholderY;
+    let maxY = slotCy + ADD_SLOT_H / 2;
+    minX = Math.min(minX, slotCx - ADD_SLOT_W / 2);
+    maxX = Math.max(maxX, slotCx + ADD_SLOT_W / 2);
+    if (!isRoot) {
+      minX -= GROUP_PAD;
+      maxX += GROUP_PAD;
+      minY -= GROUP_LABEL_H + GROUP_PAD;
+      maxY += GROUP_PAD;
+    }
+    return {
+      kind: "group",
+      id: node.id,
+      node,
+      x: minX,
+      y: minY,
+      w: maxX - minX,
+      h: maxY - minY,
+      isRoot,
+      showBox: !isRoot,
+      showGate: false,
+      children: [],
+      gateX: gateLeftX,
+      gateY,
+      pinX: gateLeftX + GATE_W,
+      pinY: gateY,
+      parentGateId,
+      level,
+      addSlotCx: slotCx,
+      addSlotCy: slotCy,
+    };
   }
 
-  // Gate centerline. With mixed-height children, the (first + last) / 2
-  // rule keeps the gate visually "between" the outermost branches rather
-  // than being pulled toward the heaviest one (Gap 15 in the plan).
+  // Children inherit the current group's id as their parent gate
+  // target. When this group's gate is hidden (n=1) the child wires
+  // straight up to the grandparent's gate.
+  const childParentGate = showGate ? node.id : parentGateId ?? "";
+
+  // Place children top-down, packing by subtree height.
+  let cy = startY;
+  const placedChildren: NodeLayout[] = [];
+  for (const child of node.children) {
+    placedChildren.push(place(child, cy, childParentGate, level + 1));
+    cy += subtreeHeight(child) + GAP;
+  }
+  // `cy` now sits one GAP past the last child's bottom edge — wind it
+  // back to get the actual bottom of the children band.
+  const childrenBottom = cy - GAP;
+
+  // Gate Y: midpoint between first and last child's pin Y so wires
+  // fan in symmetrically. For single-child groups (gate hidden) we
+  // still compute a reasonable gateY for slot placement.
   let gateY: number;
-  if (placedChildren.length === 0) {
-    gateY = childInnerY + NODE_H / 2;
-  } else if (placedChildren.length === 1) {
-    const only = placedChildren[0];
-    gateY =
-      only.kind === "condition" ? only.pinY : (only as GroupLayout).pinY;
+  if (placedChildren.length === 1) {
+    gateY = placedChildren[0].pinY;
   } else {
-    const first = placedChildren[0];
-    const last = placedChildren[placedChildren.length - 1];
-    const firstY =
-      first.kind === "condition" ? first.pinY : (first as GroupLayout).pinY;
-    const lastY =
-      last.kind === "condition" ? last.pinY : (last as GroupLayout).pinY;
+    const firstY = placedChildren[0].pinY;
+    const lastY = placedChildren[placedChildren.length - 1].pinY;
     gateY = (firstY + lastY) / 2;
   }
 
-  // Gate sits to the right of the children column inside the group's pad.
-  let maxChildRight = childInnerX;
-  for (const c of placedChildren) {
-    const r = c.x + c.w;
-    if (r > maxChildRight) maxChildRight = r;
-  }
-  // Empty group: keep a placeholder width so the box doesn't collapse.
-  if (placedChildren.length === 0) maxChildRight = childInnerX + NODE_W;
-  const gateX = maxChildRight + hgap;
+  // Add-slot: bottom of the children band, horizontally centered on
+  // the gate. Visually inside the group box, attached to the gate
+  // column. Always-visible.
+  const slotCx = gateLeftX + GATE_W / 2;
+  const slotCy = childrenBottom + ADD_SLOT_GAP + ADD_SLOT_H / 2;
 
-  // The group's outgoing pin is the gate when visible, otherwise the only
-  // child's own outgoing pin (the wire passes straight through the box).
-  // Empty groups expose their right-edge midpoint so layout stays valid.
+  // Outgoing pin: gate right edge if visible, else the single child's
+  // own pin (wire passes straight through the hidden gate).
   let pinX: number;
   let pinY: number;
   if (showGate) {
-    pinX = gateX + GATE_W;
+    pinX = gateLeftX + GATE_W;
     pinY = gateY;
-  } else if (placedChildren.length === 1) {
-    const only = placedChildren[0];
-    pinX = only.kind === "condition" ? only.pinX : (only as GroupLayout).pinX;
-    pinY = only.kind === "condition" ? only.pinY : (only as GroupLayout).pinY;
   } else {
-    pinX = isRoot ? frameX : frameX + sz.w;
-    pinY = gateY;
+    pinX = placedChildren[0].pinX;
+    pinY = placedChildren[0].pinY;
+  }
+
+  // Bounding box for the GroupBox visual: wraps every descendant +
+  // this group's gate + slot. Min/max walk over placed children's
+  // already-computed bounding boxes (nested groups already wrap their
+  // descendants).
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const c of placedChildren) {
+    if (c.x < minX) minX = c.x;
+    if (c.y < minY) minY = c.y;
+    if (c.x + c.w > maxX) maxX = c.x + c.w;
+    if (c.y + c.h > maxY) maxY = c.y + c.h;
+  }
+  // Gate (visible or hidden — slot still attaches to gate column).
+  minX = Math.min(minX, gateLeftX);
+  maxX = Math.max(maxX, gateLeftX + GATE_W);
+  if (showGate) {
+    minY = Math.min(minY, gateY - GATE_H / 2);
+    maxY = Math.max(maxY, gateY + GATE_H / 2);
+  }
+  // Slot.
+  minX = Math.min(minX, slotCx - ADD_SLOT_W / 2);
+  maxX = Math.max(maxX, slotCx + ADD_SLOT_W / 2);
+  minY = Math.min(minY, slotCy - ADD_SLOT_H / 2);
+  maxY = Math.max(maxY, slotCy + ADD_SLOT_H / 2);
+  if (!isRoot) {
+    minX -= GROUP_PAD;
+    maxX += GROUP_PAD;
+    minY -= GROUP_LABEL_H + GROUP_PAD;
+    maxY += GROUP_PAD;
   }
 
   return {
     kind: "group",
     id: node.id,
     node,
-    x: frameX,
-    y: frameY,
-    w: sz.w,
-    h: sz.h,
+    x: minX,
+    y: minY,
+    w: maxX - minX,
+    h: maxY - minY,
     isRoot,
     showBox: !isRoot,
     showGate,
     children: placedChildren,
-    gateX,
+    gateX: gateLeftX,
     gateY,
     pinX,
     pinY,
     parentGateId,
+    level,
+    addSlotCx: slotCx,
+    addSlotCy: slotCy,
   };
 }
 
 export function layoutTree(root: ConditionGroup): GroupLayout {
-  // Root is anchored so its children land at (ROOT_CHILD_X, ROOT_CHILD_Y),
-  // independent of frame coords. We pass (0, 0) as a placeholder and the
-  // root branch in `place` ignores it.
-  return place(root, 0, 0, true, null) as GroupLayout;
+  return place(root, ROOT_CHILD_Y, null, 0) as GroupLayout;
 }
 
-// Walks a placed layout and yields every leaf in DFS order. Used by the
-// canvas for rendering CondNodes.
+// Walks a placed layout and yields every leaf in DFS order. Used by
+// the canvas for rendering CondNodes.
 export function walkLeaves(root: GroupLayout): LeafLayout[] {
   const out: LeafLayout[] = [];
   const visit = (n: NodeLayout) => {
@@ -259,8 +339,8 @@ export function walkLeaves(root: GroupLayout): LeafLayout[] {
   return out;
 }
 
-// Walks a placed layout and yields every nested (non-root) group in DFS
-// order. Used by the canvas for rendering GroupBoxes and gates.
+// Walks a placed layout and yields every nested (non-root) group in
+// DFS order. Used by the canvas for rendering GroupBoxes and gates.
 export function walkGroups(root: GroupLayout): GroupLayout[] {
   const out: GroupLayout[] = [];
   const visit = (n: NodeLayout) => {
@@ -273,128 +353,67 @@ export function walkGroups(root: GroupLayout): GroupLayout[] {
   return out;
 }
 
-// Phase D: an authoring slot the user can click to insert a new child.
-// `parentId` + `index` together describe where `insertChild` should drop
-// the new node. `variant` lets the renderer choose between a small `+`
-// (between/end) and a larger placeholder for empty groups.
+// One slot per group (root included). The slot inserts a new child at
+// the END of the group's children list (`index = group.children.length`),
+// which matches the per-gate "add input to this gate" affordance.
 export interface InsertionSlot {
   parentId: string;
   index: number;
-  variant: "between" | "end" | "empty";
-  // Center coordinates of the slot's interactive region. Renderer offsets
-  // by half-size to position absolutely.
   cx: number;
   cy: number;
-  // Slot box dimensions. `between`/`end` use SLOT_SIZE; `empty` uses the
-  // wider EMPTY_SLOT_W/H so the click target matches the visual.
   w: number;
   h: number;
+  // True when the group has no children yet — the picker copy switches
+  // to a more inviting placeholder ("Click + to add your first
+  // condition or group").
+  isEmpty: boolean;
 }
 
-// Walks every group (including the root) in a placed layout and emits
-// insertion slots: between every pair of adjacent children, after the last
-// child, or — for empty groups — a single centered placeholder. Slot
-// coordinates use the same canvas coords as `walkLeaves` / `walkGroups`,
-// so the renderer can drop them straight into the world layer.
 export function collectSlots(root: GroupLayout): InsertionSlot[] {
   const slots: InsertionSlot[] = [];
-
   const visit = (g: GroupLayout) => {
-    const childInnerX = g.isRoot ? ROOT_CHILD_X : g.x + GROUP_PAD;
-    const childInnerY = g.isRoot ? ROOT_CHILD_Y : g.y + GROUP_PAD + GROUP_LABEL_H;
-    // Center the small `+` slots on the node column (children are aligned
-    // left at childInnerX with width NODE_W).
-    const slotCx = childInnerX + NODE_W / 2;
-
-    if (g.children.length === 0) {
-      // Empty group: a single large placeholder centered where the first
-      // child would land.
-      slots.push({
-        parentId: g.id,
-        index: 0,
-        variant: "empty",
-        cx: childInnerX + EMPTY_SLOT_W / 2,
-        cy: childInnerY + EMPTY_SLOT_H / 2,
-        w: EMPTY_SLOT_W,
-        h: EMPTY_SLOT_H,
-      });
-    } else {
-      // Between every adjacent pair: slot centered in the gap region.
-      for (let i = 0; i < g.children.length - 1; i++) {
-        const a = g.children[i];
-        const b = g.children[i + 1];
-        const cy = (a.y + a.h + b.y) / 2;
-        slots.push({
-          parentId: g.id,
-          index: i + 1,
-          variant: "between",
-          cx: slotCx,
-          cy,
-          w: SLOT_SIZE,
-          h: SLOT_SIZE,
-        });
-      }
-      // End slot: a wide always-visible button sitting one full GAP below
-      // the last child, so it reads as an "Add another" affordance rather
-      // than visually attached to the node above it.
-      const last = g.children[g.children.length - 1];
-      slots.push({
-        parentId: g.id,
-        index: g.children.length,
-        variant: "end",
-        cx: slotCx,
-        cy: last.y + last.h + END_SLOT_OFFSET + END_SLOT_H / 2,
-        w: END_SLOT_W,
-        h: END_SLOT_H,
-      });
-    }
-
+    slots.push({
+      parentId: g.id,
+      index: g.children.length,
+      cx: g.addSlotCx,
+      cy: g.addSlotCy,
+      w: ADD_SLOT_W,
+      h: ADD_SLOT_H,
+      isEmpty: g.children.length === 0,
+    });
     for (const c of g.children) {
       if (c.kind === "group") visit(c);
     }
   };
-
   visit(root);
   return slots;
 }
 
-// Total bounding box in canvas coords. Used to size the SVG wire layer
-// and ensure the world layer is large enough for the tree at all depths.
+// Total bounding box in canvas coords. Walks every descendant and
+// includes the root's own gate + slot. Used to size the SVG wire layer
+// and ensure the world layer is large enough for the tree at any depth.
 export function layoutBounds(root: GroupLayout): {
   minX: number;
   minY: number;
   maxX: number;
   maxY: number;
 } {
-  let minX = ROOT_CHILD_X;
-  let minY = ROOT_CHILD_Y;
+  let minX = root.gateX;
+  let minY = root.y;
   let maxX = root.gateX + GATE_W;
-  let maxY = ROOT_CHILD_Y;
+  let maxY = root.y + root.h;
   const visit = (n: NodeLayout) => {
-    minX = Math.min(minX, n.x);
-    minY = Math.min(minY, n.y);
-    maxX = Math.max(maxX, n.x + n.w);
-    maxY = Math.max(maxY, n.y + n.h);
+    if (n.x < minX) minX = n.x;
+    if (n.y < minY) minY = n.y;
+    if (n.x + n.w > maxX) maxX = n.x + n.w;
+    if (n.y + n.h > maxY) maxY = n.y + n.h;
     if (n.kind === "group") {
-      maxX = Math.max(maxX, n.gateX + GATE_W);
       for (const c of n.children) visit(c);
     }
   };
   for (const c of root.children) visit(c);
-  if (root.showGate) {
-    maxX = Math.max(maxX, root.gateX + GATE_W);
-  }
-  // Every populated group renders an always-visible end-slot one full GAP
-  // below its last child. Extend maxY so the world layer doesn't clip it.
-  const visitForEndSlot = (g: GroupLayout) => {
-    if (g.children.length > 0) {
-      const last = g.children[g.children.length - 1];
-      maxY = Math.max(maxY, last.y + last.h + END_SLOT_OFFSET + END_SLOT_H);
-    }
-    for (const c of g.children) {
-      if (c.kind === "group") visitForEndSlot(c);
-    }
-  };
-  visitForEndSlot(root);
+  // Root's add-slot may extend past root.h since root has no
+  // GROUP_PAD wrapping.
+  maxY = Math.max(maxY, root.addSlotCy + ADD_SLOT_H / 2);
   return { minX, minY, maxX, maxY };
 }

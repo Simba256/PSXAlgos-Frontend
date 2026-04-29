@@ -54,9 +54,7 @@ import {
   ungroupAt,
 } from "@/lib/strategy/tree";
 import {
-  EMPTY_SLOT_H,
-  EMPTY_SLOT_W,
-  END_SLOT_H,
+  ADD_SLOT_H,
   GATE_H,
   GATE_W,
   GROUP_LABEL_H,
@@ -65,8 +63,8 @@ import {
   type InsertionSlot,
   type LeafLayout,
   type NodeLayout,
-  SLOT_SIZE,
   collectSlots,
+  layoutBounds,
   layoutTree,
   walkGroups,
   walkLeaves,
@@ -1515,10 +1513,50 @@ function Canvas({
     setZoom(nz);
   };
 
+  // Auto-fit on mount: run resetView once after the canvas ref is wired
+  // up, so users opening an existing complex strategy don't land on a
+  // mostly-empty viewport. Subsequent re-renders preserve user pan.
+  const didInitialFit = useRef(false);
+
+  // Fit the entire tree + output column into the visible canvas. Layered
+  // layout means deep trees extend leftward into negative X, so the
+  // pre-layered "pan = (40, 20)" default would leave deep trees mostly
+  // off-screen. resetView now actually fits to content.
   const resetView = () => {
-    setPan({ x: 40, y: 20 });
-    setZoom(1);
+    const el = canvasRef.current;
+    if (!el) {
+      setPan({ x: 40, y: 20 });
+      setZoom(1);
+      return;
+    }
+    const root = layoutTree(tree);
+    const bounds = layoutBounds(root);
+    // Right side: include ExecNode + OutputPin column. Mirrors the
+    // execX/outputX derivation in the canvas render block.
+    const fitMaxX = root.gateX + GATE_W + 142 + 260 + 240;
+    const fitMinX = bounds.minX - 24;
+    const fitMinY = bounds.minY - 24;
+    const fitMaxY = Math.max(bounds.maxY, root.addSlotCy + ADD_SLOT_H / 2) + 24;
+    const contentW = fitMaxX - fitMinX;
+    const contentH = fitMaxY - fitMinY;
+    const rect = el.getBoundingClientRect();
+    const fitZoom = Math.min(rect.width / contentW, rect.height / contentH, 1);
+    const z = Math.max(0.3, Math.min(2.5, fitZoom));
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    const wx = (fitMinX + fitMaxX) / 2;
+    const wy = (fitMinY + fitMaxY) / 2;
+    setPan({ x: cx - wx * z, y: cy - wy * z });
+    setZoom(z);
   };
+
+  useEffect(() => {
+    if (didInitialFit.current) return;
+    if (!canvasRef.current) return;
+    didInitialFit.current = true;
+    resetView();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div
@@ -1573,21 +1611,22 @@ function Canvas({
           groupMap.set(root.id, root);
           for (const g of nestedGroups) groupMap.set(g.id, g);
 
-          // ExecNode and output pins live outside the entry tree but their
-          // X is derived from the tree so deeper/wider strategies don't
-          // overrun the output column. The wire origin (`rootOriginX`)
-          // sits at the root gate's right edge for multi-child trees and
-          // at the single-child's pin otherwise; exec trails by
-          // ROOT_TO_EXEC_GAP and the output stack trails exec by
-          // EXEC_TO_OUTPUT_GAP. With ROOT_TO_EXEC_GAP=142, a multi-child
-          // depth-1 tree still lands at execX=620 (pre-Phase-C anchor);
-          // deeper trees push the output column right naturally.
+          // ExecNode and output pins live outside the entry tree. With the
+          // layered layout the root gate is anchored at a FIXED X
+          // (`ROOT_GATE_X` in layout.ts), so deeper trees grow leftward
+          // into negative X and the output column stays put on the right.
+          // We use `root.gateX + GATE_W` as the exec anchor regardless of
+          // gate visibility (single-child trees hide the gate but the
+          // gate's would-be position is still fixed). The wire origin
+          // (`rootOriginX/Y`) tracks the actual outgoing pin so single-
+          // child trees still wire from leaf → exec without going through
+          // a hidden gate.
           const ROOT_TO_EXEC_GAP = 142;
-          const EXEC_W = 240;
           const EXEC_TO_OUTPUT_GAP = 260;
           const rootOriginX = root.showGate ? root.gateX + GATE_W : root.pinX;
           const rootOriginY = root.showGate ? root.gateY : root.pinY;
-          const execX = rootOriginX + ROOT_TO_EXEC_GAP;
+          const execAnchorX = root.gateX + GATE_W;
+          const execX = execAnchorX + ROOT_TO_EXEC_GAP;
           const execPinRightX = execX + 236; // matches ExecNode's right Pin offset
           const outputX = execX + EXEC_TO_OUTPUT_GAP;
           const outputCurveCtrlX = outputX - 10;
@@ -1755,8 +1794,6 @@ function Canvas({
                 <InsertSlot
                   key={`slot-${slot.parentId}-${slot.index}`}
                   slot={slot}
-                  isTouch={isTouch}
-                  pointerWorld={pointerWorld}
                   isTreeEmpty={isTreeEmpty && slot.parentId === root.id}
                   autoOpen={
                     pendingPicker !== null &&
@@ -2317,21 +2354,12 @@ function OutputPin({
   );
 }
 
-// Phase D: inline `+` slot. Renders one of three variants:
-//   • `between` — small 16px `+` in the gap between two adjacent children
-//   • `end`     — small 16px `+` after the last child of a group
-//   • `empty`   — wider placeholder for groups with no children yet
-//
-// Reveal model (Gap 19):
-//   • Touch viewports — always visible at full opacity
-//   • Pointer viewports — opacity = 1 within 80px (world coords) of the
-//     cursor, fading out smoothly past that. The picker, once opened, is
-//     always opaque regardless of pointer distance so the user can move
-//     to it without the slot vanishing.
+// Per-gate "add input" slot. One per group. Wide always-visible button
+// attached to the gate column, semantically "add an input to this gate".
+// Empty groups (no children yet) get an extra copy hint when they're the
+// root of an empty tree, since they're the user's only authoring path.
 function InsertSlot({
   slot,
-  isTouch,
-  pointerWorld,
   isTreeEmpty,
   autoOpen,
   onAutoOpenConsumed,
@@ -2339,10 +2367,8 @@ function InsertSlot({
   onAddGroup,
 }: {
   slot: InsertionSlot;
-  isTouch: boolean;
-  pointerWorld: { x: number; y: number } | null;
-  // True only for the root group's empty placeholder — drives the
-  // user-facing copy ("Click + to add your first condition or group").
+  // True only for the root group when the entire tree is empty —
+  // drives the "Click + to add your first condition or group" copy.
   isTreeEmpty: boolean;
   autoOpen: boolean;
   onAutoOpenConsumed: () => void;
@@ -2363,176 +2389,10 @@ function InsertSlot({
     }
   }, [autoOpen, onAutoOpenConsumed]);
 
-  // Proximity opacity for pointer viewports. `empty` and `end` variants
-  // stay fully visible — they're the discoverability path for "add the
-  // first / next condition" and would defeat the purpose at opacity 0.
-  // Only `between` slots fade in/out by cursor proximity, so dense trees
-  // don't get visually cluttered with permanent `+` buttons in every gap.
-  let opacity = 1;
-  if (!isTouch && !pickerOpen && !hover && slot.variant === "between") {
-    if (!pointerWorld) {
-      opacity = 0;
-    } else {
-      const dx = pointerWorld.x - slot.cx;
-      const dy = pointerWorld.y - slot.cy;
-      const dist = Math.hypot(dx, dy);
-      const REVEAL_RADIUS = 80;
-      opacity = Math.max(0, Math.min(1, 1 - dist / REVEAL_RADIUS));
-    }
-  }
-
   const x = slot.cx - slot.w / 2;
   const y = slot.cy - slot.h / 2;
+  const showHint = isTreeEmpty && slot.isEmpty;
 
-  if (slot.variant === "empty") {
-    return (
-      <div
-        style={{
-          position: "absolute",
-          left: x,
-          top: y,
-          width: slot.w,
-          height: slot.h,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 8,
-        }}
-      >
-        <div style={{ position: "relative" }}>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setPickerOpen((v) => !v);
-            }}
-            aria-label="Add a condition or group"
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: 12,
-              border: `1px dashed ${hover ? T.outlineVariant : T.outlineFaint}`,
-              background: T.surface2 + "cc",
-              color: T.text2,
-              cursor: "pointer",
-              fontFamily: T.fontMono,
-              fontSize: 22,
-              lineHeight: 1,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              transition: "border-color 120ms ease",
-            }}
-            onMouseEnter={() => setHover(true)}
-            onMouseLeave={() => setHover(false)}
-          >
-            +
-          </button>
-          {pickerOpen && (
-            <InsertPicker
-              topOffset={50}
-              onAddCondition={() => {
-                setPickerOpen(false);
-                onAddCondition();
-              }}
-              onAddGroup={(logic) => {
-                setPickerOpen(false);
-                onAddGroup(logic);
-              }}
-              onClose={() => setPickerOpen(false)}
-            />
-          )}
-        </div>
-        {isTreeEmpty && (
-          <div
-            style={{
-              fontFamily: T.fontMono,
-              fontSize: 11,
-              color: T.text3,
-              textAlign: "center",
-              maxWidth: 180,
-              lineHeight: 1.4,
-              userSelect: "none",
-            }}
-          >
-            Click + to add your first condition or group.
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // End variant: wide always-visible "+ Add condition" button below the
-  // last child. This is the primary discoverability path for adding more
-  // nodes — phase D's small hover-reveal pixel was too easy to miss when
-  // the tree had only one condition.
-  if (slot.variant === "end") {
-    return (
-      <div
-        style={{
-          position: "absolute",
-          left: x,
-          top: y,
-          width: slot.w,
-          height: slot.h,
-        }}
-      >
-        <div style={{ position: "relative", width: "100%", height: "100%" }}>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setPickerOpen((v) => !v);
-            }}
-            onMouseEnter={() => setHover(true)}
-            onMouseLeave={() => setHover(false)}
-            aria-label="Add a condition or group"
-            style={{
-              width: "100%",
-              height: "100%",
-              borderRadius: 8,
-              border: `1px dashed ${hover || pickerOpen ? T.outlineVariant : T.outlineFaint}`,
-              background: hover || pickerOpen ? T.surface2 : T.surface2 + "aa",
-              color: T.text2,
-              cursor: "pointer",
-              padding: "0 12px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 6,
-              fontFamily: T.fontMono,
-              fontSize: 12,
-              lineHeight: 1,
-              fontWeight: 500,
-              letterSpacing: 0.2,
-              transition: "border-color 120ms ease, background 120ms ease",
-            }}
-          >
-            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
-            <span>Add condition</span>
-          </button>
-          {pickerOpen && (
-            <InsertPicker
-              topOffset={END_SLOT_H + 6}
-              onAddCondition={() => {
-                setPickerOpen(false);
-                onAddCondition();
-              }}
-              onAddGroup={(logic) => {
-                setPickerOpen(false);
-                onAddGroup(logic);
-              }}
-              onClose={() => setPickerOpen(false)}
-            />
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  // Between variant: small 16px `+` revealed on cursor proximity. Stays
-  // small to avoid clutter in groups with many siblings.
   return (
     <div
       style={{
@@ -2541,54 +2401,76 @@ function InsertSlot({
         top: y,
         width: slot.w,
         height: slot.h,
-        opacity,
-        transition: pickerOpen ? "none" : "opacity 120ms ease",
-        pointerEvents: opacity > 0 || pickerOpen ? "auto" : "none",
       }}
     >
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          setPickerOpen((v) => !v);
-        }}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
-        aria-label="Insert a condition or group here"
-        style={{
-          width: SLOT_SIZE,
-          height: SLOT_SIZE,
-          borderRadius: 999,
-          border: "none",
-          background: T.surface3,
-          color: T.text3,
-          cursor: "pointer",
-          padding: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: T.fontMono,
-          fontSize: 12,
-          lineHeight: 1,
-          fontWeight: 500,
-        }}
-      >
-        +
-      </button>
-      {pickerOpen && (
-        <InsertPicker
-          topOffset={22}
-          onAddCondition={() => {
-            setPickerOpen(false);
-            onAddCondition();
+      <div style={{ position: "relative", width: "100%", height: "100%" }}>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setPickerOpen((v) => !v);
           }}
-          onAddGroup={(logic) => {
-            setPickerOpen(false);
-            onAddGroup(logic);
+          onMouseEnter={() => setHover(true)}
+          onMouseLeave={() => setHover(false)}
+          aria-label="Add an input to this gate"
+          style={{
+            width: "100%",
+            height: "100%",
+            borderRadius: 8,
+            border: `1px dashed ${hover || pickerOpen ? T.outlineVariant : T.outlineFaint}`,
+            background: hover || pickerOpen ? T.surface2 : T.surface2 + "aa",
+            color: T.text2,
+            cursor: "pointer",
+            padding: "0 12px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+            fontFamily: T.fontMono,
+            fontSize: 12,
+            lineHeight: 1,
+            fontWeight: 500,
+            letterSpacing: 0.2,
+            transition: "border-color 120ms ease, background 120ms ease",
           }}
-          onClose={() => setPickerOpen(false)}
-        />
-      )}
+        >
+          <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
+          <span>{slot.isEmpty ? "Add first input" : "Add input"}</span>
+        </button>
+        {pickerOpen && (
+          <InsertPicker
+            topOffset={ADD_SLOT_H + 6}
+            onAddCondition={() => {
+              setPickerOpen(false);
+              onAddCondition();
+            }}
+            onAddGroup={(logic) => {
+              setPickerOpen(false);
+              onAddGroup(logic);
+            }}
+            onClose={() => setPickerOpen(false)}
+          />
+        )}
+        {showHint && (
+          <div
+            style={{
+              position: "absolute",
+              top: ADD_SLOT_H + 6,
+              left: 0,
+              width: "100%",
+              fontFamily: T.fontMono,
+              fontSize: 11,
+              color: T.text3,
+              textAlign: "center",
+              lineHeight: 1.4,
+              userSelect: "none",
+              pointerEvents: "none",
+            }}
+          >
+            Click + to add your first condition or group.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
