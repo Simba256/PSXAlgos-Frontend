@@ -31,6 +31,7 @@ import type {
   StrategyUpdateBody,
   StrategyDependentBot,
   StrategyDependentsResponse,
+  Timeframe,
 } from "@/lib/api/strategies";
 import {
   type CondId,
@@ -2785,10 +2786,31 @@ const OPERATOR_OPTIONS: { value: Operator; label: string; hint: string }[] = [
 ];
 const COMPARE_MODES: CompareMode[] = ["Constant", "Indicator"];
 
-// Plain-English descriptions for the four section headers in ConditionDrawer.
+// Bar resolutions a condition can evaluate against. Mirrors backend's
+// Timeframe enum (schemas/strategy.py). `available: false` chips render as
+// locked ("coming soon") — backend rejects them today, so the UI disables
+// them up-front rather than letting a save fail at validation. Daily,
+// weekly and monthly are evaluated end-to-end; intraday (5m–4h) is
+// reserved until PSX intraday history is deep enough to backtest against.
+// Order matches the natural intraday → swing → positional progression a
+// trader would scan.
+const TIMEFRAMES: { value: Timeframe; label: string; available: boolean }[] = [
+  { value: "5m", label: "5m", available: false },
+  { value: "15m", label: "15m", available: false },
+  { value: "30m", label: "30m", available: false },
+  { value: "1h", label: "1h", available: false },
+  { value: "4h", label: "4h", available: false },
+  { value: "1D", label: "1D", available: true },
+  { value: "1W", label: "1W", available: true },
+  { value: "1M", label: "1M", available: true },
+];
+
+// Plain-English descriptions for the section headers in ConditionDrawer.
 // Surfaced via the InfoTooltip ("i in circle") next to each Kicker so a new
 // user can learn the section's purpose without reading docs.
 const FIELD_INFO = {
+  timeframe:
+    "Which candle this condition checks. 1D = one trading day per bar, 1W = one week, 1M = one month. Higher timeframes capture broader trends; lower ones (5m, 15m, 1h…) react faster but are noisier — intraday is coming soon as we backfill enough history.",
   indicator:
     "What the strategy looks at — price (Close, Open, High, Low), a moving average (SMA/EMA), momentum (RSI, MACD), volatility (ATR, Bollinger Bands), volume, etc. Pick the data point you want this rule to watch.",
   period:
@@ -2880,6 +2902,10 @@ function ConditionDrawer({
   const [compareMode, setCompareMode] = useState<CompareMode>(initialCompare);
   const [threshold, setThreshold] = useState<number>(initialThreshold);
   const [refIndicator, setRefIndicator] = useState<string>(initialRefIndicator);
+  // Bar resolution. Backend defaults absent values to "1D"; if a legacy
+  // condition was saved before the field existed we surface "1D" so the
+  // chip row reflects the live evaluation behavior.
+  const [timeframe, setTimeframe] = useState<Timeframe>(cond.timeframe ?? "1D");
   const thresholdPct = Math.max(0, Math.min(100, threshold));
 
   const slider = useSliderDrag((pct) => setThreshold(Math.round(pct * 100)));
@@ -2933,6 +2959,7 @@ function ConditionDrawer({
       indicator,
       operator: op,
       value: nextValue,
+      timeframe,
       params: cond.params ?? null,
     };
     onApply(next);
@@ -2982,6 +3009,64 @@ function ConditionDrawer({
 
       <div style={{ flex: 1, overflowX: "hidden", overflowY: "auto", padding: 22, paddingTop: 16 }}>
         <div style={{ marginTop: 4 }}>
+          <Kicker info={FIELD_INFO.timeframe}>timeframe</Kicker>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              marginTop: 8,
+            }}
+          >
+            {TIMEFRAMES.map((tf) => {
+              const active = timeframe === tf.value;
+              const locked = !tf.available;
+              const tip = locked
+                ? `${tf.label} timeframe — coming soon. We're backfilling intraday history; daily (1D) is the only timeframe evaluated today.`
+                : undefined;
+              return (
+                <button
+                  key={tf.value}
+                  type="button"
+                  disabled={locked}
+                  onClick={() => {
+                    if (!locked) setTimeframe(tf.value);
+                  }}
+                  title={tip}
+                  aria-label={
+                    locked ? `${tf.label} timeframe (coming soon, locked)` : `${tf.label} timeframe`
+                  }
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "6px 12px",
+                    borderRadius: 999,
+                    fontSize: 12,
+                    border: "none",
+                    cursor: locked ? "not-allowed" : "pointer",
+                    fontFamily: T.fontMono,
+                    fontVariantNumeric: "tabular-nums",
+                    background: active ? T.primary + "22" : T.surface,
+                    color: active ? T.primaryLight : locked ? T.text3 : T.text2,
+                    opacity: locked ? 0.55 : 1,
+                    boxShadow: `0 0 0 1px ${active ? T.primary : T.outlineFaint}`,
+                    transition: "background 140ms, color 140ms",
+                  }}
+                >
+                  {tf.label}
+                  {locked && (
+                    <span style={{ display: "inline-flex", marginLeft: 1, color: T.text3 }}>
+                      {Icon.lock}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 18 }}>
           <Combobox
             label="indicator"
             info={FIELD_INFO.indicator}

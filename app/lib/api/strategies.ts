@@ -34,6 +34,14 @@ export type PositionSizingType =
 // invites drift if the backend extends the list.
 export type Indicator = string;
 
+// Bar resolution a condition evaluates against. Mirrors backend's Timeframe
+// enum (schemas/strategy.py). Daily, weekly and monthly are evaluated
+// end-to-end. Intraday (5m–4h) are reserved on the wire — the editor
+// renders them as locked chips ("coming soon") until PSX intraday history
+// is deep enough to backtest against. The 1m bucket was dropped once the
+// editor settled on 5m as the floor. Default on the wire is "1D".
+export type Timeframe = "5m" | "15m" | "30m" | "1h" | "4h" | "1D" | "1W" | "1M";
+
 // ============ Condition shapes ============
 
 export interface ConstantValue {
@@ -59,6 +67,11 @@ export interface SingleCondition {
   indicator: Indicator;
   operator: Operator;
   value: ConditionValue;
+  // Bar resolution this condition evaluates on. Optional on the wire —
+  // backend defaults to "1D" when absent so existing strategies stay valid.
+  // Only "1D" is accepted today; other values fail backend validation until
+  // intraday evaluation lands.
+  timeframe?: Timeframe;
   params?: Record<string, number> | null;
 }
 

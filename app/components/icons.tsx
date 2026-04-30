@@ -123,4 +123,10 @@ export const Icon: Record<string, ReactElement> = {
       <circle cx="6" cy="3.7" r="0.45" fill="currentColor" stroke="none" />
     </svg>
   ),
+  lock: (
+    <svg width="10" height="10" viewBox="0 0 10 10" {...stroke} {...ariaHide} strokeWidth="1.2" strokeLinejoin="round">
+      <rect x="2" y="4.5" width="6" height="4" rx="0.6" />
+      <path d="M3.5 4.5V3.2a1.5 1.5 0 0 1 3 0v1.3" />
+    </svg>
+  ),
 };
