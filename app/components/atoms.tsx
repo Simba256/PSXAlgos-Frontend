@@ -741,10 +741,10 @@ export function Kicker({
 }
 
 // "i" in a circle, 14px hit target. Hovering or focusing shows a description
-// tooltip positioned below the icon. Touch users get the native title
-// attribute as a fallback (long-press on most mobile browsers reveals it).
-// Description text only — no rich content — to keep the floating popup
-// constrained and readable.
+// tooltip positioned below the icon. Touch users tap (focus fires on tap for
+// the focusable wrapper) to reveal the same popover. Native `title` is
+// intentionally not set here — the styled popover *is* the tooltip; setting
+// `title` would render the browser's own tooltip on top of it (double box).
 export function InfoTooltip({ text, label }: { text: string; label?: string }) {
   const T = useT();
   const [open, setOpen] = useState(false);
@@ -758,8 +758,7 @@ export function InfoTooltip({ text, label }: { text: string; label?: string }) {
     >
       <span
         role="img"
-        aria-label={label || "more info"}
-        title={text}
+        aria-label={label ? `${label}: ${text}` : text}
         tabIndex={0}
         style={{
           display: "inline-flex",
