@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { signBackendJwt } from "@/lib/api/jwt";
 import { ApiError } from "@/lib/api/client";
 import {
+  getStrategies,
   getStrategy,
   updateStrategy,
   deleteStrategy,
@@ -71,6 +72,30 @@ export async function PUT(
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
   try {
+    // Manual rename: reject (409) if the typed name collides with another
+    // strategy this user owns. Unlike the create path (POST), we don't
+    // silently auto-suffix here — the user typed an exact name on purpose,
+    // so they should know up-front rather than guess why their strategy is
+    // suddenly called "Foo (1)". The editor surfaces the message in the
+    // save toast.
+    if (typeof body.name === "string" && body.name.length > 0) {
+      const list = await getStrategies(jwt, { page: 1, page_size: 1000 }).catch(
+        () => null,
+      );
+      if (list) {
+        const conflict = list.items.find(
+          (s) => s.id !== id && s.name === body.name,
+        );
+        if (conflict) {
+          return NextResponse.json(
+            {
+              error: `A strategy named "${body.name}" already exists — pick a different name.`,
+            },
+            { status: 409 },
+          );
+        }
+      }
+    }
     return NextResponse.json(await updateStrategy(jwt, id, body));
   } catch (err) {
     return bubble(err);

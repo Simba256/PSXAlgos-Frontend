@@ -346,8 +346,22 @@ export function EditorView({
         body: JSON.stringify(body),
       });
       if (!res.ok) {
+        // Proxy returns `{error: "<message>"}` on non-2xx (see
+        // app/api/strategies/[id]/route.ts). Parse the JSON envelope so the
+        // toast shows the human message (e.g. the 409 on duplicate names)
+        // instead of dumping the raw `{"error":"..."}` text at the user.
         const text = await res.text().catch(() => "");
-        throw new Error(text || `Save failed (${res.status})`);
+        let message = `Save failed (${res.status})`;
+        if (text) {
+          try {
+            const data = JSON.parse(text);
+            if (data && typeof data.error === "string") message = data.error;
+            else message = text;
+          } catch {
+            message = text;
+          }
+        }
+        throw new Error(message);
       }
       setSavedAt(Date.now());
       setDirty(false);
