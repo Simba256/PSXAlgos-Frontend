@@ -256,19 +256,6 @@ export function MarketingNav({ badge }: { badge?: string }) {
 
         <div style={{ display: "flex", gap: compact ? 6 : 10, alignItems: "center" }}>
           {!compact && <ThemeToggle variant="inline" />}
-          <Link
-            href="/pricing"
-            style={{
-              fontFamily: T.fontMono,
-              fontSize: 11.5,
-              color: T.text2,
-              padding: "8px 14px",
-              whiteSpace: "nowrap",
-              cursor: "pointer",
-            }}
-          >
-            Pricing
-          </Link>
           <UserMenu
             size={30}
             fallback={
