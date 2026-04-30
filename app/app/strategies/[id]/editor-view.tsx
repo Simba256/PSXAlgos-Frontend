@@ -2763,16 +2763,41 @@ function useSliderDrag(onChange: (pct: number) => void) {
 
 // Operator options match backend's Operator enum (schemas/strategy.py).
 // `value` is the wire format; `label` is the canvas/drawer glyph.
-const OPERATOR_OPTIONS: { value: Operator; label: string }[] = [
-  { value: ">", label: ">" },
-  { value: ">=", label: "≥" },
-  { value: "<", label: "<" },
-  { value: "<=", label: "≤" },
-  { value: "==", label: "=" },
-  { value: "crosses_above", label: "×↑" },
-  { value: "crosses_below", label: "×↓" },
+// `hint` is the hover tooltip — kept short and plain-English so a new user
+// can tell `×↑` (crosses above) from `>` (greater than) without prior
+// quant background.
+const OPERATOR_OPTIONS: { value: Operator; label: string; hint: string }[] = [
+  { value: ">", label: ">", hint: "Greater than — the indicator is above the value." },
+  { value: ">=", label: "≥", hint: "Greater than or equal to the value." },
+  { value: "<", label: "<", hint: "Less than — the indicator is below the value." },
+  { value: "<=", label: "≤", hint: "Less than or equal to the value." },
+  { value: "==", label: "=", hint: "Equal to the value." },
+  {
+    value: "crosses_above",
+    label: "×↑",
+    hint: "Crosses above — the indicator just rose past the value (was below on the previous bar, now at or above).",
+  },
+  {
+    value: "crosses_below",
+    label: "×↓",
+    hint: "Crosses below — the indicator just dropped past the value (was above on the previous bar, now at or below).",
+  },
 ];
 const COMPARE_MODES: CompareMode[] = ["Constant", "Indicator"];
+
+// Plain-English descriptions for the four section headers in ConditionDrawer.
+// Surfaced via the InfoTooltip ("i in circle") next to each Kicker so a new
+// user can learn the section's purpose without reading docs.
+const FIELD_INFO = {
+  indicator:
+    "What the strategy looks at — price (Close, Open, High, Low), a moving average (SMA/EMA), momentum (RSI, MACD), volatility (ATR, Bollinger Bands), volume, etc. Pick the data point you want this rule to watch.",
+  period:
+    "Lookback window for the indicator, in bars (one bar = one trading day on daily data). Larger periods are smoother and slower to react; smaller periods are noisier but quicker.",
+  operator:
+    "How to compare the indicator on the left to the value on the right: greater than, less than, equal, or a 'cross' that fires only the moment the line moves past the threshold.",
+  comparedTo:
+    "Compare the indicator to a fixed number you choose (Constant — e.g. 'RSI < 30') or to another live indicator's value (Indicator — e.g. 'Close crosses above SMA 50').",
+} as const;
 
 function DrawerContainer({ children }: { children: React.ReactNode }) {
   const T = useT();
@@ -2959,6 +2984,7 @@ function ConditionDrawer({
         <div style={{ marginTop: 4 }}>
           <Combobox
             label="indicator"
+            info={FIELD_INFO.indicator}
             value={lhsLabel}
             onChange={(v) => {
               // Combobox commits the option's `value` (wire format), but
@@ -2978,7 +3004,7 @@ function ConditionDrawer({
 
         {period && (
           <div style={{ marginTop: 14 }}>
-            <Kicker>period</Kicker>
+            <Kicker info={FIELD_INFO.period}>period</Kicker>
             <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
               {period.choices.map((p) => {
                 const active = p === period.current;
@@ -3014,7 +3040,7 @@ function ConditionDrawer({
         )}
 
         <div style={{ marginTop: 18 }}>
-          <Kicker>operator</Kicker>
+          <Kicker info={FIELD_INFO.operator}>operator</Kicker>
           <div
             style={{
               display: "grid",
@@ -3030,6 +3056,7 @@ function ConditionDrawer({
                   key={o.value}
                   type="button"
                   onClick={() => setOp(o.value)}
+                  title={o.hint}
                   style={{
                     padding: "8px 0",
                     textAlign: "center",
@@ -3054,15 +3081,20 @@ function ConditionDrawer({
         </div>
 
         <div style={{ marginTop: 18 }}>
-          <Kicker>compared to</Kicker>
+          <Kicker info={FIELD_INFO.comparedTo}>compared to</Kicker>
           <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
             {COMPARE_MODES.map((t) => {
               const active = compareMode === t;
+              const modeHint =
+                t === "Constant"
+                  ? "Compare against a fixed number you choose with the slider/input below."
+                  : "Compare against another live indicator's value (e.g. Close vs SMA 50).";
               return (
                 <button
                   key={t}
                   type="button"
                   onClick={() => setCompareMode(t)}
+                  title={modeHint}
                   style={{
                     padding: "6px 12px",
                     borderRadius: 999,
@@ -3178,6 +3210,7 @@ function ConditionDrawer({
             <div style={{ marginTop: 10 }}>
               <Combobox
                 label="reference indicator"
+                info="The indicator on the right side of the comparison. Both sides are evaluated on the same bar, so this lets you write rules like 'Close > SMA 50' or 'EMA 12 crosses above EMA 26'."
                 value={refIndicator ? formatIndicator(refIndicator, null) : ""}
                 onChange={(v) => {
                   const match = indicatorOptions.find(

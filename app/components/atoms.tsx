@@ -4,6 +4,7 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } fr
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useT, type Tokens } from "./theme";
 import { useBreakpoint, PAD, pick, clampPx } from "./responsive";
+import { Icon } from "./icons";
 
 /* ────────── Buttons ────────── */
 
@@ -709,7 +710,15 @@ function TerminalCards<R>({
   );
 }
 
-export function Kicker({ children, color }: { children: ReactNode; color?: string }) {
+export function Kicker({
+  children,
+  color,
+  info,
+}: {
+  children: ReactNode;
+  color?: string;
+  info?: string;
+}) {
   const T = useT();
   return (
     <div
@@ -726,7 +735,75 @@ export function Kicker({ children, color }: { children: ReactNode; color?: strin
     >
       <span style={{ width: 14, height: 1, background: color || T.outline }} />
       {children}
+      {info && <InfoTooltip text={info} />}
     </div>
+  );
+}
+
+// "i" in a circle, 14px hit target. Hovering or focusing shows a description
+// tooltip positioned below the icon. Touch users get the native title
+// attribute as a fallback (long-press on most mobile browsers reveals it).
+// Description text only — no rich content — to keep the floating popup
+// constrained and readable.
+export function InfoTooltip({ text, label }: { text: string; label?: string }) {
+  const T = useT();
+  const [open, setOpen] = useState(false);
+  return (
+    <span
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      style={{ position: "relative", display: "inline-flex", alignItems: "center" }}
+    >
+      <span
+        role="img"
+        aria-label={label || "more info"}
+        title={text}
+        tabIndex={0}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 14,
+          height: 14,
+          borderRadius: 7,
+          color: T.text3,
+          cursor: "help",
+          outline: "none",
+          textTransform: "none",
+          transition: "color 140ms",
+        }}
+      >
+        {Icon.info}
+      </span>
+      {open && (
+        <span
+          role="tooltip"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            zIndex: 60,
+            width: 240,
+            padding: "8px 10px",
+            background: T.surface3,
+            color: T.text2,
+            borderRadius: 6,
+            boxShadow: `0 0 0 1px ${T.outlineVariant}, 0 8px 24px -8px rgba(0,0,0,0.5)`,
+            fontFamily: T.fontSans,
+            fontSize: 11.5,
+            lineHeight: 1.45,
+            letterSpacing: 0,
+            textTransform: "none",
+            whiteSpace: "normal",
+            pointerEvents: "none",
+          }}
+        >
+          {text}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -875,6 +952,7 @@ export interface ComboOption {
 
 export function Combobox({
   label,
+  info,
   value,
   onChange,
   options,
@@ -885,6 +963,8 @@ export function Combobox({
   emptyHint,
 }: {
   label: string;
+  /** Optional tooltip body — renders an "i" icon next to the label. */
+  info?: string;
   value: string;
   onChange: (v: string) => void;
   options: ComboOption[];
@@ -958,7 +1038,7 @@ export function Combobox({
 
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
-      <Kicker>{label}</Kicker>
+      <Kicker info={info}>{label}</Kicker>
       <div
         style={{
           marginTop: 6,

@@ -116,4 +116,11 @@ export const Icon: Record<string, ReactElement> = {
       <path d="M6.5 1l4.5 2v4c0 2.5-2 4.5-4.5 5.5C4 11.5 2 9.5 2 7V3l4.5-2z" />
     </svg>
   ),
+  info: (
+    <svg width="12" height="12" viewBox="0 0 12 12" {...stroke} {...ariaHide} strokeWidth="1.3">
+      <circle cx="6" cy="6" r="4.7" />
+      <path d="M6 5.3v2.9" strokeWidth="1.5" />
+      <circle cx="6" cy="3.7" r="0.45" fill="currentColor" stroke="none" />
+    </svg>
+  ),
 };
