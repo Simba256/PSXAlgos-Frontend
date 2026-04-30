@@ -324,7 +324,9 @@ export function EditorView({
 
   // Performs the actual PUT. Split out so the impact-warning modal can call
   // it directly after confirmation, bypassing the pre-flight check.
-  const performSave = async () => {
+  // `silent: true` is used by autosave to skip the success flash (otherwise
+  // the toast fires on every keystroke burst); error flashes still surface.
+  const performSave = async (opts?: { silent?: boolean }) => {
     if (!dirty || saveStatus === "saving") return;
     // Phase D / Gap 20: tree-aware leaf check. The corner pill is gone, so
     // a strategy can be authored entirely through inline `+` and end up
@@ -332,7 +334,7 @@ export function EditorView({
     // anywhere). Block the save before it reaches the backend, which
     // rejects it independently with a 422.
     if (!hasAnyLeaf(tree)) {
-      setFlash("A strategy needs at least one condition");
+      if (!opts?.silent) setFlash("A strategy needs at least one condition");
       return;
     }
     const body = buildUpdateBody(name, tree, exit, sizing);
@@ -350,15 +352,17 @@ export function EditorView({
       setSavedAt(Date.now());
       setDirty(false);
       setSaveStatus("idle");
-      // Phase E / E3: empty groups are allowed but surface a soft warning so
-      // the author knows they evaluate to True (matches backend semantics).
-      const empties = countEmptyGroups(tree);
-      if (empties > 0) {
-        setFlash(
-          `Draft saved · ${empties} empty group${empties === 1 ? "" : "s"} will always evaluate to true`,
-        );
-      } else {
-        setFlash("Draft saved");
+      if (!opts?.silent) {
+        // Phase E / E3: empty groups are allowed but surface a soft warning so
+        // the author knows they evaluate to True (matches backend semantics).
+        const empties = countEmptyGroups(tree);
+        if (empties > 0) {
+          setFlash(
+            `Draft saved · ${empties} empty group${empties === 1 ? "" : "s"} will always evaluate to true`,
+          );
+        } else {
+          setFlash("Draft saved");
+        }
       }
     } catch (err) {
       setSaveStatus("error");
@@ -623,6 +627,42 @@ export function EditorView({
     // it always reads the current values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection, groupModal, confirmModal, tree]);
+
+  // Autosave: debounce-persist edits 800ms after the last change. Bypasses
+  // the dependent-bots impact modal (`handleSaveDraft`) — that modal is for
+  // explicit "I'm about to commit" gestures; for routine drafting the user
+  // expects changes to stick on refresh, the same way Notion/Figma behave.
+  // Skipped while another save is in flight or any blocking modal is open
+  // (the modals capture intent, so we shouldn't undermine them by writing
+  // around them).
+  useEffect(() => {
+    if (!dirty) return;
+    if (saveStatus === "saving") return;
+    if (confirmModal !== null || groupModal !== null) return;
+    const t = setTimeout(() => {
+      void performSave({ silent: true });
+    }, 800);
+    return () => clearTimeout(t);
+    // performSave reads tree/name/exit/sizing through the render closure;
+    // listing them as deps reschedules the autosave on every keystroke,
+    // which is exactly the debounce we want.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty, saveStatus, confirmModal, groupModal, tree, name, exit, sizing]);
+
+  // beforeunload guard: belt-and-suspenders for the autosave window. If the
+  // user refreshes or closes the tab inside the 800ms debounce (or during
+  // the in-flight PUT), the browser prompts before discarding.
+  useEffect(() => {
+    if (!dirty && saveStatus !== "saving") return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // Required by the legacy Chrome/Firefox API even though modern browsers
+      // ignore the string and show a generic prompt.
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty, saveStatus]);
 
   const selectedLeaf: ConditionLeaf | null = (() => {
     if (selection?.kind !== "condition") return null;
