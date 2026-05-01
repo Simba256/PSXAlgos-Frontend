@@ -368,7 +368,15 @@ export function BacktestView({
   const sharpe = num(result?.sharpe_ratio);
   const maxDd = num(result?.max_drawdown);
   const winRate = num(result?.win_rate);
-  const profitFactor = num(result?.profit_factor);
+  // Profit factor is null on the backend when there are no losing trades
+  // (gross_loss == 0 → division undefined). Distinguish that from a real
+  // 0.00 so the tile reads "∞" instead of misleading "0.00".
+  const profitFactorRaw = result?.profit_factor;
+  const profitFactor = num(profitFactorRaw);
+  const profitFactorUndefined =
+    result != null &&
+    (profitFactorRaw === null || profitFactorRaw === undefined) &&
+    (result.total_trades ?? 0) > 0;
   const avgHold = num(result?.avg_holding_days);
   const equityValues = result?.equity_curve?.map((p) => num(p.equity)) ?? [];
   const monthlyReturns = useMemo(
@@ -505,8 +513,14 @@ export function BacktestView({
             />
             <Lede
               label="Profit factor"
-              value={result ? profitFactor.toFixed(2) : "—"}
-              sub="gross win ÷ loss"
+              value={
+                !result
+                  ? "—"
+                  : profitFactorUndefined
+                    ? "∞"
+                    : profitFactor.toFixed(2)
+              }
+              sub={profitFactorUndefined ? "no losing trades" : "gross win ÷ loss"}
             />
             <Lede
               label="Avg hold"
