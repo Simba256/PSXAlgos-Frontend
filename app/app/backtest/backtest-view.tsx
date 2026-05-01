@@ -77,11 +77,6 @@ function isoLocal(d: Date): string {
 function todayIso(): string {
   return isoLocal(new Date());
 }
-function yearAgoIso(): string {
-  const d = new Date();
-  d.setFullYear(d.getFullYear() - 1);
-  return isoLocal(d);
-}
 
 // Bucket equity_curve by year-month, take the last close per month, then
 // compute month-over-month % change. Backend doesn't ship monthly_returns
@@ -166,15 +161,12 @@ export function BacktestView({
   const [deployed, setDeployed] = useState(false);
   const [filter, setFilter] = useState<TradeFilter>("all");
   const { flash, setFlash } = useFlash();
-  // User-picked date range. Default to the prior result's range when one
-  // exists (so the inputs reflect the displayed result and a Re-run
-  // repeats it), otherwise fall back to today − 1yr → today.
-  const [startDate, setStartDate] = useState<string>(
-    () => initialResult?.start_date ?? yearAgoIso(),
-  );
-  const [endDate, setEndDate] = useState<string>(
-    () => initialResult?.end_date ?? todayIso(),
-  );
+  // Default the inputs to the 1M preset on every page open, regardless of
+  // the saved backtest's range. The header meta line still surfaces the
+  // saved result's actual date range, so the user doesn't lose that
+  // context — the inputs are always primed for the next run.
+  const [startDate, setStartDate] = useState<string>(() => presetRange("1M").start);
+  const [endDate, setEndDate] = useState<string>(() => presetRange("1M").end);
   const [ranLabel, setRanLabel] = useState<string>(
     initialResult ? `ran ${formatRan(Date.now() - lastRun)}` : "no run yet",
   );
