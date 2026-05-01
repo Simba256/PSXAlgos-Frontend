@@ -390,6 +390,18 @@ export interface BacktestListResponse {
   total: number;
 }
 
+// Same shape as BacktestSummary plus the parent strategy's name —
+// returned by GET /strategies/runs (cross-strategy run history). The
+// `strategy_name` JOIN saves an N+1 fetch on the /backtest index page.
+export interface BacktestRunRow extends BacktestSummary {
+  strategy_name: string;
+}
+
+export interface BacktestRunListResponse {
+  items: BacktestRunRow[];
+  total: number;
+}
+
 export interface BacktestRequestBody {
   start_date: string; // YYYY-MM-DD
   end_date: string;
@@ -446,6 +458,17 @@ export async function listBacktests(
 ): Promise<BacktestListResponse> {
   return apiFetch<BacktestListResponse>(
     `/strategies/${strategyId}/backtests?limit=${limit}`,
+    { jwt },
+  );
+}
+
+// Cross-strategy run history. Powers the /backtest index page.
+export async function listAllBacktestRuns(
+  jwt: string,
+  limit = 50,
+): Promise<BacktestRunListResponse> {
+  return apiFetch<BacktestRunListResponse>(
+    `/strategies/runs?limit=${limit}`,
     { jwt },
   );
 }

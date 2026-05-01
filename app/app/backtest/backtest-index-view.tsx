@@ -15,42 +15,41 @@ import {
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
 
-export type IndexStatus = "DEPLOYED" | "DRAFT" | "PAUSED" | "ARCHIVED";
-
-export interface BacktestIndexRow {
-  id: string;
-  name: string;
-  status: IndexStatus;
-  // null = strategy has never been backtested
+// One backtest run, flattened for table rendering. Different time windows
+// of the same strategy = different rows (matched 1:1 with backend rows
+// from GET /strategies/runs).
+export interface RunRow {
+  id: number;
+  strategyId: number;
+  strategyName: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string;
   totalReturn: number | null;
   sharpe: number | null;
   maxDD: number | null;
-  totalTrades: number | null;
-  // Relative recency string for display ("just now", "2d ago", "never")
+  totalTrades: number;
   ranLabel: string;
-  // Minutes since the latest backtest completed; MAX_SAFE_INTEGER if never.
-  // Used for sorting; "newest run first" puts smallest values at the top.
   ranMinutes: number;
 }
 
-type SortKey = "ran" | "name" | "return" | "sharpe";
+type SortKey = "ran" | "strategy" | "return" | "sharpe" | "trades";
 type SortDir = "asc" | "desc";
 
 const SORT_OPTIONS: { key: SortKey; label: string; defaultDir: SortDir }[] = [
-  // smallest minutes-ago = most recent
   { key: "ran", label: "most recent run", defaultDir: "asc" },
   { key: "return", label: "total return", defaultDir: "desc" },
   { key: "sharpe", label: "sharpe", defaultDir: "desc" },
-  { key: "name", label: "name", defaultDir: "asc" },
+  { key: "trades", label: "trades", defaultDir: "desc" },
+  { key: "strategy", label: "strategy", defaultDir: "asc" },
 ];
 
-function compare(a: BacktestIndexRow, b: BacktestIndexRow, key: SortKey, dir: SortDir): number {
+function compare(a: RunRow, b: RunRow, key: SortKey, dir: SortDir): number {
   const sign = dir === "asc" ? 1 : -1;
   switch (key) {
     case "ran":
       return (a.ranMinutes - b.ranMinutes) * sign;
-    case "name":
-      return a.name.localeCompare(b.name) * sign;
+    case "strategy":
+      return a.strategyName.localeCompare(b.strategyName) * sign;
     case "return": {
       const av = a.totalReturn ?? -Infinity;
       const bv = b.totalReturn ?? -Infinity;
@@ -61,10 +60,35 @@ function compare(a: BacktestIndexRow, b: BacktestIndexRow, key: SortKey, dir: So
       const bv = b.sharpe ?? -Infinity;
       return (av - bv) * sign;
     }
+    case "trades":
+      return (a.totalTrades - b.totalTrades) * sign;
   }
 }
 
-export function BacktestIndexView({ rows }: { rows: BacktestIndexRow[] }) {
+// "Mar 1 → Jun 30, '24" when the window stays in one calendar year,
+// "Mar 1 '24 → Jun 30 '25" when it crosses. Day precision is enough.
+function formatRange(startIso: string, endIso: string): string {
+  const start = new Date(startIso);
+  const end = new Date(endIso);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return `${startIso} → ${endIso}`;
+  }
+  const monthDay = (d: Date) =>
+    d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  const yr2 = (d: Date) => String(d.getUTCFullYear()).slice(2);
+  if (start.getUTCFullYear() === end.getUTCFullYear()) {
+    return `${monthDay(start)} → ${monthDay(end)}, '${yr2(end)}`;
+  }
+  return `${monthDay(start)} '${yr2(start)} → ${monthDay(end)} '${yr2(end)}`;
+}
+
+export function BacktestIndexView({
+  rows,
+  hasStrategies,
+}: {
+  rows: RunRow[];
+  hasStrategies: boolean;
+}) {
   const T = useT();
   const { bp } = useBreakpoint();
   const padX = pick(bp, PAD.page);
@@ -79,9 +103,11 @@ export function BacktestIndexView({ rows }: { rows: BacktestIndexRow[] }) {
   }, [rows, sortKey, sortDir]);
 
   const total = rows.length;
-  const withBacktest = rows.filter((r) => r.totalTrades !== null).length;
-  const withoutBacktest = total - withBacktest;
   const empty = total === 0;
+  const distinctStrategies = useMemo(
+    () => new Set(rows.map((r) => r.strategyId)).size,
+    [rows],
+  );
 
   return (
     <AppFrame route="/backtest">
@@ -92,29 +118,33 @@ export function BacktestIndexView({ rows }: { rows: BacktestIndexRow[] }) {
             <>
               <span style={{ fontWeight: 400, color: T.text2 }}>Backtest</span>{" "}
               <span style={{ fontStyle: "italic", color: T.primaryLight, fontWeight: 400 }}>
-                {empty ? "·" : `· ${total} ${total === 1 ? "strategy" : "strategies"}`}
+                {empty ? "·" : `· ${total} ${total === 1 ? "run" : "runs"}`}
               </span>
             </>
           }
           meta={
             empty ? (
-              <span>no strategies yet — build one to backtest it</span>
+              <span>
+                {hasStrategies
+                  ? "no runs yet — pick a strategy and run a backtest"
+                  : "no strategies yet — build one to backtest it"}
+              </span>
             ) : (
               <>
                 <span>
-                  <span style={{ color: T.gain }}>●</span> {withBacktest} backtested
+                  across {distinctStrategies}{" "}
+                  {distinctStrategies === 1 ? "strategy" : "strategies"}
                 </span>
-                <span>{withoutBacktest} pending</span>
                 <span style={{ color: T.text3 }}>
-                  pick a row to view results · re-run from the strategy editor
+                  pick a row to open results · re-run from the strategy editor
                 </span>
               </>
             )
           }
           actions={
-            <Link href="/strategies/new" style={{ textDecoration: "none" }}>
-              <Btn variant="primary" size="sm" icon={Icon.plus}>
-                New strategy
+            <Link href="/strategies" style={{ textDecoration: "none" }}>
+              <Btn variant="ghost" size="sm">
+                Strategies
               </Btn>
             </Link>
           }
@@ -131,11 +161,11 @@ export function BacktestIndexView({ rows }: { rows: BacktestIndexRow[] }) {
           }}
         >
           {empty ? (
-            <EmptyState />
+            <EmptyState hasStrategies={hasStrategies} />
           ) : (
             <>
               <SortBar sortKey={sortKey} sortDir={sortDir} onSort={(k, d) => { setSortKey(k); setSortDir(d); }} />
-              <BacktestTable rows={sorted} />
+              <RunsTable rows={sorted} />
             </>
           )}
         </div>
@@ -144,7 +174,7 @@ export function BacktestIndexView({ rows }: { rows: BacktestIndexRow[] }) {
   );
 }
 
-function EmptyState() {
+function EmptyState({ hasStrategies }: { hasStrategies: boolean }) {
   const T = useT();
   return (
     <div
@@ -158,26 +188,46 @@ function EmptyState() {
       }}
     >
       <div style={{ fontFamily: T.fontMono, fontSize: 12, color: T.text3, letterSpacing: 0.6, textTransform: "uppercase" }}>
-        nothing to backtest yet
+        {hasStrategies ? "no runs yet" : "nothing to backtest yet"}
       </div>
       <div style={{ fontSize: 15, color: T.text2, lineHeight: 1.55 }}>
-        Backtests run against strategies — the entry/exit rules you author over on{" "}
-        <Link href="/strategies" style={{ color: T.primaryLight }}>
-          Strategies
-        </Link>
-        . Build one first, then come back here (or hit the Run backtest button on the strategy editor) to validate it against historical PSX data.
+        {hasStrategies ? (
+          <>
+            You have strategies but none have been backtested yet. Pick one
+            from{" "}
+            <Link href="/strategies" style={{ color: T.primaryLight }}>
+              Strategies
+            </Link>{" "}
+            and hit <em>Run backtest</em> in the editor — every run you execute
+            will land here, including different time windows of the same
+            strategy.
+          </>
+        ) : (
+          <>
+            Backtests run against strategies — the entry/exit rules you author
+            over on{" "}
+            <Link href="/strategies" style={{ color: T.primaryLight }}>
+              Strategies
+            </Link>
+            . Build one first, then come back here to validate it against
+            historical PSX data.
+          </>
+        )}
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-        <Link href="/strategies/new" style={{ textDecoration: "none" }}>
-          <Btn variant="primary" size="sm" icon={Icon.plus}>
-            Build a strategy
-          </Btn>
-        </Link>
-        <Link href="/strategies" style={{ textDecoration: "none" }}>
-          <Btn variant="ghost" size="sm">
-            See strategies
-          </Btn>
-        </Link>
+        {hasStrategies ? (
+          <Link href="/strategies" style={{ textDecoration: "none" }}>
+            <Btn variant="primary" size="sm">
+              Pick a strategy
+            </Btn>
+          </Link>
+        ) : (
+          <Link href="/strategies/new" style={{ textDecoration: "none" }}>
+            <Btn variant="primary" size="sm" icon={Icon.plus}>
+              Build a strategy
+            </Btn>
+          </Link>
+        )}
       </div>
     </div>
   );
@@ -200,6 +250,7 @@ function SortBar({
         alignItems: "center",
         gap: 6,
         marginBottom: 14,
+        flexWrap: "wrap",
         fontFamily: T.fontMono,
         fontSize: 11,
         color: T.text3,
@@ -240,15 +291,12 @@ function SortBar({
   );
 }
 
-function BacktestTable({ rows }: { rows: BacktestIndexRow[] }) {
+function RunsTable({ rows }: { rows: RunRow[] }) {
   const T = useT();
   const router = useRouter();
-  // Compact, fits comfortably without horizontal scroll. Whole row is the
-  // affordance — clicking opens results, or kicks off a first run for
-  // strategies that haven't been backtested yet.
   const cols: Col[] = [
-    { label: "strategy", width: "1.5fr", primary: true, mono: false },
-    { label: "status", width: "100px" },
+    { label: "strategy", width: "1.4fr", primary: true, mono: false },
+    { label: "window", width: "1fr", mono: true },
     { label: "total return", align: "right", width: "100px" },
     { label: "sharpe", align: "right", width: "70px" },
     { label: "max DD", align: "right", width: "80px" },
@@ -263,16 +311,15 @@ function BacktestTable({ rows }: { rows: BacktestIndexRow[] }) {
     const totalReturn = r.totalReturn;
     const sharpe = r.sharpe;
     const maxDD = r.maxDD;
-    const trades = r.totalTrades;
     return [
-      r.name,
-      r.status,
+      r.strategyName,
+      formatRange(r.startDate, r.endDate),
       totalReturn === null ? "—" : `${totalReturn >= 0 ? "+" : ""}${totalReturn.toFixed(1)}%`,
       sharpe === null ? "—" : sharpe.toFixed(2),
       maxDD === null ? "—" : `${maxDD.toFixed(1)}%`,
-      trades === null ? "—" : trades.toLocaleString(),
+      r.totalTrades.toLocaleString(),
       r.ranLabel,
-      r.totalTrades === null ? "▸" : "→",
+      "→",
     ];
   });
 
@@ -282,30 +329,17 @@ function BacktestTable({ rows }: { rows: BacktestIndexRow[] }) {
       rows={data}
       onRowClick={(_, ri) => {
         const row = rows[ri];
-        const hasRun = row.totalTrades !== null;
-        router.push(
-          hasRun
-            ? `/backtest?strategy_id=${row.id}`
-            : `/backtest?strategy_id=${row.id}&run=1`,
-        );
+        // Deep link to this specific run; backtest-view hydrates it from the
+        // backtest_id query param (page.tsx:107-118).
+        router.push(`/backtest?strategy_id=${row.strategyId}&backtest_id=${row.id}`);
       }}
       renderCell={(cell, ci, ri) => {
         const row = rows[ri];
         if (ci === 0) {
-          return (
-            <span style={{ color: T.text, fontWeight: 500 }}>{cell as ReactNode}</span>
-          );
+          return <span style={{ color: T.text, fontWeight: 500 }}>{cell as ReactNode}</span>;
         }
         if (ci === 1) {
-          const color =
-            row.status === "DEPLOYED"
-              ? T.gain
-              : row.status === "DRAFT"
-                ? T.text3
-                : row.status === "PAUSED"
-                  ? T.warning
-                  : T.text3;
-          return <span style={{ color, fontFamily: T.fontMono, fontSize: 11 }}>{row.status}</span>;
+          return <span style={{ color: T.text3, fontSize: 11 }}>{cell as ReactNode}</span>;
         }
         if (ci === 2) {
           if (row.totalReturn === null) return <span style={{ color: T.text3 }}>—</span>;
@@ -324,13 +358,7 @@ function BacktestTable({ rows }: { rows: BacktestIndexRow[] }) {
           );
         }
         if (ci === 7) {
-          // Glyph affordance: → for "open results", ▸ for "run first backtest".
-          const hasRun = row.totalTrades !== null;
-          return (
-            <span style={{ color: hasRun ? T.text3 : T.primaryLight, fontSize: 13 }}>
-              {cell as ReactNode}
-            </span>
-          );
+          return <span style={{ color: T.text3, fontSize: 13 }}>{cell as ReactNode}</span>;
         }
         return cell as ReactNode;
       }}

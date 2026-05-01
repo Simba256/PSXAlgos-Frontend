@@ -6,12 +6,13 @@ import {
   getStrategies,
   getStrategy,
   listBacktests,
+  listAllBacktestRuns,
   getBacktestResult,
   type BacktestResultResponse,
-  type StrategyResponse,
+  type BacktestRunRow,
 } from "@/lib/api/strategies";
 import { BacktestView } from "./backtest-view";
-import { BacktestIndexView, type BacktestIndexRow, type IndexStatus } from "./backtest-index-view";
+import { BacktestIndexView, type RunRow } from "./backtest-index-view";
 
 const MIN_MS = 60_000;
 
@@ -36,23 +37,18 @@ function toNum(v: number | string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function mapIndexStatus(s: StrategyResponse["status"]): IndexStatus {
-  // Backend ACTIVE → user-facing DEPLOYED (matches /strategies semantics).
-  if (s === "ACTIVE") return "DEPLOYED";
-  return s;
-}
-
-function toIndexRow(s: StrategyResponse): BacktestIndexRow {
-  const lb = s.latest_backtest ?? null;
-  const { label, minutes } = formatRelative(lb?.completed_at);
+function toRunRow(r: BacktestRunRow): RunRow {
+  const { label, minutes } = formatRelative(r.created_at);
   return {
-    id: String(s.id),
-    name: s.name,
-    status: mapIndexStatus(s.status),
-    totalReturn: toNum(lb?.total_return_pct),
-    sharpe: toNum(lb?.sharpe_ratio ?? null),
-    maxDD: toNum(lb?.max_drawdown ?? null),
-    totalTrades: lb ? lb.total_trades : null,
+    id: r.id,
+    strategyId: r.strategy_id,
+    strategyName: r.strategy_name,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    totalReturn: toNum(r.total_return_pct),
+    sharpe: toNum(r.sharpe_ratio ?? null),
+    maxDD: toNum(r.max_drawdown ?? null),
+    totalTrades: r.total_trades,
     ranLabel: label,
     ranMinutes: minutes,
   };
@@ -76,18 +72,25 @@ export default async function BacktestPage({
   const sid = strategy_id ? parseInt(strategy_id, 10) : NaN;
   const autoRun = run === "1";
 
-  // No strategy specified → render the index page (list of all the user's
-  // strategies enriched with their latest backtest summary). The list endpoint
-  // already JOINs latest_backtest in a single query, so this is one round-trip.
+  // No strategy specified → render the index page as a flat list of every
+  // backtest *run* the user has executed across all their strategies.
+  // Different time windows of the same strategy are different rows. We also
+  // fetch a tiny strategies-list slice so the empty-state can branch on
+  // "no strategies yet" vs "strategies exist but never backtested".
   if (!Number.isFinite(sid) || sid <= 0) {
-    let rows: BacktestIndexRow[] = [];
+    let rows: RunRow[] = [];
+    let hasStrategies = false;
     try {
-      const list = await getStrategies(jwt, { page: 1, page_size: 100 });
-      rows = list.items.map(toIndexRow);
+      const [runs, strategies] = await Promise.all([
+        listAllBacktestRuns(jwt, 100),
+        getStrategies(jwt, { page: 1, page_size: 1 }),
+      ]);
+      rows = runs.items.map(toRunRow);
+      hasStrategies = strategies.total > 0;
     } catch (err) {
-      console.warn("[/backtest] strategies list failed", err);
+      console.warn("[/backtest] runs list failed", err);
     }
-    return <BacktestIndexView rows={rows} />;
+    return <BacktestIndexView rows={rows} hasStrategies={hasStrategies} />;
   }
 
   // Strategy name for the breadcrumb. Failure here doesn't block the page.
