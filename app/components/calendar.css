@@ -1,0 +1,109 @@
+/* react-day-picker v9 themed to the active palette via CSS variables that
+ * globals.css already swaps under [data-theme]. This file is imported once
+ * at the call site (backtest-view.tsx) so the rules only land on pages
+ * that actually use the picker. */
+
+.rdp-root {
+  --rdp-accent-color: var(--primary);
+  --rdp-accent-background-color: var(--primary-container);
+  --rdp-background-color: var(--surface-low);
+  --rdp-day-height: 34px;
+  --rdp-day-width: 34px;
+  --rdp-day_button-height: 30px;
+  --rdp-day_button-width: 30px;
+  --rdp-day_button-border-radius: 999px;
+  --rdp-selected-border: 1px solid var(--primary);
+  --rdp-today-color: var(--primary);
+  --rdp-outline: 1px solid var(--outline-variant);
+  --rdp-outline-selected: 1px solid var(--primary);
+  --rdp-range_middle-background-color: var(--surface-3);
+  --rdp-range_middle-color: var(--text);
+  --rdp-disabled-opacity: 0.32;
+  --rdp-font-family: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, monospace;
+  font-family: var(--rdp-font-family);
+  color: var(--text);
+  background: transparent;
+  padding: 8px 4px 4px;
+}
+
+.rdp-month_caption {
+  font-family: var(--font-space-grotesk), "Space Grotesk", sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  color: var(--text);
+  padding: 0 6px 8px;
+}
+
+.rdp-nav button {
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--outline-faint);
+  border-radius: 4px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.rdp-nav button:hover {
+  color: var(--text);
+  background: var(--surface-3);
+  border-color: var(--outline-variant);
+}
+
+.rdp-weekdays .rdp-weekday {
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  font-family: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, monospace;
+}
+
+.rdp-day {
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.rdp-day_button {
+  color: inherit;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.rdp-day_button:hover:not([disabled]) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.rdp-today:not(.rdp-selected) .rdp-day_button {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.rdp-selected .rdp-day_button {
+  background: var(--primary);
+  color: var(--surface-low);
+  border-color: var(--primary);
+  font-weight: 600;
+}
+
+.rdp-selected .rdp-day_button:hover {
+  background: var(--primary-light);
+  color: var(--surface-low);
+}
+
+.rdp-disabled .rdp-day_button {
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+
+.rdp-outside .rdp-day_button {
+  color: var(--text-3);
+  opacity: 0.45;
+}

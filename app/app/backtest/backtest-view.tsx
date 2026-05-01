@@ -3,9 +3,13 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import { DayPicker } from "react-day-picker";
+import { parseISO } from "date-fns";
+import "react-day-picker/style.css";
+import "@/components/calendar.css";
 import { AppFrame } from "@/components/frame";
-import { useT, useTheme } from "@/components/theme";
+import { useT } from "@/components/theme";
 import type {
   BacktestEquityPoint,
   BacktestResultResponse,
@@ -793,6 +797,77 @@ function TradeLog({ trades }: { trades: Trade[] }) {
   );
 }
 
+// Date-range chip presets. "Custom" hands control to a themed react-day-picker
+// popover so we don't have to ship the white native overlay. Presets always
+// run end-of-window = today; if the user re-opens a saved backtest with a
+// different end_date, the row falls into Custom mode (no preset matches).
+type PresetKey = "1M" | "3M" | "6M" | "YTD" | "1Y" | "3Y" | "ALL" | "CUSTOM";
+const PRESET_ORDER: PresetKey[] = ["1M", "3M", "6M", "YTD", "1Y", "3Y", "ALL", "CUSTOM"];
+const PRESET_LABEL: Record<PresetKey, string> = {
+  "1M": "1M",
+  "3M": "3M",
+  "6M": "6M",
+  "YTD": "YTD",
+  "1Y": "1Y",
+  "3Y": "3Y",
+  "ALL": "All",
+  "CUSTOM": "Custom",
+};
+
+function presetRange(key: Exclude<PresetKey, "CUSTOM">): { start: string; end: string } {
+  const today = new Date();
+  const end = isoLocal(today);
+  const start = new Date(today);
+  switch (key) {
+    case "1M":
+      start.setMonth(start.getMonth() - 1);
+      break;
+    case "3M":
+      start.setMonth(start.getMonth() - 3);
+      break;
+    case "6M":
+      start.setMonth(start.getMonth() - 6);
+      break;
+    case "YTD":
+      start.setMonth(0);
+      start.setDate(1);
+      break;
+    case "1Y":
+      start.setFullYear(start.getFullYear() - 1);
+      break;
+    case "3Y":
+      start.setFullYear(start.getFullYear() - 3);
+      break;
+    case "ALL":
+      // 10y back is more than the deepest history we expect to have on PSX
+      // and stays bounded so the backend isn't asked for forever.
+      start.setFullYear(start.getFullYear() - 10);
+      break;
+  }
+  return { start: isoLocal(start), end };
+}
+
+function detectActivePreset(startDate: string, endDate: string): PresetKey {
+  if (endDate !== todayIso()) return "CUSTOM";
+  for (const k of PRESET_ORDER) {
+    if (k === "CUSTOM") continue;
+    const r = presetRange(k);
+    if (r.start === startDate && r.end === endDate) return k;
+  }
+  return "CUSTOM";
+}
+
+function formatPickerLabel(iso: string): string {
+  // "2025-05-02" → "May 2, 2025". Fallback to raw on parse failure.
+  const d = parseISO(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 function DateRangeRow({
   startDate,
   endDate,
@@ -807,31 +882,45 @@ function DateRangeRow({
   padX: string;
 }) {
   const T = useT();
-  const { mode } = useTheme();
-  const today = todayIso();
-  // Editorial input: barely-there bottom rule, transparent fill, dotted-underline
-  // hover. The native date-picker chrome (calendar pop, spin chevrons) is themed
-  // by the browser via `colorScheme`, which we now follow the active theme so
-  // the picker UI stops fighting the page in Paper mode.
-  const inputStyle = {
-    background: "transparent",
-    border: "none",
-    borderBottom: `1px solid ${T.outlineVariant}`,
-    borderRadius: 0,
-    padding: "4px 4px 3px",
-    color: T.text,
-    fontFamily: T.fontMono,
-    fontSize: 12,
-    colorScheme: mode,
-    outline: "none",
+  // The user's explicit chip pick wins — once they click Custom, we stay in
+  // custom mode even if their typed dates happen to coincide with a preset.
+  const [customSticky, setCustomSticky] = useState(() =>
+    detectActivePreset(startDate, endDate) === "CUSTOM",
+  );
+  const detected = detectActivePreset(startDate, endDate);
+  const active: PresetKey = customSticky ? "CUSTOM" : detected;
+
+  const handlePresetClick = (key: PresetKey) => {
+    if (key === "CUSTOM") {
+      setCustomSticky(true);
+      return;
+    }
+    setCustomSticky(false);
+    const r = presetRange(key);
+    onStart(r.start);
+    onEnd(r.end);
   };
-  const labelStyle = { color: T.text3, marginRight: 6 };
+
+  const chipStyle = (isActive: boolean): CSSProperties => ({
+    background: isActive ? T.surface3 : "transparent",
+    color: isActive ? T.text : T.text2,
+    border: `1px solid ${isActive ? T.outlineVariant : T.outlineFaint}`,
+    borderRadius: 3,
+    padding: "4px 9px",
+    cursor: "pointer",
+    fontFamily: T.fontMono,
+    fontSize: 11,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+    transition: "background 120ms ease, color 120ms ease, border-color 120ms ease",
+  });
+
   return (
     <div
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 14,
+        gap: 12,
         padding: `12px ${padX}`,
         borderBottom: `1px solid ${T.outlineFaint}`,
         flexWrap: "wrap",
@@ -849,28 +938,137 @@ function DateRangeRow({
       >
         date range
       </span>
-      <label style={{ display: "flex", alignItems: "center" }}>
-        <span style={labelStyle}>from</span>
-        <input
-          type="date"
-          value={startDate}
-          max={endDate || today}
-          onChange={(e) => onStart(e.target.value)}
-          style={inputStyle}
-        />
-      </label>
-      <span style={{ color: T.text3 }}>→</span>
-      <label style={{ display: "flex", alignItems: "center" }}>
-        <span style={labelStyle}>to</span>
-        <input
-          type="date"
-          value={endDate}
-          min={startDate}
-          max={today}
-          onChange={(e) => onEnd(e.target.value)}
-          style={inputStyle}
-        />
-      </label>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {PRESET_ORDER.map((k) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => handlePresetClick(k)}
+            style={chipStyle(active === k)}
+          >
+            {PRESET_LABEL[k]}
+          </button>
+        ))}
+      </div>
+      {active === "CUSTOM" && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginLeft: 4,
+          }}
+        >
+          <DateTrigger
+            label="from"
+            iso={startDate}
+            onChange={onStart}
+            disabledAfter={endDate}
+          />
+          <span style={{ color: T.text3 }}>→</span>
+          <DateTrigger
+            label="to"
+            iso={endDate}
+            onChange={onEnd}
+            disabledBefore={startDate}
+            disabledAfter={todayIso()}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DateTrigger({
+  label,
+  iso,
+  onChange,
+  disabledBefore,
+  disabledAfter,
+}: {
+  label: string;
+  iso: string;
+  onChange: (v: string) => void;
+  disabledBefore?: string;
+  disabledAfter?: string;
+}) {
+  const T = useT();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Click-outside + ESC to dismiss. Mounted only when open so we don't run
+  // a window listener every render.
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current) return;
+      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const selected = iso ? parseISO(iso) : undefined;
+  const disabledMatchers: Array<{ before: Date } | { after: Date }> = [];
+  if (disabledBefore) disabledMatchers.push({ before: parseISO(disabledBefore) });
+  if (disabledAfter) disabledMatchers.push({ after: parseISO(disabledAfter) });
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative", display: "flex", alignItems: "center" }}>
+      <span style={{ color: T.text3, marginRight: 6 }}>{label}</span>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          background: "transparent",
+          color: T.text,
+          border: "none",
+          borderBottom: `1px dashed ${T.outlineVariant}`,
+          padding: "3px 2px 2px",
+          fontFamily: T.fontMono,
+          fontSize: 12,
+          cursor: "pointer",
+        }}
+      >
+        {formatPickerLabel(iso)}
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            zIndex: 50,
+            background: T.surfaceLow,
+            border: `1px solid ${T.outlineVariant}`,
+            borderRadius: 4,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+            animation: "psx-pop-in 140ms ease-out",
+          }}
+        >
+          <DayPicker
+            mode="single"
+            selected={selected}
+            onSelect={(d) => {
+              if (d) {
+                onChange(isoLocal(d));
+                setOpen(false);
+              }
+            }}
+            disabled={disabledMatchers.length ? disabledMatchers : undefined}
+            defaultMonth={selected}
+            weekStartsOn={1}
+            showOutsideDays
+          />
+        </div>
+      )}
     </div>
   );
 }
