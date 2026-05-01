@@ -59,12 +59,44 @@ function formatDateLabel(iso: string): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
 }
 
+// Header range formatter. Includes year on the boundary that needs it so a
+// multi-year backtest doesn't collapse to "May 01 → May 01" (the bug the
+// terse formatter has). When start/end share a year, the year is shown
+// once on the right; when they differ, both sides carry their year.
+function formatRangeDate(iso: string, withYear: boolean): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "2-digit",
+    ...(withYear ? { year: "numeric" } : {}),
+  });
+}
+
+function formatRangeHeader(startIso: string, endIso: string): string {
+  const sd = new Date(startIso);
+  const ed = new Date(endIso);
+  if (isNaN(sd.getTime()) || isNaN(ed.getTime())) {
+    return `${startIso} → ${endIso}`;
+  }
+  const sameYear = sd.getFullYear() === ed.getFullYear();
+  const left = formatRangeDate(startIso, !sameYear);
+  const right = formatRangeDate(endIso, true);
+  return `${left} → ${right}`;
+}
+
 function formatRan(ms: number): string {
   if (ms < 1000) return "just now";
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}s ago`;
   const m = Math.round(s / 60);
-  return `${m}m ago`;
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  const mo = Math.floor(d / 30);
+  return `${mo}mo ago`;
 }
 
 // Local-time YYYY-MM-DD (avoids the UTC drift of toISOString in PKT).
@@ -345,7 +377,7 @@ export function BacktestView({
   );
   const slug = strategyId != null ? String(strategyId) : "—";
   const dateRange = result
-    ? `${formatDateLabel(result.start_date)} → ${formatDateLabel(result.end_date)}`
+    ? formatRangeHeader(result.start_date, result.end_date)
     : "no run yet";
   const initialCapital = num(result?.initial_capital ?? 1_000_000);
 
@@ -500,8 +532,7 @@ export function BacktestView({
                 kicker="equity curve"
                 right={
                   <span style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3 }}>
-                    <span style={{ color: T.gain }}>━</span> strategy &nbsp;{" "}
-                    <span style={{ color: T.text3 }}>┄┄</span> KSE-100
+                    <span style={{ color: T.gain }}>━</span> strategy
                   </span>
                 }
               />
