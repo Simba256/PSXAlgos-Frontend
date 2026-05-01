@@ -63,6 +63,22 @@ function formatRan(ms: number): string {
   return `${m}m ago`;
 }
 
+// Local-time YYYY-MM-DD (avoids the UTC drift of toISOString in PKT).
+function isoLocal(d: Date): string {
+  const yr = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const dy = String(d.getDate()).padStart(2, "0");
+  return `${yr}-${mo}-${dy}`;
+}
+function todayIso(): string {
+  return isoLocal(new Date());
+}
+function yearAgoIso(): string {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - 1);
+  return isoLocal(d);
+}
+
 // Bucket equity_curve by year-month, take the last close per month, then
 // compute month-over-month % change. Backend doesn't ship monthly_returns
 // directly so we derive it here. Returns the most recent 12 buckets.
@@ -146,6 +162,15 @@ export function BacktestView({
   const [deployed, setDeployed] = useState(false);
   const [filter, setFilter] = useState<TradeFilter>("all");
   const { flash, setFlash } = useFlash();
+  // User-picked date range. Default to the prior result's range when one
+  // exists (so the inputs reflect the displayed result and a Re-run
+  // repeats it), otherwise fall back to today − 1yr → today.
+  const [startDate, setStartDate] = useState<string>(
+    () => initialResult?.start_date ?? yearAgoIso(),
+  );
+  const [endDate, setEndDate] = useState<string>(
+    () => initialResult?.end_date ?? todayIso(),
+  );
   const [ranLabel, setRanLabel] = useState<string>(
     initialResult ? `ran ${formatRan(Date.now() - lastRun)}` : "no run yet",
   );
@@ -173,16 +198,33 @@ export function BacktestView({
 
   const handleRerun = async () => {
     if (running || !strategyId) return;
+    // Validate the user-picked range before firing — backend rejects
+    // start >= end, but we want to surface the error inline and also
+    // refuse future / too-short windows that the backend technically
+    // accepts but produce useless results.
+    if (!startDate || !endDate) {
+      setFlash("Pick a from / to date range before running.");
+      return;
+    }
+    if (startDate >= endDate) {
+      setFlash("From date must be before to date.");
+      return;
+    }
+    if (endDate > todayIso()) {
+      setFlash("To date cannot be in the future.");
+      return;
+    }
+    const minSpanMs = 7 * 24 * 60 * 60 * 1000;
+    if (new Date(endDate).getTime() - new Date(startDate).getTime() < minSpanMs) {
+      setFlash("Date range must span at least 7 days.");
+      return;
+    }
     setRunning(true);
     setRanLabel("running…");
     try {
-      // Default range: last 12 months back from today.
-      const end = new Date();
-      const start = new Date(end);
-      start.setFullYear(start.getFullYear() - 1);
       const body = {
-        start_date: start.toISOString().slice(0, 10),
-        end_date: end.toISOString().slice(0, 10),
+        start_date: startDate,
+        end_date: endDate,
         initial_capital: Number(initialResult?.initial_capital ?? 1_000_000),
       };
       const startRes = await fetch(`/api/strategies/${strategyId}/backtest`, {
@@ -224,24 +266,24 @@ export function BacktestView({
     }
   };
 
-  // Auto-trigger a run when arrived from "Run backtest" (?run=1). Ref-guarded
-  // so React strict-mode double-mounts don't fire twice; URL is rewritten to
-  // strip `run` so a manual refresh of the page doesn't kick off another run.
-  const autoRunFiredRef = useRef(false);
+  // Arrival from the editor's "Run backtest" link (`?run=1`) used to kick
+  // off a run immediately with hard-coded defaults. Now that the date
+  // range is a user-chosen input, we no longer auto-fire — strip the
+  // query param (so a refresh doesn't re-trigger the prompt) and surface
+  // a flash telling the user what to do next. Ref-guarded against
+  // strict-mode double-invoke.
+  const autoRunHandledRef = useRef(false);
   useEffect(() => {
-    if (!autoRun || !strategyId || autoRunFiredRef.current) return;
-    autoRunFiredRef.current = true;
+    if (!autoRun || autoRunHandledRef.current) return;
+    autoRunHandledRef.current = true;
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href);
       url.searchParams.delete("run");
       const qs = url.searchParams.toString();
       window.history.replaceState(null, "", url.pathname + (qs ? `?${qs}` : ""));
     }
-    void handleRerun();
-    // handleRerun is recreated each render; the ref guard ensures we only
-    // fire once per page load regardless of dep churn.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRun, strategyId]);
+    setFlash("Set a date range and click Run backtest.");
+  }, [autoRun, setFlash]);
 
   const handleSaveBenchmark = () => {
     setBenchmarkSaved((b) => {
@@ -364,7 +406,7 @@ export function BacktestView({
           actions={
             <>
               <Btn variant="ghost" size="sm" onClick={handleRerun}>
-                {running ? "Running…" : "Re-run"}
+                {running ? "Running…" : result ? "Re-run" : "Run backtest"}
               </Btn>
               <Btn variant="outline" size="sm" onClick={handleSaveBenchmark}>
                 {benchmarkSaved ? "Remove benchmark" : "Save as benchmark"}
@@ -374,6 +416,14 @@ export function BacktestView({
               </Btn>
             </>
           }
+        />
+
+        <DateRangeRow
+          startDate={startDate}
+          endDate={endDate}
+          onStart={setStartDate}
+          onEnd={setEndDate}
+          padX={padX}
         />
 
         <div
@@ -473,7 +523,7 @@ export function BacktestView({
                     }}
                   >
                     {strategyId
-                      ? "no backtest yet — click Re-run to generate one"
+                      ? "no backtest yet — pick a date range above and click Run backtest"
                       : "open this from a strategy to run a backtest"}
                   </div>
                 )}
@@ -736,5 +786,80 @@ function TradeLog({ trades }: { trades: Trade[] }) {
         return cell as ReactNode;
       }}
     />
+  );
+}
+
+function DateRangeRow({
+  startDate,
+  endDate,
+  onStart,
+  onEnd,
+  padX,
+}: {
+  startDate: string;
+  endDate: string;
+  onStart: (v: string) => void;
+  onEnd: (v: string) => void;
+  padX: string;
+}) {
+  const T = useT();
+  const today = todayIso();
+  const inputStyle = {
+    background: T.surface3,
+    border: `1px solid ${T.outline}`,
+    borderRadius: 3,
+    padding: "5px 8px",
+    color: T.text,
+    fontFamily: T.fontMono,
+    fontSize: 12,
+    colorScheme: "dark" as const,
+  };
+  const labelStyle = { color: T.text3, marginRight: 6 };
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 14,
+        padding: `12px ${padX}`,
+        borderBottom: `1px solid ${T.outlineFaint}`,
+        flexWrap: "wrap",
+        fontFamily: T.fontMono,
+        fontSize: 12,
+      }}
+    >
+      <span
+        style={{
+          color: T.text3,
+          textTransform: "uppercase",
+          letterSpacing: 0.6,
+          fontSize: 10.5,
+        }}
+      >
+        date range
+      </span>
+      <label style={{ display: "flex", alignItems: "center" }}>
+        <span style={labelStyle}>from</span>
+        <input
+          type="date"
+          value={startDate}
+          max={endDate || today}
+          onChange={(e) => onStart(e.target.value)}
+          style={inputStyle}
+        />
+      </label>
+      <span style={{ color: T.text3 }}>→</span>
+      <label style={{ display: "flex", alignItems: "center" }}>
+        <span style={labelStyle}>to</span>
+        <input
+          type="date"
+          value={endDate}
+          min={startDate}
+          max={today}
+          onChange={(e) => onEnd(e.target.value)}
+          style={inputStyle}
+        />
+      </label>
+    </div>
   );
 }
