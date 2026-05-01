@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { AppFrame } from "@/components/frame";
-import { useT } from "@/components/theme";
+import { useT, useTheme } from "@/components/theme";
 import type {
   BacktestEquityPoint,
   BacktestResultResponse,
@@ -807,16 +807,23 @@ function DateRangeRow({
   padX: string;
 }) {
   const T = useT();
+  const { mode } = useTheme();
   const today = todayIso();
+  // Editorial input: barely-there bottom rule, transparent fill, dotted-underline
+  // hover. The native date-picker chrome (calendar pop, spin chevrons) is themed
+  // by the browser via `colorScheme`, which we now follow the active theme so
+  // the picker UI stops fighting the page in Paper mode.
   const inputStyle = {
-    background: T.surface3,
-    border: `1px solid ${T.outline}`,
-    borderRadius: 3,
-    padding: "5px 8px",
+    background: "transparent",
+    border: "none",
+    borderBottom: `1px solid ${T.outlineVariant}`,
+    borderRadius: 0,
+    padding: "4px 4px 3px",
     color: T.text,
     fontFamily: T.fontMono,
     fontSize: 12,
-    colorScheme: "dark" as const,
+    colorScheme: mode,
+    outline: "none",
   };
   const labelStyle = { color: T.text3, marginRight: 6 };
   return (
