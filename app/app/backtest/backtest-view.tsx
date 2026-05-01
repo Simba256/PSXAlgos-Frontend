@@ -282,8 +282,12 @@ export function BacktestView({
       const qs = url.searchParams.toString();
       window.history.replaceState(null, "", url.pathname + (qs ? `?${qs}` : ""));
     }
-    setFlash("Set a date range and click Run backtest.");
-  }, [autoRun, setFlash]);
+    setFlash(
+      initialResult
+        ? "Set a date range and click Re-run."
+        : "Set a date range and click Run backtest.",
+    );
+  }, [autoRun, initialResult, setFlash]);
 
   const handleSaveBenchmark = () => {
     setBenchmarkSaved((b) => {
