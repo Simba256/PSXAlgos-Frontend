@@ -37,6 +37,47 @@ function useBodyScrollLock(locked: boolean) {
   }, [locked]);
 }
 
+// Header KSE-100 chip data. Fetches /api/market/indices (server proxy
+// that hits the backend's /market/indices?period=1D) and surfaces the
+// percent change. Returns null while loading or on failure so the
+// chip can hide gracefully — never show fabricated numbers in the
+// header. Refresh every 5 min; the upstream is EOD-derived.
+type KseTicker = { changePercent: number } | null;
+
+function useKseTicker(): KseTicker {
+  const [data, setData] = useState<KseTicker>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/market/indices", { cache: "no-store" });
+        if (!res.ok) return;
+        const body = (await res.json()) as Array<{
+          symbol: string;
+          changePercent: number;
+        }>;
+        const kse = body.find((row) => row.symbol === "KSE100");
+        if (!kse || cancelled) return;
+        setData({ changePercent: kse.changePercent });
+      } catch {
+        // Swallow — leaving data null hides the chip.
+      }
+    };
+    void load();
+    const id = setInterval(load, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+  return data;
+}
+
+function formatPct(v: number): string {
+  const sign = v >= 0 ? "+" : "";
+  return `${sign}${v.toFixed(2)}%`;
+}
+
 export function TopNav({ route }: { route?: string }) {
   const T = useT();
   const pathname = usePathname();
@@ -45,6 +86,7 @@ export function TopNav({ route }: { route?: string }) {
   const compact = !isDesktop;
   const [open, setOpen] = useState(false);
   useBodyScrollLock(open && compact);
+  const kse = useKseTicker();
 
   useEffect(() => {
     if (!compact && open) setOpen(false);
@@ -153,9 +195,16 @@ export function TopNav({ route }: { route?: string }) {
             }}
           >
             <ThemeToggle variant="inline" />
-            <span style={{ fontFamily: T.fontMono, whiteSpace: "nowrap" }}>
-              KSE-100 <span style={{ color: T.gain }}>+0.42%</span>
-            </span>
+            {kse && (
+              <span style={{ fontFamily: T.fontMono, whiteSpace: "nowrap" }}>
+                KSE-100{" "}
+                <span
+                  style={{ color: kse.changePercent >= 0 ? T.gain : T.loss }}
+                >
+                  {formatPct(kse.changePercent)}
+                </span>
+              </span>
+            )}
             <UserMenu size={26} />
           </div>
         )}
@@ -169,18 +218,24 @@ export function TopNav({ route }: { route?: string }) {
           footer={
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <ThemeToggle variant="inline" />
-              <div
-                style={{
-                  fontFamily: T.fontMono,
-                  fontSize: 12,
-                  color: T.text3,
-                  display: "flex",
-                  justifyContent: "space-between",
-                }}
-              >
-                <span>KSE-100</span>
-                <span style={{ color: T.gain }}>+0.42%</span>
-              </div>
+              {kse && (
+                <div
+                  style={{
+                    fontFamily: T.fontMono,
+                    fontSize: 12,
+                    color: T.text3,
+                    display: "flex",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <span>KSE-100</span>
+                  <span
+                    style={{ color: kse.changePercent >= 0 ? T.gain : T.loss }}
+                  >
+                    {formatPct(kse.changePercent)}
+                  </span>
+                </div>
+              )}
             </div>
           }
         />
