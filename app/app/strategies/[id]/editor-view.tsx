@@ -1950,7 +1950,7 @@ function Canvas({
           transform: "translateX(-50%)",
           display: "flex",
           gap: 8,
-          padding: 6,
+          padding: "6px 16px",
           background: T.surface2 + "e6",
           backdropFilter: "blur(10px)",
           borderRadius: 999,
