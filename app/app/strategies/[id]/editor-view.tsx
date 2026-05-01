@@ -43,7 +43,6 @@ import {
   fromBackend,
   hasAnyLeaf,
   insertChild,
-  leafCount,
   leafFromCond,
   findNode,
   findParent,
@@ -434,11 +433,6 @@ export function EditorView({
     }
   };
 
-  const handleValidate = () => {
-    const n = leafCount(tree);
-    setFlash(`Strategy is valid · ${n} condition${n === 1 ? "" : "s"} connected`);
-  };
-
   const handleDeploy = async () => {
     const next = !deployed;
     // Optimistic flip; revert on failure.
@@ -728,7 +722,6 @@ export function EditorView({
             onSelect={onSelect}
             drawerOpen={selection !== null || creating !== null}
             deployed={deployed}
-            onValidate={handleValidate}
             onDeploy={handleDeploy}
             onAddCondition={handleAddCondition}
             onAddGroup={handleAddGroup}
@@ -1390,7 +1383,6 @@ function Canvas({
   onSelect,
   drawerOpen,
   deployed,
-  onValidate,
   onDeploy,
   onAddCondition,
   onAddGroup,
@@ -1403,7 +1395,6 @@ function Canvas({
   onSelect: (kind: SelKind, id: CondId) => void;
   drawerOpen: boolean;
   deployed: boolean;
-  onValidate: () => void;
   onDeploy: () => void;
   onAddCondition: (parentId: CondId, index?: number) => void;
   onAddGroup: (parentId: CondId, index: number, logic: ConditionLogic) => void;
@@ -1968,10 +1959,6 @@ function Canvas({
           zIndex: 5,
         }}
       >
-        <Btn variant="ghost" size="sm" onClick={onValidate}>
-          Validate
-        </Btn>
-        <div style={{ width: 1, height: 20, background: T.outlineFaint }} />
         <Link href={`/backtest?strategy_id=${strategyId}&run=1`} style={{ textDecoration: "none" }}>
           <Btn variant="outline" size="sm">
             Run backtest
