@@ -142,11 +142,20 @@ export function BacktestIndexView({
             )
           }
           actions={
-            <Link href="/strategies" style={{ textDecoration: "none" }}>
-              <Btn variant="ghost" size="sm">
-                Strategies
-              </Btn>
-            </Link>
+            <>
+              <Link href="/strategies" style={{ textDecoration: "none" }}>
+                <Btn variant="ghost" size="sm">
+                  Strategies
+                </Btn>
+              </Link>
+              {hasStrategies && (
+                <Link href="/backtest/new" style={{ textDecoration: "none" }}>
+                  <Btn variant="primary" size="sm" icon={Icon.plus}>
+                    Run new backtest
+                  </Btn>
+                </Link>
+              )}
+            </>
           }
         />
 
@@ -193,14 +202,10 @@ function EmptyState({ hasStrategies }: { hasStrategies: boolean }) {
       <div style={{ fontSize: 15, color: T.text2, lineHeight: 1.55 }}>
         {hasStrategies ? (
           <>
-            You have strategies but none have been backtested yet. Pick one
-            from{" "}
-            <Link href="/strategies" style={{ color: T.primaryLight }}>
-              Strategies
-            </Link>{" "}
-            and hit <em>Run backtest</em> in the editor — every run you execute
-            will land here, including different time windows of the same
-            strategy.
+            You have strategies but none have been backtested yet. Hit{" "}
+            <em>Run new backtest</em> below to pick a strategy and date range —
+            every run you execute will land here, including different time
+            windows of the same strategy.
           </>
         ) : (
           <>
@@ -216,9 +221,9 @@ function EmptyState({ hasStrategies }: { hasStrategies: boolean }) {
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
         {hasStrategies ? (
-          <Link href="/strategies" style={{ textDecoration: "none" }}>
-            <Btn variant="primary" size="sm">
-              Pick a strategy
+          <Link href="/backtest/new" style={{ textDecoration: "none" }}>
+            <Btn variant="primary" size="sm" icon={Icon.plus}>
+              Run new backtest
             </Btn>
           </Link>
         ) : (

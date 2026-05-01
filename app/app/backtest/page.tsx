@@ -57,7 +57,7 @@ function toRunRow(r: BacktestRunRow): RunRow {
 export default async function BacktestPage({
   searchParams,
 }: {
-  searchParams: Promise<{ strategy_id?: string; backtest_id?: string; run?: string }>;
+  searchParams: Promise<{ strategy_id?: string; backtest_id?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -68,9 +68,8 @@ export default async function BacktestPage({
     email: session.user.email,
   });
 
-  const { strategy_id, backtest_id, run } = await searchParams;
+  const { strategy_id, backtest_id } = await searchParams;
   const sid = strategy_id ? parseInt(strategy_id, 10) : NaN;
-  const autoRun = run === "1";
 
   // No strategy specified → render the index page as a flat list of every
   // backtest *run* the user has executed across all their strategies.
@@ -132,7 +131,6 @@ export default async function BacktestPage({
       strategyId={sid}
       strategyName={strategyName}
       initialResult={initialResult}
-      autoRun={autoRun}
     />
   );
 }

@@ -1,20 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
-import { DayPicker } from "react-day-picker";
-import { parseISO } from "date-fns";
-import "react-day-picker/style.css";
-import "@/components/calendar.css";
+import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
 import type {
   BacktestEquityPoint,
   BacktestResultResponse,
-  BacktestJobPending,
-  BacktestJobStatus,
 } from "@/lib/api/strategies";
 import {
   Btn,
@@ -99,17 +92,6 @@ function formatRan(ms: number): string {
   return `${mo}mo ago`;
 }
 
-// Local-time YYYY-MM-DD (avoids the UTC drift of toISOString in PKT).
-function isoLocal(d: Date): string {
-  const yr = d.getFullYear();
-  const mo = String(d.getMonth() + 1).padStart(2, "0");
-  const dy = String(d.getDate()).padStart(2, "0");
-  return `${yr}-${mo}-${dy}`;
-}
-function todayIso(): string {
-  return isoLocal(new Date());
-}
-
 // Bucket equity_curve by year-month, take the last close per month, then
 // compute month-over-month % change. Backend doesn't ship monthly_returns
 // directly so we derive it here. Returns the most recent 12 buckets.
@@ -169,36 +151,29 @@ export function BacktestView({
   strategyId,
   strategyName,
   initialResult,
-  autoRun = false,
 }: {
   strategyId: number | null;
   strategyName: string | null;
   initialResult: BacktestResultResponse | null;
-  autoRun?: boolean;
 }) {
   const T = useT();
   const { bp } = useBreakpoint();
   const padX = pick(bp, PAD.page);
-  const router = useRouter();
-  const [result, setResult] = useState<BacktestResultResponse | null>(initialResult);
-  const [lastRun, setLastRun] = useState<number>(() => {
+  // Run lifecycle now lives on /backtest/new — this view is purely for
+  // displaying a stored result. `result` is set once from the server-fetched
+  // initialResult and never mutated locally.
+  const result = initialResult;
+  const lastRun = useMemo<number>(() => {
     if (initialResult?.created_at) {
       const t = new Date(initialResult.created_at).getTime();
       if (!Number.isNaN(t)) return t;
     }
     return Date.now();
-  });
-  const [running, setRunning] = useState(false);
+  }, [initialResult?.created_at]);
   const [benchmarkSaved, setBenchmarkSaved] = useState(false);
   const [deployed, setDeployed] = useState(false);
   const [filter, setFilter] = useState<TradeFilter>("all");
   const { flash, setFlash } = useFlash();
-  // Default the inputs to the 1M preset on every page open, regardless of
-  // the saved backtest's range. The header meta line still surfaces the
-  // saved result's actual date range, so the user doesn't lose that
-  // context — the inputs are always primed for the next run.
-  const [startDate, setStartDate] = useState<string>(() => presetRange("1M").start);
-  const [endDate, setEndDate] = useState<string>(() => presetRange("1M").end);
   const [ranLabel, setRanLabel] = useState<string>(
     initialResult ? `ran ${formatRan(Date.now() - lastRun)}` : "no run yet",
   );
@@ -211,111 +186,14 @@ export function BacktestView({
     return () => clearInterval(iv);
   }, [lastRun, result]);
 
-  async function pollJob(jobId: string): Promise<BacktestJobStatus> {
-    // Poll every 1.5s, give up after ~30 attempts (≈ 45s) to match backend's
-    // 30-min timeout but keep the UI from hanging forever on a stuck job.
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const res = await fetch(`/api/strategies/${strategyId}/backtest/job/${jobId}`);
-      if (!res.ok) throw new Error(`Poll failed (${res.status})`);
-      const status = (await res.json()) as BacktestJobStatus;
-      if (status.status === "completed" || status.status === "failed") return status;
-    }
-    throw new Error("Backtest taking longer than expected — try again later.");
-  }
-
-  const handleRerun = async () => {
-    if (running || !strategyId) return;
-    // Validate the user-picked range before firing — backend rejects
-    // start >= end, but we want to surface the error inline and also
-    // refuse future / too-short windows that the backend technically
-    // accepts but produce useless results.
-    if (!startDate || !endDate) {
-      setFlash("Pick a from / to date range before running.");
-      return;
-    }
-    if (startDate >= endDate) {
-      setFlash("From date must be before to date.");
-      return;
-    }
-    if (endDate > todayIso()) {
-      setFlash("To date cannot be in the future.");
-      return;
-    }
-    const minSpanMs = 7 * 24 * 60 * 60 * 1000;
-    if (new Date(endDate).getTime() - new Date(startDate).getTime() < minSpanMs) {
-      setFlash("Date range must span at least 7 days.");
-      return;
-    }
-    setRunning(true);
-    setRanLabel("running…");
-    try {
-      const body = {
-        start_date: startDate,
-        end_date: endDate,
-        initial_capital: Number(initialResult?.initial_capital ?? 1_000_000),
-      };
-      const startRes = await fetch(`/api/strategies/${strategyId}/backtest`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!startRes.ok) {
-        const err = await startRes.json().catch(() => ({}));
-        if (startRes.status === 403) throw new Error("Backtests require the Pro plan.");
-        throw new Error(typeof err?.error === "string" ? err.error : `Start failed (${startRes.status})`);
-      }
-      const started = (await startRes.json()) as BacktestJobPending | BacktestResultResponse;
-      // Sync mode (Redis off) returns a full result directly.
-      if (!("job_id" in started)) {
-        setResult(started);
-        setLastRun(Date.now());
-        setFlash("Backtest complete");
-        router.refresh();
-        return;
-      }
-      const final = await pollJob(started.job_id);
-      if (final.status === "failed") {
-        throw new Error(final.error ?? "Backtest failed");
-      }
-      // Pull the URL into sync with the new backtest_id so refresh shows it.
-      if (final.backtest_id) {
-        const url = new URL(window.location.href);
-        url.searchParams.set("backtest_id", String(final.backtest_id));
-        window.history.replaceState(null, "", url.pathname + "?" + url.searchParams.toString());
-      }
-      setLastRun(Date.now());
-      setFlash("Backtest complete");
-      router.refresh();
-    } catch (err) {
-      setFlash(err instanceof Error ? err.message : "Backtest failed");
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  // Arrival from the editor's "Run backtest" link (`?run=1`) used to kick
-  // off a run immediately with hard-coded defaults. Now that the date
-  // range is a user-chosen input, we no longer auto-fire — strip the
-  // query param (so a refresh doesn't re-trigger the prompt) and surface
-  // a flash telling the user what to do next. Ref-guarded against
-  // strict-mode double-invoke.
-  const autoRunHandledRef = useRef(false);
-  useEffect(() => {
-    if (!autoRun || autoRunHandledRef.current) return;
-    autoRunHandledRef.current = true;
-    if (typeof window !== "undefined") {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("run");
-      const qs = url.searchParams.toString();
-      window.history.replaceState(null, "", url.pathname + (qs ? `?${qs}` : ""));
-    }
-    setFlash(
-      initialResult
-        ? "Set a date range and click Re-run."
-        : "Set a date range and click Run backtest.",
-    );
-  }, [autoRun, initialResult, setFlash]);
+  // Re-run pre-fills the run page with the saved result's window, so the
+  // user can tweak it (or just click Run again) instead of remembering the
+  // exact dates.
+  const rerunHref = strategyId
+    ? `/backtest/new?strategy_id=${strategyId}` +
+      (result?.start_date ? `&start=${result.start_date}` : "") +
+      (result?.end_date ? `&end=${result.end_date}` : "")
+    : "/backtest";
 
   const handleSaveBenchmark = () => {
     setBenchmarkSaved((b) => {
@@ -440,14 +318,16 @@ export function BacktestView({
               <span>{dateRange}</span>
               <span>{result ? `${result.equity_curve?.length ?? 0} bars` : "no equity curve yet"}</span>
               <span>PKR {initialCapital.toLocaleString()} initial</span>
-              <span style={{ color: running ? T.warning : T.gain }}>{ranLabel}</span>
+              <span style={{ color: T.gain }}>{ranLabel}</span>
             </>
           }
           actions={
             <>
-              <Btn variant="ghost" size="sm" onClick={handleRerun}>
-                {running ? "Running…" : result ? "Re-run" : "Run backtest"}
-              </Btn>
+              <Link href={rerunHref} style={{ textDecoration: "none" }}>
+                <Btn variant="ghost" size="sm">
+                  {result ? "Re-run" : "Run backtest"}
+                </Btn>
+              </Link>
               <Btn variant="outline" size="sm" onClick={handleSaveBenchmark}>
                 {benchmarkSaved ? "Remove benchmark" : "Save as benchmark"}
               </Btn>
@@ -456,14 +336,6 @@ export function BacktestView({
               </Btn>
             </>
           }
-        />
-
-        <DateRangeRow
-          startDate={startDate}
-          endDate={endDate}
-          onStart={setStartDate}
-          onEnd={setEndDate}
-          padX={padX}
         />
 
         <div
@@ -568,7 +440,7 @@ export function BacktestView({
                     }}
                   >
                     {strategyId
-                      ? "no backtest yet — pick a date range above and click Run backtest"
+                      ? "no backtest yet — click Run backtest to set a date range"
                       : "open this from a strategy to run a backtest"}
                   </div>
                 )}
@@ -834,278 +706,3 @@ function TradeLog({ trades }: { trades: Trade[] }) {
   );
 }
 
-// Date-range chip presets. "Custom" hands control to a themed react-day-picker
-// popover so we don't have to ship the white native overlay. Presets always
-// run end-of-window = today; if the user re-opens a saved backtest with a
-// different end_date, the row falls into Custom mode (no preset matches).
-type PresetKey = "1M" | "3M" | "6M" | "YTD" | "1Y" | "3Y" | "ALL" | "CUSTOM";
-const PRESET_ORDER: PresetKey[] = ["1M", "3M", "6M", "YTD", "1Y", "3Y", "ALL", "CUSTOM"];
-const PRESET_LABEL: Record<PresetKey, string> = {
-  "1M": "1M",
-  "3M": "3M",
-  "6M": "6M",
-  "YTD": "YTD",
-  "1Y": "1Y",
-  "3Y": "3Y",
-  "ALL": "All",
-  "CUSTOM": "Custom",
-};
-
-function presetRange(key: Exclude<PresetKey, "CUSTOM">): { start: string; end: string } {
-  const today = new Date();
-  const end = isoLocal(today);
-  const start = new Date(today);
-  switch (key) {
-    case "1M":
-      start.setMonth(start.getMonth() - 1);
-      break;
-    case "3M":
-      start.setMonth(start.getMonth() - 3);
-      break;
-    case "6M":
-      start.setMonth(start.getMonth() - 6);
-      break;
-    case "YTD":
-      start.setMonth(0);
-      start.setDate(1);
-      break;
-    case "1Y":
-      start.setFullYear(start.getFullYear() - 1);
-      break;
-    case "3Y":
-      start.setFullYear(start.getFullYear() - 3);
-      break;
-    case "ALL":
-      // 10y back is more than the deepest history we expect to have on PSX
-      // and stays bounded so the backend isn't asked for forever.
-      start.setFullYear(start.getFullYear() - 10);
-      break;
-  }
-  return { start: isoLocal(start), end };
-}
-
-function detectActivePreset(startDate: string, endDate: string): PresetKey {
-  if (endDate !== todayIso()) return "CUSTOM";
-  for (const k of PRESET_ORDER) {
-    if (k === "CUSTOM") continue;
-    const r = presetRange(k);
-    if (r.start === startDate && r.end === endDate) return k;
-  }
-  return "CUSTOM";
-}
-
-function formatPickerLabel(iso: string): string {
-  // "2025-05-02" → "May 2, 2025". Fallback to raw on parse failure.
-  const d = parseISO(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-function DateRangeRow({
-  startDate,
-  endDate,
-  onStart,
-  onEnd,
-  padX,
-}: {
-  startDate: string;
-  endDate: string;
-  onStart: (v: string) => void;
-  onEnd: (v: string) => void;
-  padX: string;
-}) {
-  const T = useT();
-  // The user's explicit chip pick wins — once they click Custom, we stay in
-  // custom mode even if their typed dates happen to coincide with a preset.
-  const [customSticky, setCustomSticky] = useState(() =>
-    detectActivePreset(startDate, endDate) === "CUSTOM",
-  );
-  const detected = detectActivePreset(startDate, endDate);
-  const active: PresetKey = customSticky ? "CUSTOM" : detected;
-
-  const handlePresetClick = (key: PresetKey) => {
-    if (key === "CUSTOM") {
-      setCustomSticky(true);
-      return;
-    }
-    setCustomSticky(false);
-    const r = presetRange(key);
-    onStart(r.start);
-    onEnd(r.end);
-  };
-
-  const chipStyle = (isActive: boolean): CSSProperties => ({
-    background: isActive ? T.surface3 : "transparent",
-    color: isActive ? T.text : T.text2,
-    border: `1px solid ${isActive ? T.outlineVariant : T.outlineFaint}`,
-    borderRadius: 3,
-    padding: "4px 9px",
-    cursor: "pointer",
-    fontFamily: T.fontMono,
-    fontSize: 11,
-    letterSpacing: 0.4,
-    textTransform: "uppercase",
-    transition: "background 120ms ease, color 120ms ease, border-color 120ms ease",
-  });
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        padding: `12px ${padX}`,
-        borderBottom: `1px solid ${T.outlineFaint}`,
-        flexWrap: "wrap",
-        fontFamily: T.fontMono,
-        fontSize: 12,
-      }}
-    >
-      <span
-        style={{
-          color: T.text3,
-          textTransform: "uppercase",
-          letterSpacing: 0.6,
-          fontSize: 10.5,
-        }}
-      >
-        date range
-      </span>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {PRESET_ORDER.map((k) => (
-          <button
-            key={k}
-            type="button"
-            onClick={() => handlePresetClick(k)}
-            style={chipStyle(active === k)}
-          >
-            {PRESET_LABEL[k]}
-          </button>
-        ))}
-      </div>
-      {active === "CUSTOM" && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            marginLeft: 4,
-          }}
-        >
-          <DateTrigger
-            label="from"
-            iso={startDate}
-            onChange={onStart}
-            disabledAfter={endDate}
-          />
-          <span style={{ color: T.text3 }}>→</span>
-          <DateTrigger
-            label="to"
-            iso={endDate}
-            onChange={onEnd}
-            disabledBefore={startDate}
-            disabledAfter={todayIso()}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DateTrigger({
-  label,
-  iso,
-  onChange,
-  disabledBefore,
-  disabledAfter,
-}: {
-  label: string;
-  iso: string;
-  onChange: (v: string) => void;
-  disabledBefore?: string;
-  disabledAfter?: string;
-}) {
-  const T = useT();
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  // Click-outside + ESC to dismiss. Mounted only when open so we don't run
-  // a window listener every render.
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!wrapRef.current) return;
-      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const selected = iso ? parseISO(iso) : undefined;
-  const disabledMatchers: Array<{ before: Date } | { after: Date }> = [];
-  if (disabledBefore) disabledMatchers.push({ before: parseISO(disabledBefore) });
-  if (disabledAfter) disabledMatchers.push({ after: parseISO(disabledAfter) });
-
-  return (
-    <div ref={wrapRef} style={{ position: "relative", display: "flex", alignItems: "center" }}>
-      <span style={{ color: T.text3, marginRight: 6 }}>{label}</span>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        style={{
-          background: "transparent",
-          color: T.text,
-          border: "none",
-          borderBottom: `1px dashed ${T.outlineVariant}`,
-          padding: "3px 2px 2px",
-          fontFamily: T.fontMono,
-          fontSize: 12,
-          cursor: "pointer",
-        }}
-      >
-        {formatPickerLabel(iso)}
-      </button>
-      {open && (
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            left: 0,
-            zIndex: 50,
-            background: T.surfaceLow,
-            border: `1px solid ${T.outlineVariant}`,
-            borderRadius: 4,
-            boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
-            animation: "psx-pop-in 140ms ease-out",
-          }}
-        >
-          <DayPicker
-            mode="single"
-            selected={selected}
-            onSelect={(d) => {
-              if (d) {
-                onChange(isoLocal(d));
-                setOpen(false);
-              }
-            }}
-            disabled={disabledMatchers.length ? disabledMatchers : undefined}
-            defaultMonth={selected}
-            weekStartsOn={1}
-            showOutsideDays
-          />
-        </div>
-      )}
-    </div>
-  );
-}

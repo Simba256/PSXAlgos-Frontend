@@ -14,10 +14,11 @@ type MarketingItem =
   | { kind: "link"; href: string; label: string }
   | { kind: "stub"; label: string };
 
-// `/backtest` (no params) lists the user's strategies with their latest
-// backtest summary — clicking a row deep-links to the per-strategy results
-// view at `/backtest?strategy_id=N`. Run actions still originate from the
-// strategy editor.
+// `/backtest` (no params) lists every backtest run the user has executed
+// across all their strategies, newest first. Clicking a row deep-links to
+// `/backtest?strategy_id=N&backtest_id=M` (results display). New runs are
+// configured on `/backtest/new` — reachable from the editor's Run backtest
+// button or the index's Run new backtest CTA.
 const NAV_ITEMS: MarketingItem[] = [
   { kind: "link", href: "/strategies", label: "Strategies" },
   { kind: "link", href: "/backtest", label: "Backtest" },

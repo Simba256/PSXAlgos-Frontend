@@ -1959,7 +1959,7 @@ function Canvas({
           zIndex: 5,
         }}
       >
-        <Link href={`/backtest?strategy_id=${strategyId}&run=1`} style={{ textDecoration: "none" }}>
+        <Link href={`/backtest/new?strategy_id=${strategyId}`} style={{ textDecoration: "none" }}>
           <Btn variant="outline" size="sm">
             Run backtest
           </Btn>

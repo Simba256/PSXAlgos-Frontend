@@ -276,7 +276,7 @@ export default function WizardPage() {
     }
     const newId = result.strategy_id;
     const target = afterKey === "backtest"
-      ? `/backtest?strategy_id=${newId}`
+      ? `/backtest/new?strategy_id=${newId}`
       : `/strategies/${newId}`;
     startTransition(() => router.push(target));
   }
