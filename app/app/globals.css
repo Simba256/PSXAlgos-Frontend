@@ -163,3 +163,87 @@ canvas {
     transform: translateY(0) scale(1);
   }
 }
+
+/* Summary-cell diff flash. Apply once per value commit; the keyframe restarts
+ * on each remount via React `key` bump (see SummaryCell in
+ * backtest-new-view.tsx). Reads as "this line just updated" without animating
+ * the whole panel — the rail stays an anchor. */
+@keyframes psx-cell-flash {
+  from {
+    opacity: 0.4;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Section expand/collapse via grid-template-rows. Cross-browser-safe height
+ * animation without measuring. Caret rotates on the same timing.
+ * See components/disclosure.tsx. */
+.psx-disclosure-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms cubic-bezier(0.77, 0, 0.175, 1);
+}
+.psx-disclosure-body[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.psx-disclosure-body > .psx-disclosure-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Segmented control. Active pill background slides between segments via
+ * transform; body content cross-fades through View Transitions when
+ * available, plain opacity otherwise. */
+.psx-segmented-track {
+  position: relative;
+  display: inline-flex;
+  padding: 3px;
+  background: var(--surface);
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--outline-faint);
+}
+.psx-segmented-pill {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  background: var(--surface-2);
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px var(--outline-faint), 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    width 200ms cubic-bezier(0.23, 1, 0.32, 1);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Tasteful press feedback applied to anything we want feeling "physical"
+ * (run button, segmented options). Single rule sites can opt into. */
+.psx-press:active {
+  transform: scale(0.97);
+  transition-duration: 80ms;
+}
+
+/* Sticky rail wrapper. Pinned to top of the column inside CSS Grid;
+ * scrolls inside its own viewport when content overflows. */
+.psx-sticky-rail {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+
+/* Mobile sticky bottom bar. WCAG 2.2 SC 2.4.11 — pair with
+ * scroll-padding-bottom on the form container so keyboard focus is never
+ * obscured. */
+.psx-mobile-cta-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  background: linear-gradient(180deg, transparent, var(--surface) 30%);
+  padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--outline-faint);
+}

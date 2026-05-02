@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { DayPicker } from "react-day-picker";
 import { parseISO } from "date-fns";
 import "react-day-picker/style.css";
@@ -17,11 +17,10 @@ import {
   Kicker,
   useFlash,
 } from "@/components/atoms";
-import {
-  EMPTY_UNIVERSE_AND_RISK,
-  UniverseAndRiskFields,
-  type UniverseAndRiskValue,
-} from "@/components/universe-and-risk-fields";
+import { Disclosure } from "@/components/disclosure";
+import { Segmented } from "@/components/segmented";
+import { MultiSelectPopover } from "@/components/multi-select-popover";
+import { useSessionStorage } from "@/components/use-session-storage";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
 import type {
@@ -38,6 +37,8 @@ export interface StrategyOption {
   status: StrategyStatus;
 }
 
+/* ────────── Date + currency helpers ────────── */
+
 // Local-time YYYY-MM-DD (avoids the UTC drift of toISOString in PKT).
 function isoLocal(d: Date): string {
   const yr = d.getFullYear();
@@ -49,17 +50,42 @@ function todayIso(): string {
   return isoLocal(new Date());
 }
 
+// Trading-day approximation: PSX trades Mon-Fri minus ~12 holidays/year =>
+// ~252 trading days per 365 calendar days. Good enough to drive the live
+// scope readout in the rail.
+function tradingDaysBetween(startIso: string, endIso: string): number {
+  const start = parseISO(startIso).getTime();
+  const end = parseISO(endIso).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+  const calendarDays = Math.max(0, Math.round((end - start) / 86400000));
+  return Math.round(calendarDays * (252 / 365));
+}
+
+function formatPkr(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  return new Intl.NumberFormat("en-PK").format(Math.round(n));
+}
+
+function compactPkr(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toLocaleString("en-PK", { maximumFractionDigits: 1 })}M`;
+  if (n >= 1_000) return `${Math.round(n / 1000)}K`;
+  return `${n}`;
+}
+
+/* ────────── Date presets ────────── */
+
 type PresetKey = "1M" | "3M" | "6M" | "YTD" | "1Y" | "3Y" | "ALL" | "CUSTOM";
 const PRESET_ORDER: PresetKey[] = ["1M", "3M", "6M", "YTD", "1Y", "3Y", "ALL", "CUSTOM"];
 const PRESET_LABEL: Record<PresetKey, string> = {
   "1M": "1M",
   "3M": "3M",
   "6M": "6M",
-  "YTD": "YTD",
+  YTD: "YTD",
   "1Y": "1Y",
   "3Y": "3Y",
-  "ALL": "All",
-  "CUSTOM": "Custom",
+  ALL: "All",
+  CUSTOM: "Custom",
 };
 
 function presetRange(key: Exclude<PresetKey, "CUSTOM">): { start: string; end: string } {
@@ -115,6 +141,80 @@ function formatPickerLabel(iso: string): string {
   });
 }
 
+/* ────────── Universe mode ────────── */
+
+type UniverseMode = "all" | "sector" | "ticker";
+
+interface NumericFilters {
+  min_price: number | null;
+  max_price: number | null;
+  min_volume: number | null;
+  min_market_cap: number | null;
+}
+
+const EMPTY_FILTERS: NumericFilters = {
+  min_price: null,
+  max_price: null,
+  min_volume: null,
+  min_market_cap: null,
+};
+
+interface RiskCaps {
+  stop_loss_pct: number | null;
+  take_profit_pct: number | null;
+  trailing_stop_pct: number | null;
+  max_holding_days: number | null;
+  max_positions: number | null;
+}
+
+const RISK_DEFAULTS: RiskCaps = {
+  stop_loss_pct: 5,
+  take_profit_pct: null,
+  trailing_stop_pct: null,
+  max_holding_days: null,
+  max_positions: 5,
+};
+
+const RISK_NONE: RiskCaps = {
+  stop_loss_pct: null,
+  take_profit_pct: null,
+  trailing_stop_pct: null,
+  max_holding_days: null,
+  max_positions: null,
+};
+
+const RISK_AGGRESSIVE: RiskCaps = {
+  stop_loss_pct: 8,
+  take_profit_pct: 20,
+  trailing_stop_pct: null,
+  max_holding_days: null,
+  max_positions: 8,
+};
+
+function risksEqual(a: RiskCaps, b: RiskCaps): boolean {
+  return (
+    a.stop_loss_pct === b.stop_loss_pct &&
+    a.take_profit_pct === b.take_profit_pct &&
+    a.trailing_stop_pct === b.trailing_stop_pct &&
+    a.max_holding_days === b.max_holding_days &&
+    a.max_positions === b.max_positions
+  );
+}
+
+function activeRiskCount(r: RiskCaps): number {
+  return [r.stop_loss_pct, r.take_profit_pct, r.trailing_stop_pct, r.max_holding_days, r.max_positions]
+    .filter((v) => v != null)
+    .length;
+}
+
+function activeFilterCount(f: NumericFilters): number {
+  return [f.min_price, f.max_price, f.min_volume, f.min_market_cap]
+    .filter((v) => v != null)
+    .length;
+}
+
+/* ────────── View ────────── */
+
 export function BacktestNewView({
   strategies,
   initialStrategyId,
@@ -128,7 +228,7 @@ export function BacktestNewView({
 }) {
   const T = useT();
   const router = useRouter();
-  const { bp } = useBreakpoint();
+  const { bp, isMobile } = useBreakpoint();
   const padX = pick(bp, PAD.page);
   const { flash, setFlash } = useFlash();
 
@@ -141,18 +241,19 @@ export function BacktestNewView({
     pickedStrategyExists ? initialStrategyId : null,
   );
 
-  // Initial range: prefill from query (re-run flow), else 1M preset.
-  const defaultRange = presetRange("1M");
-  const [startDate, setStartDate] = useState<string>(
-    initialStart ?? defaultRange.start,
-  );
-  const [endDate, setEndDate] = useState<string>(
-    initialEnd ?? defaultRange.end,
-  );
+  // Default range is now 1Y (was 1M). 1M is too short to be a meaningful
+  // backtest — the rail's trading-days readout makes the cost of a longer
+  // range obvious, so a sensible default is the right move.
+  const defaultRange = presetRange("1Y");
+  const [startDate, setStartDate] = useState<string>(initialStart ?? defaultRange.start);
+  const [endDate, setEndDate] = useState<string>(initialEnd ?? defaultRange.end);
   const [initialCapital, setInitialCapital] = useState<number>(1_000_000);
-  const [universeAndRisk, setUniverseAndRisk] = useState<UniverseAndRiskValue>(
-    EMPTY_UNIVERSE_AND_RISK,
-  );
+
+  const [universeMode, setUniverseMode] = useState<UniverseMode>("all");
+  const [selectedSectors, setSelectedSectors] = useState<string[]>([]);
+  const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
+  const [numericFilters, setNumericFilters] = useState<NumericFilters>(EMPTY_FILTERS);
+  const [riskCaps, setRiskCaps] = useState<RiskCaps>(RISK_DEFAULTS);
 
   const [running, setRunning] = useState(false);
 
@@ -185,6 +286,31 @@ export function BacktestNewView({
         .sort((a, b) => a.symbol.localeCompare(b.symbol)),
     [stocks],
   );
+  const totalActive = availableSymbols.length;
+
+  // Live universe size derives from mode + sector membership. This is the
+  // headline number in the sticky rail — the QuantConnect-style "what
+  // your run looks like" preview. Numeric filters (price/volume/cap) apply
+  // at backtest time on the backend so we can't reflect them client-side
+  // without an extra round-trip; the rail surfaces filter count as a
+  // sub-line instead.
+  const universeSize = useMemo(() => {
+    if (universeMode === "ticker") return selectedTickers.length;
+    const pool = stocks.filter((s) => s.is_active);
+    if (universeMode === "sector") {
+      if (selectedSectors.length === 0) return 0;
+      const set = new Set(selectedSectors);
+      return pool.filter((s) => s.sector_name && set.has(s.sector_name)).length;
+    }
+    return pool.length;
+  }, [stocks, universeMode, selectedSectors, selectedTickers]);
+
+  const tradingDays = useMemo(
+    () => tradingDaysBetween(startDate, endDate),
+    [startDate, endDate],
+  );
+
+  /* ────────── Run ────────── */
 
   async function pollJob(stratId: number, jobId: string): Promise<BacktestJobStatus> {
     for (let i = 0; i < 30; i++) {
@@ -224,6 +350,38 @@ export function BacktestNewView({
       setFlash("Initial capital must be greater than zero.");
       return;
     }
+    if (universeMode === "sector" && selectedSectors.length === 0) {
+      setFlash("Pick at least one sector or switch back to All.");
+      return;
+    }
+    if (universeMode === "ticker" && selectedTickers.length === 0) {
+      setFlash("Add at least one ticker or switch back to All.");
+      return;
+    }
+
+    // Translate the universe-mode UI into the backend payload (mirrors
+    // BacktestRequest in psxDataPortal/backend/app/schemas/strategy.py).
+    // - "all" → no sectors, no symbols, filters optional
+    // - "sector" → sectors set, symbols null
+    // - "ticker" → symbols set, sectors null (overrides anyway)
+    const payloadFilters =
+      universeMode === "ticker"
+        ? null
+        : (() => {
+            const merged = {
+              sectors: universeMode === "sector" ? selectedSectors : null,
+              ...numericFilters,
+            };
+            const empty =
+              (!merged.sectors || merged.sectors.length === 0) &&
+              merged.min_price == null &&
+              merged.max_price == null &&
+              merged.min_volume == null &&
+              merged.min_market_cap == null;
+            return empty ? null : merged;
+          })();
+    const payloadSymbols = universeMode === "ticker" ? selectedTickers : null;
+
     setRunning(true);
     try {
       const startRes = await fetch(`/api/strategies/${strategyId}/backtest`, {
@@ -233,13 +391,13 @@ export function BacktestNewView({
           start_date: startDate,
           end_date: endDate,
           initial_capital: initialCapital,
-          stock_filters: universeAndRisk.stock_filters,
-          stock_symbols: universeAndRisk.stock_symbols,
-          stop_loss_pct: universeAndRisk.stop_loss_pct ?? null,
-          take_profit_pct: universeAndRisk.take_profit_pct ?? null,
-          trailing_stop_pct: universeAndRisk.trailing_stop_pct ?? null,
-          max_holding_days: universeAndRisk.max_holding_days ?? null,
-          max_positions: universeAndRisk.max_positions ?? null,
+          stock_filters: payloadFilters,
+          stock_symbols: payloadSymbols,
+          stop_loss_pct: riskCaps.stop_loss_pct,
+          take_profit_pct: riskCaps.take_profit_pct,
+          trailing_stop_pct: riskCaps.trailing_stop_pct,
+          max_holding_days: riskCaps.max_holding_days,
+          max_positions: riskCaps.max_positions,
         }),
       });
       if (!startRes.ok) {
@@ -253,12 +411,9 @@ export function BacktestNewView({
         | BacktestJobPending
         | BacktestResultResponse;
 
-      // Sync mode (Redis off): backend returns the full result inline. Use
-      // its id straight away for the redirect.
+      // Sync mode (Redis off): backend returns the full result inline.
       if (!("job_id" in started)) {
-        router.push(
-          `/backtest?strategy_id=${strategyId}&backtest_id=${started.id}`,
-        );
+        router.push(`/backtest?strategy_id=${strategyId}&backtest_id=${started.id}`);
         return;
       }
 
@@ -267,9 +422,7 @@ export function BacktestNewView({
         throw new Error(final.error ?? "Backtest failed");
       }
       if (final.backtest_id) {
-        router.push(
-          `/backtest?strategy_id=${strategyId}&backtest_id=${final.backtest_id}`,
-        );
+        router.push(`/backtest?strategy_id=${strategyId}&backtest_id=${final.backtest_id}`);
       } else {
         // Shouldn't happen — completed without a backtest_id. Fall back to
         // the per-strategy results page which auto-loads the latest run.
@@ -282,6 +435,14 @@ export function BacktestNewView({
   }
 
   const empty = strategies.length === 0;
+
+  /* ────────── Layout ────────── */
+
+  const usingDefaultRange =
+    detectActivePreset(startDate, endDate) === "1Y" && !initialStart;
+  const usingDefaultCapital = initialCapital === 1_000_000;
+  const usingDefaultRisk = risksEqual(riskCaps, RISK_DEFAULTS);
+  const usingDefaultUniverse = universeMode === "all";
 
   return (
     <AppFrame route="/backtest">
@@ -310,11 +471,11 @@ export function BacktestNewView({
               <>
                 <span>{selectedStrategy.name}</span>
                 <span style={{ color: T.text3 }}>
-                  pick the universe + risk this run should use
+                  scope updates as you change the form — review on the right, then run
                 </span>
               </>
             ) : (
-              <span>pick a strategy, set date range + universe, then run</span>
+              <span>pick a strategy, set the scope, then run</span>
             )
           }
           actions={
@@ -334,6 +495,7 @@ export function BacktestNewView({
               mobile: `20px ${padX} 28px`,
               desktop: `28px ${padX} 40px`,
             }),
+            scrollPaddingBottom: 96,
           }}
         >
           {empty ? (
@@ -341,57 +503,101 @@ export function BacktestNewView({
           ) : (
             <div
               style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 28,
-                maxWidth: 880,
+                display: "grid",
+                gridTemplateColumns: pick(bp, {
+                  mobile: "minmax(0, 1fr)",
+                  tablet: "minmax(0, 1fr)",
+                  desktop: "minmax(0, 1.9fr) minmax(280px, 1fr)",
+                }),
+                gap: pick(bp, { mobile: 28, desktop: 56 }),
+                alignItems: "start",
               }}
             >
-              <StrategyPicker
-                strategies={strategies}
-                value={strategyId}
-                onChange={setStrategyId}
-                disabled={running}
-              />
+              {/* ── form column ── */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 32, minWidth: 0 }}>
+                <StrategySection
+                  strategies={strategies}
+                  value={strategyId}
+                  onChange={setStrategyId}
+                  disabled={running}
+                />
 
-              <DateRangeBlock
-                startDate={startDate}
-                endDate={endDate}
-                onStart={setStartDate}
-                onEnd={setEndDate}
-                disabled={running}
-              />
+                <RangeSection
+                  startDate={startDate}
+                  endDate={endDate}
+                  onStart={setStartDate}
+                  onEnd={setEndDate}
+                  disabled={running}
+                />
 
-              <InitialCapitalBlock
-                value={initialCapital}
-                onChange={setInitialCapital}
-                disabled={running}
-              />
+                <CapitalSection
+                  value={initialCapital}
+                  onChange={setInitialCapital}
+                  disabled={running}
+                />
 
-              <UniverseAndRiskFields
-                value={universeAndRisk}
-                onChange={setUniverseAndRisk}
-                availableSectors={availableSectors}
-                availableSymbols={availableSymbols}
-                disabled={running}
-              />
+                <UniverseSection
+                  mode={universeMode}
+                  onMode={setUniverseMode}
+                  sectors={selectedSectors}
+                  onSectors={setSelectedSectors}
+                  tickers={selectedTickers}
+                  onTickers={setSelectedTickers}
+                  filters={numericFilters}
+                  onFilters={setNumericFilters}
+                  availableSectors={availableSectors}
+                  availableSymbols={availableSymbols}
+                  totalActive={totalActive}
+                  disabled={running}
+                />
 
-              <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-                <Btn
-                  variant="primary"
-                  size="md"
-                  icon={Icon.spark}
-                  onClick={handleRun}
-                  disabled={running || !strategyId}
-                >
-                  {running ? "Running…" : "Run backtest"}
-                </Btn>
-                <Link href="/backtest" style={{ textDecoration: "none" }}>
-                  <Btn variant="ghost" size="md" disabled={running}>
-                    Cancel
-                  </Btn>
-                </Link>
+                <RiskSection
+                  value={riskCaps}
+                  onChange={setRiskCaps}
+                  disabled={running}
+                />
+
+                {/* Mobile-only run row sits at the bottom of the form. On
+                    desktop the rail's CTA is the primary action. */}
+                {isMobile && (
+                  <div className="psx-mobile-cta-bar">
+                    <Btn
+                      variant="primary"
+                      size="md"
+                      icon={Icon.spark}
+                      onClick={handleRun}
+                      disabled={running || !strategyId}
+                      style={{ width: "100%", justifyContent: "center" }}
+                    >
+                      {running ? "Running…" : "Run backtest"}
+                    </Btn>
+                  </div>
+                )}
               </div>
+
+              {/* ── rail ── */}
+              {!isMobile && (
+                <RunRail
+                  strategy={selectedStrategy}
+                  startDate={startDate}
+                  endDate={endDate}
+                  tradingDays={tradingDays}
+                  rangeIsDefault={usingDefaultRange}
+                  capital={initialCapital}
+                  capitalIsDefault={usingDefaultCapital}
+                  universeMode={universeMode}
+                  universeSize={universeSize}
+                  totalActive={totalActive}
+                  selectedSectorsCount={selectedSectors.length}
+                  selectedTickersCount={selectedTickers.length}
+                  filtersActive={activeFilterCount(numericFilters)}
+                  universeIsDefault={usingDefaultUniverse}
+                  risk={riskCaps}
+                  riskIsDefault={usingDefaultRisk}
+                  running={running}
+                  onRun={handleRun}
+                />
+              )}
             </div>
           )}
         </div>
@@ -400,6 +606,8 @@ export function BacktestNewView({
     </AppFrame>
   );
 }
+
+/* ────────── Empty state ────────── */
 
 function EmptyState() {
   const T = useT();
@@ -426,13 +634,11 @@ function EmptyState() {
         nothing to backtest yet
       </div>
       <div style={{ fontSize: 15, color: T.text2, lineHeight: 1.55 }}>
-        Backtests run against strategies — the entry/exit rules you author
-        over on{" "}
+        Backtests run against strategies — the entry/exit rules you author over on{" "}
         <Link href="/strategies" style={{ color: T.primaryLight }}>
           Strategies
         </Link>
-        . Build one first, then come back here to validate it against
-        historical PSX data.
+        . Build one first, then come back here to validate it against historical PSX data.
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
         <Link href="/strategies/new" style={{ textDecoration: "none" }}>
@@ -445,7 +651,316 @@ function EmptyState() {
   );
 }
 
-function StrategyPicker({
+/* ────────── Sticky run rail ────────── */
+
+function RunRail({
+  strategy,
+  startDate,
+  endDate,
+  tradingDays,
+  rangeIsDefault,
+  capital,
+  capitalIsDefault,
+  universeMode,
+  universeSize,
+  totalActive,
+  selectedSectorsCount,
+  selectedTickersCount,
+  filtersActive,
+  universeIsDefault,
+  risk,
+  riskIsDefault,
+  running,
+  onRun,
+}: {
+  strategy: StrategyOption | null;
+  startDate: string;
+  endDate: string;
+  tradingDays: number;
+  rangeIsDefault: boolean;
+  capital: number;
+  capitalIsDefault: boolean;
+  universeMode: UniverseMode;
+  universeSize: number;
+  totalActive: number;
+  selectedSectorsCount: number;
+  selectedTickersCount: number;
+  filtersActive: number;
+  universeIsDefault: boolean;
+  risk: RiskCaps;
+  riskIsDefault: boolean;
+  running: boolean;
+  onRun: () => void;
+}) {
+  const T = useT();
+  const rangeLabel = `${formatPickerLabel(startDate)} → ${formatPickerLabel(endDate)}`;
+  const universeLabel = (() => {
+    if (universeMode === "all")
+      return `All active · ${universeSize.toLocaleString("en-PK")} tickers`;
+    if (universeMode === "sector") {
+      if (selectedSectorsCount === 0) return `— pick at least 1 sector`;
+      return `${selectedSectorsCount} sector${selectedSectorsCount === 1 ? "" : "s"} · ${universeSize.toLocaleString("en-PK")} tickers`;
+    }
+    if (selectedTickersCount === 0) return `— add at least 1 ticker`;
+    return `${selectedTickersCount} ticker${selectedTickersCount === 1 ? "" : "s"}`;
+  })();
+  const riskLabel = (() => {
+    const parts: string[] = [];
+    if (risk.stop_loss_pct != null) parts.push(`Stop ${risk.stop_loss_pct}%`);
+    if (risk.take_profit_pct != null) parts.push(`Take ${risk.take_profit_pct}%`);
+    if (risk.trailing_stop_pct != null) parts.push(`Trail ${risk.trailing_stop_pct}%`);
+    if (risk.max_positions != null) parts.push(`Max ${risk.max_positions} pos`);
+    if (risk.max_holding_days != null) parts.push(`${risk.max_holding_days}d max`);
+    if (parts.length === 0) return "no caps applied";
+    return parts.join(" · ");
+  })();
+
+  const candidateSignals = tradingDays * Math.max(universeSize, 0);
+  const canRun = strategy != null && tradingDays > 0 && universeSize > 0 && !running;
+
+  return (
+    <aside
+      className="psx-sticky-rail"
+      aria-label="Backtest run summary"
+      style={{
+        background: T.surface2,
+        borderRadius: 10,
+        boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 16px 40px -24px rgba(0,0,0,0.45)`,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <div
+        style={{
+          padding: "16px 20px 14px",
+          borderBottom: `1px solid ${T.outlineFaint}`,
+        }}
+      >
+        <Kicker>run summary</Kicker>
+        <div
+          style={{
+            marginTop: 10,
+            display: "flex",
+            alignItems: "baseline",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <span
+            style={{
+              fontFamily: T.fontHead,
+              fontSize: 22,
+              fontWeight: 400,
+              fontStyle: strategy ? "italic" : "normal",
+              color: strategy ? T.text : T.text3,
+              lineHeight: 1.1,
+            }}
+          >
+            {strategy ? strategy.name : "— pick a strategy"}
+          </span>
+          {strategy && (
+            <span
+              style={{
+                fontFamily: T.fontMono,
+                fontSize: 9.5,
+                color: statusColor(strategy.status, T),
+                letterSpacing: 0.6,
+                textTransform: "uppercase",
+              }}
+            >
+              {strategy.status.toLowerCase()}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div style={{ padding: "14px 20px 4px", display: "flex", flexDirection: "column", gap: 14 }}>
+        <SummaryCell
+          label="scope"
+          value={`${rangeLabel}`}
+          sub={`${tradingDays.toLocaleString("en-PK")} trading days`}
+          isDefault={rangeIsDefault}
+        />
+        <SummaryCell
+          label="capital"
+          value={`Rs ${formatPkr(capital)}`}
+          isDefault={capitalIsDefault}
+        />
+        <SummaryCell
+          label="universe"
+          value={universeLabel}
+          sub={
+            universeIsDefault
+              ? undefined
+              : filtersActive > 0
+                ? `${filtersActive} filter${filtersActive === 1 ? "" : "s"} applied`
+                : undefined
+          }
+          isDefault={universeIsDefault}
+        />
+        <SummaryCell label="risk caps" value={riskLabel} isDefault={riskIsDefault} />
+
+        {candidateSignals > 0 && (
+          <div
+            style={{
+              marginTop: 4,
+              padding: "10px 12px",
+              background: T.surface,
+              borderRadius: 6,
+              boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+              display: "flex",
+              flexDirection: "column",
+              gap: 2,
+            }}
+          >
+            <span
+              style={{
+                fontFamily: T.fontMono,
+                fontSize: 9.5,
+                color: T.text3,
+                letterSpacing: 0.6,
+                textTransform: "uppercase",
+              }}
+            >
+              estimated scope
+            </span>
+            <span
+              style={{
+                fontFamily: T.fontMono,
+                fontSize: 13,
+                color: T.text,
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              ~{candidateSignals.toLocaleString("en-PK")} candidate decisions
+            </span>
+            <span
+              style={{
+                fontFamily: T.fontSans,
+                fontSize: 11,
+                color: T.text3,
+                lineHeight: 1.45,
+              }}
+            >
+              {tradingDays.toLocaleString("en-PK")} trading days × {universeSize.toLocaleString("en-PK")}{" "}
+              tickers — actual signals depend on your strategy rules.
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div
+        style={{
+          padding: "12px 20px 20px",
+          marginTop: "auto",
+        }}
+      >
+        <Btn
+          variant="primary"
+          size="lg"
+          icon={Icon.spark}
+          onClick={onRun}
+          disabled={!canRun}
+          style={{
+            width: "100%",
+            justifyContent: "center",
+            fontSize: 14,
+            padding: "12px 18px",
+          }}
+        >
+          {running ? "Running…" : "Run backtest"}
+        </Btn>
+        {!strategy && (
+          <div
+            style={{
+              marginTop: 8,
+              fontFamily: T.fontMono,
+              fontSize: 10.5,
+              color: T.text3,
+              textAlign: "center",
+              letterSpacing: 0.4,
+            }}
+          >
+            pick a strategy on the left to enable
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function statusColor(status: StrategyStatus, T: ReturnType<typeof useT>): string {
+  if (status === "ACTIVE") return T.deploy;
+  if (status === "PAUSED") return T.warning;
+  if (status === "ARCHIVED") return T.text3;
+  return T.text3;
+}
+
+// One row in the rail. The `key` bump on value change restarts the
+// `psx-cell-flash` keyframe — the cell does an opacity+translate fade-in,
+// adjacent cells stay still. Reads as "this just updated."
+function SummaryCell({
+  label,
+  value,
+  sub,
+  isDefault,
+}: {
+  label: string;
+  value: ReactNode;
+  sub?: ReactNode;
+  isDefault?: boolean;
+}) {
+  const T = useT();
+  return (
+    <div
+      key={typeof value === "string" ? value : undefined}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 3,
+        animation: "psx-cell-flash 180ms ease-out",
+      }}
+    >
+      <span
+        style={{
+          fontFamily: T.fontMono,
+          fontSize: 9.5,
+          color: T.text3,
+          letterSpacing: 0.6,
+          textTransform: "uppercase",
+          display: "flex",
+          gap: 6,
+          alignItems: "baseline",
+        }}
+      >
+        {label}
+        {isDefault && (
+          <span style={{ color: T.text3, opacity: 0.7, letterSpacing: 0.4 }}>· default</span>
+        )}
+      </span>
+      <span
+        style={{
+          fontFamily: T.fontMono,
+          fontSize: 13,
+          color: T.text,
+          fontVariantNumeric: "tabular-nums",
+          lineHeight: 1.4,
+        }}
+      >
+        {value}
+      </span>
+      {sub && (
+        <span style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3, lineHeight: 1.4 }}>
+          {sub}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* ────────── Strategy section ────────── */
+
+function StrategySection({
   strategies,
   value,
   onChange,
@@ -457,70 +972,268 @@ function StrategyPicker({
   disabled: boolean;
 }) {
   const T = useT();
-  const statusTint = (s: StrategyStatus) => {
-    if (s === "ACTIVE") return T.deploy;
-    if (s === "PAUSED") return T.warning;
-    if (s === "ARCHIVED") return T.text3;
-    return T.text3; // DRAFT
-  };
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const [showDrafts, setShowDrafts] = useSessionStorage<boolean>(
+    "psx:bt:show-drafts",
+    false,
+  );
+  const [query, setQuery] = useState("");
+
+  const draftCount = strategies.filter((s) => s.status === "DRAFT").length;
+
+  // ACTIVE first, then PAUSED, then drafts (only when toggled on).
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = strategies.filter((s) => {
+      if (s.status === "DRAFT" && !showDrafts) return false;
+      if (q && !s.name.toLowerCase().includes(q)) return false;
+      return true;
+    });
+    const order: Record<StrategyStatus, number> = {
+      ACTIVE: 0,
+      PAUSED: 1,
+      DRAFT: 2,
+      ARCHIVED: 3,
+    };
+    filtered.sort((a, b) => order[a.status] - order[b.status] || a.name.localeCompare(b.name));
+    return filtered;
+  }, [strategies, showDrafts, query]);
+
+  const selected = strategies.find((s) => s.id === value) ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   return (
-    <div>
-      <Kicker>strategy</Kicker>
-      <div
-        style={{
-          marginTop: 10,
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 8,
-        }}
-      >
-        {strategies.map((s) => {
-          const active = s.id === value;
-          return (
-            <button
-              key={s.id}
-              type="button"
-              onClick={() => onChange(s.id)}
-              disabled={disabled}
-              aria-pressed={active}
-              style={{
-                background: active ? T.surface3 : "transparent",
-                color: active ? T.text : T.text2,
-                border: `1px solid ${active ? T.outlineVariant : T.outlineFaint}`,
-                borderRadius: 4,
-                padding: "8px 14px",
-                cursor: disabled ? "not-allowed" : "pointer",
-                opacity: disabled ? 0.5 : 1,
-                fontFamily: "inherit",
-                fontSize: 13,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                transition:
-                  "background 120ms ease, color 120ms ease, border-color 120ms ease",
-              }}
-            >
-              <span>{s.name}</span>
+    <Section
+      label="strategy"
+      hint="The entry/exit rules this run will use. Draft strategies can be backtested too."
+    >
+      <div ref={wrapRef} style={{ position: "relative" }}>
+        <button
+          type="button"
+          onClick={() => !disabled && setOpen((o) => !o)}
+          disabled={disabled}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          style={{
+            width: "100%",
+            maxWidth: 480,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            padding: "10px 14px",
+            background: T.surface,
+            color: selected ? T.text : T.text3,
+            border: "none",
+            boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+            borderRadius: 8,
+            cursor: disabled ? "not-allowed" : "pointer",
+            opacity: disabled ? 0.6 : 1,
+            fontFamily: T.fontSans,
+            fontSize: 13.5,
+          }}
+        >
+          {selected ? (
+            <span style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0 }}>
+              <span
+                style={{
+                  fontStyle: "italic",
+                  fontFamily: T.fontHead,
+                  fontWeight: 400,
+                  color: T.text,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {selected.name}
+              </span>
               <span
                 style={{
                   fontFamily: T.fontMono,
                   fontSize: 9.5,
-                  color: statusTint(s.status),
-                  letterSpacing: 0.5,
+                  color: statusColor(selected.status, T),
+                  letterSpacing: 0.6,
                   textTransform: "uppercase",
+                  flexShrink: 0,
                 }}
               >
-                {s.status.toLowerCase()}
+                {selected.status.toLowerCase()}
               </span>
-            </button>
-          );
-        })}
+            </span>
+          ) : (
+            <span>Pick a strategy…</span>
+          )}
+          <span aria-hidden style={{ color: T.text3, lineHeight: 0 }}>
+            <svg width="12" height="12" viewBox="0 0 12 12">
+              <path d="M2 4.5 L6 8 L10 4.5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </span>
+        </button>
+
+        {open && (
+          <div
+            role="listbox"
+            style={{
+              position: "absolute",
+              top: "calc(100% + 6px)",
+              left: 0,
+              zIndex: 50,
+              width: "min(480px, 100%)",
+              background: T.surface2,
+              borderRadius: 10,
+              boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 16px 40px -12px rgba(0,0,0,0.45)`,
+              animation: "psx-pop-in 140ms ease-out",
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
+              maxHeight: 360,
+            }}
+          >
+            <div style={{ padding: "10px 12px", borderBottom: `1px solid ${T.outlineFaint}` }}>
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                placeholder="search strategies…"
+                onChange={(e) => setQuery(e.target.value)}
+                style={{
+                  width: "100%",
+                  background: "transparent",
+                  border: "none",
+                  outline: "none",
+                  color: T.text,
+                  fontFamily: T.fontMono,
+                  fontSize: 12.5,
+                }}
+              />
+            </div>
+            <div style={{ overflowY: "auto", padding: "4px 0" }}>
+              {visible.length === 0 ? (
+                <div
+                  style={{
+                    padding: "12px 14px",
+                    fontFamily: T.fontMono,
+                    fontSize: 11,
+                    color: T.text3,
+                  }}
+                >
+                  no matches
+                </div>
+              ) : (
+                visible.map((s) => {
+                  const active = s.id === value;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      onClick={() => {
+                        onChange(s.id);
+                        setOpen(false);
+                        setQuery("");
+                      }}
+                      style={{
+                        appearance: "none",
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "10px 14px",
+                        background: active ? T.surface3 : "transparent",
+                        border: "none",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "baseline",
+                        justifyContent: "space-between",
+                        gap: 12,
+                        color: T.text,
+                        fontFamily: T.fontSans,
+                        fontSize: 13,
+                      }}
+                    >
+                      <span
+                        style={{
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {s.name}
+                      </span>
+                      <span
+                        style={{
+                          fontFamily: T.fontMono,
+                          fontSize: 9.5,
+                          color: statusColor(s.status, T),
+                          letterSpacing: 0.6,
+                          textTransform: "uppercase",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {s.status.toLowerCase()}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            {draftCount > 0 && (
+              <div
+                style={{
+                  borderTop: `1px solid ${T.outlineFaint}`,
+                  padding: "8px 12px",
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setShowDrafts((v) => !v)}
+                  style={{
+                    appearance: "none",
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    fontFamily: T.fontMono,
+                    fontSize: 10.5,
+                    color: T.text3,
+                    letterSpacing: 0.6,
+                    textTransform: "uppercase",
+                    padding: 0,
+                  }}
+                >
+                  {showDrafts ? "hide" : "show"} drafts ({draftCount})
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
-    </div>
+    </Section>
   );
 }
 
-function DateRangeBlock({
+/* ────────── Range section ────────── */
+
+function RangeSection({
   startDate,
   endDate,
   onStart,
@@ -534,11 +1247,8 @@ function DateRangeBlock({
   disabled: boolean;
 }) {
   const T = useT();
-  // Sticky-custom: once the user explicitly clicks Custom, stay there even
-  // if the typed dates happen to align with a preset. This matches the old
-  // backtest-view behavior so muscle memory is preserved.
-  const [customSticky, setCustomSticky] = useState(() =>
-    detectActivePreset(startDate, endDate) === "CUSTOM",
+  const [customSticky, setCustomSticky] = useState(
+    () => detectActivePreset(startDate, endDate) === "CUSTOM",
   );
   const detected = detectActivePreset(startDate, endDate);
   const active: PresetKey = customSticky ? "CUSTOM" : detected;
@@ -571,11 +1281,9 @@ function DateRangeBlock({
   });
 
   return (
-    <div>
-      <Kicker>date range</Kicker>
+    <Section label="date range" hint="The historical window the strategy will be simulated over.">
       <div
         style={{
-          marginTop: 10,
           display: "flex",
           alignItems: "center",
           gap: 12,
@@ -596,14 +1304,7 @@ function DateRangeBlock({
           ))}
         </div>
         {active === "CUSTOM" && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              marginLeft: 4,
-            }}
-          >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 4 }}>
             <DateTrigger
               label="from"
               iso={startDate}
@@ -621,7 +1322,7 @@ function DateRangeBlock({
           </div>
         )}
       </div>
-    </div>
+    </Section>
   );
 }
 
@@ -666,7 +1367,9 @@ function DateTrigger({
 
   return (
     <div ref={wrapRef} style={{ position: "relative", display: "flex", alignItems: "center" }}>
-      <span style={{ color: T.text3, marginRight: 6, fontFamily: T.fontMono, fontSize: 11 }}>{label}</span>
+      <span style={{ color: T.text3, marginRight: 6, fontFamily: T.fontMono, fontSize: 11 }}>
+        {label}
+      </span>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -717,7 +1420,9 @@ function DateTrigger({
   );
 }
 
-function InitialCapitalBlock({
+/* ────────── Capital section ────────── */
+
+function CapitalSection({
   value,
   onChange,
   disabled,
@@ -728,47 +1433,92 @@ function InitialCapitalBlock({
 }) {
   const T = useT();
   const presets = [100_000, 500_000, 1_000_000, 5_000_000, 10_000_000];
+  // Local string state so the user can type freely (clearing the input,
+  // typing intermediate states like "500" → "500000") without the parent
+  // committing every keystroke at sub-1 values.
+  const [text, setText] = useState(String(value));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    // Keep external commits in sync (preset clicks). Only refresh the
+    // displayed text when the field isn't being edited so the user's
+    // half-typed digits aren't clobbered.
+    if (!focused) setText(String(value));
+  }, [value, focused]);
+
+  const displayValue =
+    focused
+      ? text
+      : Number.isFinite(Number(text.replace(/,/g, "")))
+        ? formatPkr(Number(text.replace(/,/g, "")))
+        : text;
+
   return (
-    <div>
-      <Kicker info="Starting capital used to size each simulated trade.">
-        initial capital · PKR
-      </Kicker>
+    <Section label="initial capital · pkr" hint="Starting capital used to size each simulated trade.">
       <div
         style={{
-          marginTop: 10,
           display: "flex",
           alignItems: "center",
           gap: 14,
           flexWrap: "wrap",
         }}
       >
-        <input
-          type="number"
-          value={value}
-          min={1}
-          step={10000}
-          disabled={disabled}
-          onChange={(e) => {
-            const n = parseFloat(e.target.value);
-            if (Number.isFinite(n) && n > 0) onChange(n);
-          }}
-          style={{
-            background: T.surface,
-            color: T.text,
-            border: "none",
-            boxShadow: `0 0 0 1px ${T.outlineFaint}`,
-            borderRadius: 6,
-            padding: "10px 14px",
-            fontFamily: T.fontMono,
-            fontSize: 14,
-            width: 200,
-          }}
-        />
+        <div style={{ position: "relative" }}>
+          <span
+            aria-hidden
+            style={{
+              position: "absolute",
+              left: 14,
+              top: "50%",
+              transform: "translateY(-50%)",
+              fontFamily: T.fontMono,
+              fontSize: 12,
+              color: T.text3,
+              pointerEvents: "none",
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+            }}
+          >
+            Rs
+          </span>
+          <input
+            type="text"
+            inputMode="numeric"
+            // Show formatted commas only when the field isn't focused —
+            // commas in mid-edit break caret position and feel jittery.
+            value={displayValue}
+            disabled={disabled}
+            onFocus={() => setFocused(true)}
+            onChange={(e) => {
+              const raw = e.target.value.replace(/,/g, "");
+              setText(raw);
+              const n = parseFloat(raw);
+              if (Number.isFinite(n) && n > 0) onChange(n);
+            }}
+            onBlur={() => {
+              setFocused(false);
+              const n = parseFloat(text.replace(/,/g, ""));
+              if (Number.isFinite(n) && n > 0) {
+                onChange(n);
+                setText(String(n));
+              }
+            }}
+            style={{
+              background: T.surface,
+              color: T.text,
+              border: "none",
+              boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+              borderRadius: 6,
+              padding: "10px 14px 10px 38px",
+              fontFamily: T.fontMono,
+              fontSize: 14,
+              fontVariantNumeric: "tabular-nums",
+              width: 220,
+            }}
+          />
+        </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {presets.map((amount) => {
             const active = value === amount;
-            const label =
-              amount >= 1_000_000 ? `${amount / 1_000_000}M` : `${amount / 1000}K`;
             return (
               <button
                 key={amount}
@@ -776,6 +1526,7 @@ function InitialCapitalBlock({
                 onClick={() => onChange(amount)}
                 disabled={disabled}
                 aria-pressed={active}
+                className="psx-press"
                 style={{
                   fontFamily: T.fontMono,
                   fontSize: 11,
@@ -788,12 +1539,638 @@ function InitialCapitalBlock({
                   opacity: disabled ? 0.5 : 1,
                 }}
               >
-                {label}
+                {compactPkr(amount)}
               </button>
             );
           })}
         </div>
       </div>
+    </Section>
+  );
+}
+
+/* ────────── Universe section ────────── */
+
+function UniverseSection({
+  mode,
+  onMode,
+  sectors,
+  onSectors,
+  tickers,
+  onTickers,
+  filters,
+  onFilters,
+  availableSectors,
+  availableSymbols,
+  totalActive,
+  disabled,
+}: {
+  mode: UniverseMode;
+  onMode: (m: UniverseMode) => void;
+  sectors: string[];
+  onSectors: (next: string[]) => void;
+  tickers: string[];
+  onTickers: (next: string[]) => void;
+  filters: NumericFilters;
+  onFilters: (next: NumericFilters) => void;
+  availableSectors: string[];
+  availableSymbols: { symbol: string; name?: string | null }[];
+  totalActive: number;
+  disabled: boolean;
+}) {
+  const T = useT();
+  const [filtersOpen, setFiltersOpen] = useSessionStorage<boolean>(
+    "psx:bt:filters-open",
+    false,
+  );
+
+  const filterCount = activeFilterCount(filters);
+  const filterSummary =
+    filterCount === 0
+      ? "no filters"
+      : `${filterCount} filter${filterCount === 1 ? "" : "s"} applied`;
+
+  return (
+    <Section
+      label="universe"
+      hint="Which stocks the strategy scans on each trading day. Pick All to scan every active PSX ticker."
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <Segmented
+          ariaLabel="universe mode"
+          value={mode}
+          onChange={(m) => {
+            // View Transitions API gives us a free cross-fade where supported.
+            type DocWithVT = Document & {
+              startViewTransition?: (cb: () => void) => unknown;
+            };
+            const doc = document as DocWithVT;
+            if (typeof doc.startViewTransition === "function") {
+              doc.startViewTransition(() => onMode(m));
+            } else {
+              onMode(m);
+            }
+          }}
+          disabled={disabled}
+          options={[
+            { value: "all", label: "All active", hint: `${totalActive} tickers` },
+            { value: "sector", label: "By sector" },
+            { value: "ticker", label: "Specific tickers" },
+          ]}
+        />
+
+        <div key={mode} style={{ animation: "psx-fade-in 180ms ease-out" }}>
+          {mode === "all" && (
+            <div
+              style={{
+                fontFamily: T.fontSans,
+                fontSize: 12.5,
+                color: T.text3,
+                lineHeight: 1.5,
+                maxWidth: 560,
+              }}
+            >
+              The strategy will scan every active PSX ticker ({totalActive.toLocaleString("en-PK")}).
+              Apply numeric filters below to narrow without picking sectors manually.
+            </div>
+          )}
+          {mode === "sector" && (
+            <MultiSelectPopover
+              label="sectors"
+              placeholder="pick sectors…"
+              options={availableSectors.map((s) => ({ value: s }))}
+              selected={sectors}
+              onChange={onSectors}
+              disabled={disabled}
+            />
+          )}
+          {mode === "ticker" && (
+            <SymbolPickerInline
+              available={availableSymbols}
+              selected={tickers}
+              onAdd={(sym) => {
+                const norm = sym.trim().toUpperCase();
+                if (!norm || tickers.includes(norm)) return;
+                onTickers([...tickers, norm]);
+              }}
+              onRemove={(sym) => onTickers(tickers.filter((t) => t !== sym))}
+              disabled={disabled}
+            />
+          )}
+        </div>
+
+        <Disclosure
+          label="numeric filters"
+          summary={filterSummary}
+          open={filtersOpen}
+          onToggle={() => setFiltersOpen((v) => !v)}
+          tone="muted"
+        >
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              gap: 14,
+              maxWidth: 640,
+            }}
+          >
+            <NumberInput
+              label="min price (PKR)"
+              value={filters.min_price}
+              onChange={(v) => onFilters({ ...filters, min_price: v })}
+              disabled={disabled}
+              min={0}
+            />
+            <NumberInput
+              label="max price (PKR)"
+              value={filters.max_price}
+              onChange={(v) => onFilters({ ...filters, max_price: v })}
+              disabled={disabled}
+              min={0}
+            />
+            <NumberInput
+              label="min daily volume"
+              value={filters.min_volume}
+              onChange={(v) => onFilters({ ...filters, min_volume: v })}
+              disabled={disabled}
+              min={0}
+              integer
+            />
+            <NumberInput
+              label="min market cap"
+              value={filters.min_market_cap}
+              onChange={(v) => onFilters({ ...filters, min_market_cap: v })}
+              disabled={disabled}
+              min={0}
+            />
+          </div>
+        </Disclosure>
+      </div>
+    </Section>
+  );
+}
+
+/* ────────── Risk section ────────── */
+
+function RiskSection({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: RiskCaps;
+  onChange: (v: RiskCaps) => void;
+  disabled: boolean;
+}) {
+  const T = useT();
+  const activePreset: "balanced" | "aggressive" | "none" | "custom" = (() => {
+    if (risksEqual(value, RISK_DEFAULTS)) return "balanced";
+    if (risksEqual(value, RISK_AGGRESSIVE)) return "aggressive";
+    if (risksEqual(value, RISK_NONE)) return "none";
+    return "custom";
+  })();
+
+  return (
+    <Section
+      label="risk caps"
+      hint="Hard exits applied to every simulated trade. Sensible defaults are pre-filled — tune or switch presets."
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {(
+            [
+              { key: "balanced", label: "Balanced", caps: RISK_DEFAULTS, sub: "stop 5% · max 5 pos" },
+              { key: "aggressive", label: "Aggressive", caps: RISK_AGGRESSIVE, sub: "stop 8% · take 20% · max 8" },
+              { key: "none", label: "No caps", caps: RISK_NONE, sub: "raw strategy signals" },
+            ] as const
+          ).map((p) => {
+            const active = activePreset === p.key;
+            return (
+              <button
+                key={p.key}
+                type="button"
+                onClick={() => onChange(p.caps)}
+                disabled={disabled}
+                aria-pressed={active}
+                className="psx-press"
+                style={{
+                  background: active ? T.surface3 : "transparent",
+                  color: active ? T.text : T.text2,
+                  border: `1px solid ${active ? T.outlineVariant : T.outlineFaint}`,
+                  borderRadius: 6,
+                  padding: "7px 12px",
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.5 : 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "flex-start",
+                  gap: 1,
+                  fontFamily: T.fontSans,
+                }}
+              >
+                <span style={{ fontSize: 12, fontWeight: 500 }}>{p.label}</span>
+                <span
+                  style={{
+                    fontFamily: T.fontMono,
+                    fontSize: 9.5,
+                    color: T.text3,
+                    letterSpacing: 0.4,
+                  }}
+                >
+                  {p.sub}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+            gap: 14,
+            maxWidth: 720,
+          }}
+        >
+          <RiskField
+            label="stop loss %"
+            caption="Exit if a trade loses more than this."
+            value={value.stop_loss_pct}
+            onChange={(v) => onChange({ ...value, stop_loss_pct: v })}
+            disabled={disabled}
+            max={100}
+          />
+          <RiskField
+            label="take profit %"
+            caption="Exit when a trade gains more than this."
+            value={value.take_profit_pct}
+            onChange={(v) => onChange({ ...value, take_profit_pct: v })}
+            disabled={disabled}
+            max={100}
+          />
+          <RiskField
+            label="trailing stop %"
+            caption="Lock in gains as price rises."
+            value={value.trailing_stop_pct}
+            onChange={(v) => onChange({ ...value, trailing_stop_pct: v })}
+            disabled={disabled}
+            max={100}
+          />
+          <RiskField
+            label="max holding days"
+            caption="Force-close trades after this many days."
+            value={value.max_holding_days}
+            onChange={(v) => onChange({ ...value, max_holding_days: v })}
+            disabled={disabled}
+            integer
+          />
+          <RiskField
+            label="max concurrent positions"
+            caption="How many open trades at once."
+            value={value.max_positions}
+            onChange={(v) => onChange({ ...value, max_positions: v })}
+            disabled={disabled}
+            integer
+            max={50}
+          />
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+function RiskField({
+  label,
+  caption,
+  value,
+  onChange,
+  disabled,
+  max,
+  integer,
+}: {
+  label: string;
+  caption: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  disabled: boolean;
+  max?: number;
+  integer?: boolean;
+}) {
+  const T = useT();
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      <NumberInput
+        label={label}
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+        min={0}
+        max={max}
+        integer={integer}
+      />
+      <span style={{ fontFamily: T.fontSans, fontSize: 10.5, color: T.text3, lineHeight: 1.4 }}>
+        {caption}
+      </span>
+    </div>
+  );
+}
+
+/* ────────── Helpers ────────── */
+
+function Section({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: ReactNode;
+}) {
+  const T = useT();
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <Kicker info={hint}>{label}</Kicker>
+      <div style={{ marginTop: -2 }}>{children}</div>
+    </div>
+  );
+}
+
+function NumberInput({
+  label,
+  value,
+  onChange,
+  disabled,
+  min,
+  max,
+  integer = false,
+}: {
+  label: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  disabled: boolean;
+  min?: number;
+  max?: number;
+  integer?: boolean;
+}) {
+  const T = useT();
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <span
+        style={{
+          fontFamily: T.fontMono,
+          fontSize: 10,
+          color: T.text3,
+          letterSpacing: 0.6,
+          textTransform: "uppercase",
+        }}
+      >
+        {label}
+      </span>
+      <input
+        type="number"
+        inputMode={integer ? "numeric" : "decimal"}
+        value={value ?? ""}
+        min={min}
+        max={max}
+        step={integer ? 1 : "any"}
+        disabled={disabled}
+        placeholder="—"
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === "") {
+            onChange(null);
+            return;
+          }
+          const n = integer ? parseInt(raw, 10) : parseFloat(raw);
+          if (!Number.isFinite(n)) return;
+          onChange(n);
+        }}
+        style={{
+          background: T.surface,
+          color: T.text,
+          border: "none",
+          boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+          borderRadius: 6,
+          padding: "8px 10px",
+          fontFamily: T.fontMono,
+          fontSize: 12.5,
+          fontVariantNumeric: "tabular-nums",
+          width: "100%",
+          opacity: disabled ? 0.6 : 1,
+        }}
+      />
+    </label>
+  );
+}
+
+/* ────────── Inline symbol picker (kept inline because the universe-mode
+    surface owns its UI state separately from the shared component). ───── */
+
+function SymbolPickerInline({
+  available,
+  selected,
+  onAdd,
+  onRemove,
+  disabled,
+}: {
+  available: { symbol: string; name?: string | null }[];
+  selected: string[];
+  onAdd: (sym: string) => void;
+  onRemove: (sym: string) => void;
+  disabled: boolean;
+}) {
+  const T = useT();
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  const matches = useMemo(() => {
+    const q = query.trim().toUpperCase();
+    if (!q) return [];
+    const exclude = new Set(selected);
+    const starts: typeof available = [];
+    const contains: typeof available = [];
+    for (const opt of available) {
+      if (exclude.has(opt.symbol)) continue;
+      const sym = opt.symbol.toUpperCase();
+      const name = (opt.name ?? "").toUpperCase();
+      if (sym.startsWith(q)) starts.push(opt);
+      else if (sym.includes(q) || name.includes(q)) contains.push(opt);
+      if (starts.length + contains.length >= 8) break;
+    }
+    return [...starts, ...contains].slice(0, 8);
+  }, [query, available, selected]);
+
+  useEffect(() => {
+    setHighlight((h) => Math.min(h, Math.max(0, matches.length - 1)));
+  }, [matches.length]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  function commit(sym: string) {
+    onAdd(sym);
+    setQuery("");
+    setHighlight(0);
+  }
+
+  function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setOpen(true);
+      setHighlight((h) => (matches.length === 0 ? 0 : (h + 1) % matches.length));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setOpen(true);
+      setHighlight((h) =>
+        matches.length === 0 ? 0 : (h - 1 + matches.length) % matches.length,
+      );
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (matches[highlight]) commit(matches[highlight].symbol);
+      else if (query.trim()) commit(query);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  }
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative", maxWidth: 360 }}>
+      <input
+        type="text"
+        value={query}
+        placeholder="search and add a ticker"
+        autoComplete="off"
+        disabled={disabled}
+        onChange={(e) => {
+          setQuery(e.target.value.toUpperCase());
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKey}
+        style={{
+          background: T.surface,
+          color: T.text,
+          border: "none",
+          boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+          borderRadius: 6,
+          padding: "9px 12px",
+          fontFamily: T.fontMono,
+          fontSize: 12.5,
+          width: "100%",
+          opacity: disabled ? 0.6 : 1,
+        }}
+      />
+      {open && matches.length > 0 && (
+        <div
+          role="listbox"
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            marginTop: 4,
+            background: T.surface2,
+            borderRadius: 8,
+            boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 12px 32px -12px rgba(0,0,0,0.5)`,
+            maxHeight: 240,
+            overflowY: "auto",
+            zIndex: 10,
+          }}
+        >
+          {matches.map((opt, i) => {
+            const active = i === highlight;
+            return (
+              <div
+                key={opt.symbol}
+                role="option"
+                aria-selected={active}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  commit(opt.symbol);
+                }}
+                onMouseEnter={() => setHighlight(i)}
+                style={{
+                  padding: "8px 12px",
+                  display: "flex",
+                  alignItems: "baseline",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  background: active ? T.surface3 : "transparent",
+                  cursor: "pointer",
+                }}
+              >
+                <span style={{ fontFamily: T.fontMono, fontSize: 13, color: T.text }}>
+                  {opt.symbol}
+                </span>
+                {opt.name && (
+                  <span
+                    style={{
+                      fontFamily: T.fontSans,
+                      fontSize: 11,
+                      color: T.text3,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      maxWidth: "60%",
+                    }}
+                  >
+                    {opt.name}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {selected.length > 0 && (
+        <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {selected.map((sym) => (
+            <span
+              key={sym}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "5px 6px 5px 10px",
+                background: T.surface3,
+                border: `1px solid ${T.outlineFaint}`,
+                borderRadius: 999,
+                fontFamily: T.fontMono,
+                fontSize: 11.5,
+                color: T.text,
+              }}
+            >
+              {sym}
+              <button
+                type="button"
+                onClick={() => onRemove(sym)}
+                disabled={disabled}
+                aria-label={`Remove ${sym}`}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: T.text3,
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  fontSize: 13,
+                  padding: "0 4px",
+                  lineHeight: 1,
+                  fontFamily: "inherit",
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
