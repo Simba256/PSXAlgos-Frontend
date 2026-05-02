@@ -17,6 +17,12 @@ import {
   StatusDot,
   type ComboOption,
 } from "@/components/atoms";
+import {
+  EMPTY_UNIVERSE_AND_RISK,
+  UniverseAndRiskFields,
+  type UniverseAndRiskValue,
+} from "@/components/universe-and-risk-fields";
+import { getAllStocks, type StockResponse } from "@/lib/api/stocks";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick, clampPx } from "@/components/responsive";
 import type {
@@ -294,6 +300,14 @@ export function EditorView({
     | { kind: "delete-group"; groupId: CondId }
     | null
   >(null);
+  // B047 deploy modal — universe picker + Confirm. `null` = closed.
+  const [deployModal, setDeployModal] = useState<{
+    value: UniverseAndRiskValue;
+    busy: boolean;
+  } | null>(null);
+  // PSX universe loaded once on demand (first deploy modal open) so the
+  // typical editing session doesn't pay for the /stocks fetch.
+  const [stocks, setStocks] = useState<StockResponse[]>([]);
   const router = useRouter();
 
   const universeLabel = deriveUniverseLabel(initialStrategy);
@@ -433,22 +447,81 @@ export function EditorView({
     }
   };
 
+  // B047: deploy now collects a universe (sectors / explicit symbols) which
+  // the signal scanner uses to decide which stocks to scan. Without a
+  // universe the scanner produces zero signals — so we open a modal first
+  // to make the choice explicit. Undeploy is a one-click flip.
   const handleDeploy = async () => {
-    const next = !deployed;
-    // Optimistic flip; revert on failure.
-    setDeployed(next);
+    if (deployed) {
+      setDeployed(false);
+      try {
+        const res = await fetch(
+          `/api/strategies/${initialStrategy.id}/undeploy`,
+          { method: "POST" },
+        );
+        if (!res.ok) throw new Error(`Undeploy failed (${res.status})`);
+        setSavedAt(Date.now());
+        setFlash("Strategy paused · signals halted");
+      } catch (err) {
+        setDeployed(true);
+        setFlash(err instanceof Error ? err.message : "Undeploy failed");
+      }
+      return;
+    }
+    // Opening for first time — load /stocks lazily so the picker has data.
+    if (stocks.length === 0) {
+      void getAllStocks()
+        .then((all) => setStocks(all))
+        .catch(() => {
+          /* picker will degrade to free-typed symbol entry */
+        });
+    }
+    setDeployModal({ value: EMPTY_UNIVERSE_AND_RISK, busy: false });
+  };
+
+  const performDeploy = async (value: UniverseAndRiskValue) => {
+    setDeployModal((m) => (m ? { ...m, busy: true } : m));
     try {
-      const res = await fetch(`/api/strategies/${initialStrategy.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: next ? "ACTIVE" : "PAUSED" }),
-      });
-      if (!res.ok) throw new Error(`Status update failed (${res.status})`);
+      const body: Record<string, unknown> = {};
+      if (value.stock_filters) body.stock_filters = value.stock_filters;
+      if (value.stock_symbols) body.stock_symbols = value.stock_symbols;
+      const res = await fetch(
+        `/api/strategies/${initialStrategy.id}/deploy`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let message = `Deploy failed (${res.status})`;
+        if (text) {
+          try {
+            const data = JSON.parse(text);
+            if (data && typeof data.error === "string") message = data.error;
+            else message = text;
+          } catch {
+            message = text;
+          }
+        }
+        throw new Error(message);
+      }
+      setDeployed(true);
       setSavedAt(Date.now());
-      setFlash(next ? "Strategy deployed · live signal feed active" : "Strategy paused · signals halted");
+      setDeployModal(null);
+      const summary = (() => {
+        if (value.stock_symbols && value.stock_symbols.length > 0) {
+          return `${value.stock_symbols.length} ticker${value.stock_symbols.length === 1 ? "" : "s"}`;
+        }
+        const sectors = value.stock_filters?.sectors ?? [];
+        if (sectors.length > 0) return sectors.length === 1 ? sectors[0] : `${sectors.length} sectors`;
+        return "no universe — scanner will stay quiet until re-deploy";
+      })();
+      setFlash(`Strategy deployed · ${summary}`);
     } catch (err) {
-      setDeployed(!next);
-      setFlash(err instanceof Error ? err.message : "Status update failed");
+      setDeployModal((m) => (m ? { ...m, busy: false } : m));
+      setFlash(err instanceof Error ? err.message : "Deploy failed");
     }
   };
 
@@ -850,6 +923,18 @@ export function EditorView({
           />
         );
       })()}
+      {deployModal && (
+        <DeployUniverseModal
+          value={deployModal.value}
+          onChange={(next) =>
+            setDeployModal((m) => (m ? { ...m, value: next } : m))
+          }
+          stocks={stocks}
+          busy={deployModal.busy}
+          onCancel={() => setDeployModal(null)}
+          onConfirm={() => performDeploy(deployModal.value)}
+        />
+      )}
     </AppFrame>
   );
 }
@@ -3697,6 +3782,114 @@ function DeleteGroupConfirmModal({
           </button>
           <Btn variant="danger" size="sm" onClick={onConfirm}>
             Delete group
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// B047 deploy modal — single-screen universe picker (sectors + explicit
+// symbols + filters) before the strategy goes live. Risk block is hidden:
+// risk lives on bots/backtests, not on the deploy.
+function DeployUniverseModal({
+  value,
+  onChange,
+  stocks,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  value: UniverseAndRiskValue;
+  onChange: (next: UniverseAndRiskValue) => void;
+  stocks: StockResponse[];
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const T = useT();
+  const availableSectors = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of stocks) {
+      if (s.sector_name && s.is_active) set.add(s.sector_name);
+    }
+    return Array.from(set).sort();
+  }, [stocks]);
+  const availableSymbols = useMemo(
+    () =>
+      stocks
+        .filter((s) => s.is_active)
+        .map((s) => ({ symbol: s.symbol, name: s.name }))
+        .sort((a, b) => a.symbol.localeCompare(b.symbol)),
+    [stocks],
+  );
+  const sectors = value.stock_filters?.sectors ?? [];
+  const symbols = value.stock_symbols ?? [];
+  const hasUniverse = sectors.length > 0 || symbols.length > 0;
+
+  return (
+    <Modal onClose={busy ? () => undefined : onCancel} label="Deploy strategy" width={720}>
+      <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 18 }}>
+        <div>
+          <div
+            style={{
+              fontFamily: T.fontHead,
+              fontSize: 22,
+              fontWeight: 500,
+              letterSpacing: -0.3,
+              marginBottom: 6,
+            }}
+          >
+            Deploy strategy
+          </div>
+          <p style={{ margin: 0, fontSize: 13, color: T.text2, lineHeight: 1.55 }}>
+            Pick the universe the signal scanner should watch. Without one,
+            the strategy will stay deployed but no signals will fire.
+          </p>
+        </div>
+
+        <UniverseAndRiskFields
+          value={value}
+          onChange={onChange}
+          availableSectors={availableSectors}
+          availableSymbols={availableSymbols}
+          showRisk={false}
+          disabled={busy}
+        />
+
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            justifyContent: "flex-end",
+            alignItems: "center",
+            paddingTop: 8,
+            borderTop: `1px solid ${T.outlineFaint}`,
+          }}
+        >
+          {!hasUniverse && (
+            <span
+              style={{
+                fontFamily: T.fontMono,
+                fontSize: 10.5,
+                color: T.warning,
+                marginRight: "auto",
+              }}
+            >
+              no universe — scanner will stay quiet
+            </span>
+          )}
+          <Btn variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Btn>
+          <Btn
+            variant="deploy"
+            size="sm"
+            onClick={onConfirm}
+            disabled={busy}
+            icon={Icon.spark}
+          >
+            {busy ? "Deploying…" : "Deploy"}
           </Btn>
         </div>
       </div>
