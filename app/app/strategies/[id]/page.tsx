@@ -10,7 +10,6 @@ import { EditorView } from "./editor-view";
 const EMPTY_META: IndicatorMeta = {
   indicators: {},
   operators: [],
-  position_sizing_types: [],
 };
 
 export default async function StrategyEditorPage({

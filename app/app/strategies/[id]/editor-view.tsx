@@ -31,7 +31,6 @@ import type {
   ExitRules,
   IndicatorMeta,
   Operator,
-  PositionSizing,
   SingleCondition,
   StrategyResponse,
   StrategyUpdateBody,
@@ -76,7 +75,7 @@ import {
   walkLeaves,
 } from "@/lib/strategy/layout";
 
-type SelKind = "condition" | "execution" | "group";
+type SelKind = "condition" | "group";
 type Selection = { kind: SelKind; id: CondId } | null;
 
 type NodeKind = "momentum" | "trend" | "volume";
@@ -205,11 +204,15 @@ type SaveStatus = "idle" | "saving" | "error";
 // post-Phase-A backend (see STRATEGY_TREE_PLAN.md). Exit conditions aren't
 // edited as a tree in the editor — `normalizeWireGroup` re-emits them with
 // `kind` discriminators in case the strategy was authored before Phase A.
+//
+// B046: position_sizing / risk / universe no longer round-trip through this
+// shape. They live on the bot row, the backtest request, or the deploy
+// request. Anything the editor used to send for those concerns has been
+// dropped.
 export function buildUpdateBody(
   name: string,
   tree: ConditionGroup,
   exit: ExitRules,
-  sizing: PositionSizing,
 ): StrategyUpdateBody {
   return {
     name,
@@ -218,7 +221,6 @@ export function buildUpdateBody(
       ...exit,
       conditions: exit.conditions ? normalizeWireGroup(exit.conditions) : exit.conditions,
     },
-    position_sizing: sizing,
   };
 }
 
@@ -237,18 +239,6 @@ function useTouchPointer(): boolean {
     return () => mq.removeEventListener("change", onChange);
   }, []);
   return touch;
-}
-
-function deriveUniverseLabel(s: StrategyResponse): string {
-  if (s.stock_symbols && s.stock_symbols.length > 0) {
-    if (s.stock_symbols.length <= 2) return s.stock_symbols.join(", ");
-    return `${s.stock_symbols.length} symbols`;
-  }
-  if (s.stock_filters?.sectors && s.stock_filters.sectors.length > 0) {
-    if (s.stock_filters.sectors.length === 1) return s.stock_filters.sectors[0];
-    return `${s.stock_filters.sectors.length} sectors`;
-  }
-  return "KSE-100";
 }
 
 export function EditorView({
@@ -277,8 +267,12 @@ export function EditorView({
   const [tree, setTree] = useState<ConditionGroup>(() =>
     fromBackend(initialStrategy.entry_rules.conditions),
   );
-  const [exit, setExit] = useState<ExitRules>(initialStrategy.exit_rules);
-  const [sizing, setSizing] = useState<PositionSizing>(initialStrategy.position_sizing);
+  // Post-B046 the editor no longer mutates exit guardrails or sizing — those
+  // moved to the bot row / backtest request / deploy request. We still hold
+  // the signal-based exit-tree object so it round-trips on save without
+  // being lost (older strategies may carry one even though no editor surface
+  // currently authors it).
+  const [exit] = useState<ExitRules>(initialStrategy.exit_rules ?? {});
   const [dirty, setDirty] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [name, setName] = useState<string>(initialStrategy.name);
@@ -309,8 +303,6 @@ export function EditorView({
   // typical editing session doesn't pay for the /stocks fetch.
   const [stocks, setStocks] = useState<StockResponse[]>([]);
   const router = useRouter();
-
-  const universeLabel = deriveUniverseLabel(initialStrategy);
 
   async function fetchDependents(): Promise<StrategyDependentsResponse | null> {
     try {
@@ -351,7 +343,7 @@ export function EditorView({
       if (!opts?.silent) setFlash("A strategy needs at least one condition");
       return;
     }
-    const body = buildUpdateBody(name, tree, exit, sizing);
+    const body = buildUpdateBody(name, tree, exit);
     setSaveStatus("saving");
     try {
       const res = await fetch(`/api/strategies/${initialStrategy.id}`, {
@@ -725,11 +717,11 @@ export function EditorView({
       void performSave({ silent: true });
     }, 800);
     return () => clearTimeout(t);
-    // performSave reads tree/name/exit/sizing through the render closure;
-    // listing them as deps reschedules the autosave on every keystroke,
-    // which is exactly the debounce we want.
+    // performSave reads tree/name/exit through the render closure; listing
+    // them as deps reschedules the autosave on every keystroke, which is
+    // exactly the debounce we want.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dirty, saveStatus, confirmModal, groupModal, tree, name, exit, sizing]);
+  }, [dirty, saveStatus, confirmModal, groupModal, tree, name, exit]);
 
   // beforeunload guard: belt-and-suspenders for the autosave window. If the
   // user refreshes or closes the tab inside the 800ms debounce (or during
@@ -766,7 +758,6 @@ export function EditorView({
         <Header
           name={name}
           slug={String(initialStrategy.id)}
-          universe={universeLabel}
           deployed={deployed}
           savedAt={savedAt}
           dirty={dirty}
@@ -846,20 +837,6 @@ export function EditorView({
               }}
               onDelete={() => handleDeleteNode(selectedLeaf.id)}
               onDuplicate={() => handleDuplicateNode(selectedLeaf.id)}
-              onClose={close}
-            />
-          )}
-          {selection?.kind === "execution" && (
-            <ExecutionDrawer
-              exit={exit}
-              sizing={sizing}
-              onApply={(nextExit, nextSizing) => {
-                setExit(nextExit);
-                setSizing(nextSizing);
-                setDirty(true);
-                close();
-                setFlash("Saved · Execution");
-              }}
               onClose={close}
             />
           )}
@@ -1125,7 +1102,6 @@ const MOCK_VERSIONS: VersionEntry[] = [
 function Header({
   name,
   slug,
-  universe,
   deployed,
   savedAt,
   dirty,
@@ -1137,7 +1113,6 @@ function Header({
 }: {
   name: string;
   slug: string;
-  universe: string;
   deployed: boolean;
   savedAt: number;
   dirty: boolean;
@@ -1335,18 +1310,6 @@ function Header({
               {name}
             </button>
           )}
-          <span
-            style={{
-              color: T.text3,
-              fontFamily: T.fontMono,
-              fontSize: 13,
-              fontWeight: 400,
-              marginLeft: 14,
-              display: isMobile ? "block" : "inline",
-            }}
-          >
-            · {universe}
-          </span>
         </h1>
       </div>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -1664,9 +1627,9 @@ function Canvas({
     }
     const root = layoutTree(tree);
     const bounds = layoutBounds(root);
-    // Right side: include ExecNode + OutputPin column. Mirrors the
-    // execX/outputX derivation in the canvas render block.
-    const fitMaxX = root.gateX + GATE_W + 142 + 260 + 240;
+    // Right side: include OutputPin column. Mirrors the outputX derivation
+    // in the canvas render block (root.gateX + GATE_W + ROOT_TO_OUTPUT_GAP).
+    const fitMaxX = root.gateX + GATE_W + 402 + 240;
     const fitMinX = bounds.minX - 24;
     const fitMinY = bounds.minY - 24;
     const fitMaxY = Math.max(bounds.maxY, root.addSlotCy + ADD_SLOT_H / 2) + 24;
@@ -1744,30 +1707,25 @@ function Canvas({
           groupMap.set(root.id, root);
           for (const g of nestedGroups) groupMap.set(g.id, g);
 
-          // ExecNode and output pins live outside the entry tree. With the
-          // layered layout the root gate is anchored at a FIXED X
-          // (`ROOT_GATE_X` in layout.ts), so deeper trees grow leftward
-          // into negative X and the output column stays put on the right.
-          // We use `root.gateX + GATE_W` as the exec anchor regardless of
-          // gate visibility (single-child trees hide the gate but the
-          // gate's would-be position is still fixed). The wire origin
-          // (`rootOriginX/Y`) tracks the actual outgoing pin so single-
-          // child trees still wire from leaf → exec without going through
-          // a hidden gate.
-          const ROOT_TO_EXEC_GAP = 142;
-          const EXEC_TO_OUTPUT_GAP = 260;
+          // Output pins (Backtest / Live signals / Automate) live outside
+          // the entry tree. With the layered layout the root gate is
+          // anchored at a FIXED X (`ROOT_GATE_X` in layout.ts), so deeper
+          // trees grow leftward into negative X while the output column
+          // stays put on the right. Post-B046 the ExecNode that used to sit
+          // between the entry tree and the outputs is gone — the wire goes
+          // straight from the entry root to each output pin. The
+          // `rootOriginX/Y` pair tracks the actual outgoing pin so
+          // single-child trees still wire from the leaf without going
+          // through a hidden gate.
+          const ROOT_TO_OUTPUT_GAP = 402;
           const rootOriginX = root.showGate ? root.gateX + GATE_W : root.pinX;
           const rootOriginY = root.showGate ? root.gateY : root.pinY;
-          const execAnchorX = root.gateX + GATE_W;
-          const execX = execAnchorX + ROOT_TO_EXEC_GAP;
-          const execPinRightX = execX + 236; // matches ExecNode's right Pin offset
-          const outputX = execX + EXEC_TO_OUTPUT_GAP;
-          const outputCurveCtrlX = outputX - 10;
-          const execPinY = root.pinY;
-          const execY = execPinY - 54;
-          const out1Y = execPinY - 224;
-          const out2Y = execPinY - 36;
-          const out3Y = execPinY + 136;
+          const outputX = root.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
+          const outputCurveCtrlX = (rootOriginX + outputX) / 2;
+          const outputCenterY = root.pinY;
+          const out1Y = outputCenterY - 224;
+          const out2Y = outputCenterY - 36;
+          const out3Y = outputCenterY + 136;
 
           // Each non-root group with a visible gate, plus each leaf,
           // contributes one wire to its parent gate. Groups whose own gate
@@ -1820,8 +1778,9 @@ function Canvas({
           };
           for (const c of root.children) visit(c);
 
-          // Root → ExecNode wire. Origin (rootOriginX/Y) was computed up
-          // top so execX could derive from it; reuse here for the wire.
+          // Root → output-pin fan-out. Each pin gets its own curve from the
+          // root's outgoing pin (rootOriginX/Y) so the entry tree feeds the
+          // backtest / live signals / bot outputs directly.
 
           return (
             <>
@@ -1846,25 +1805,19 @@ function Canvas({
                   />
                 ))}
                 <Connector
-                  d={`M ${rootOriginX} ${rootOriginY} C ${rootOriginX + 40} ${rootOriginY} ${rootOriginX + 40} ${execPinY} ${execX} ${execPinY}`}
-                  color={T.primaryLight}
-                  width={2}
-                  T={T}
-                />
-                <Connector
-                  d={`M ${execPinRightX} ${execPinY} C ${outputCurveCtrlX} ${execPinY} ${outputCurveCtrlX} ${out1Y + 20} ${outputX} ${out1Y + 20}`}
+                  d={`M ${rootOriginX} ${rootOriginY} C ${outputCurveCtrlX} ${rootOriginY} ${outputCurveCtrlX} ${out1Y + 20} ${outputX} ${out1Y + 20}`}
                   color={T.primary}
                   width={1.3}
                   T={T}
                 />
                 <Connector
-                  d={`M ${execPinRightX} ${execPinY} C ${outputCurveCtrlX} ${execPinY} ${outputCurveCtrlX} ${out2Y + 20} ${outputX} ${out2Y + 20}`}
+                  d={`M ${rootOriginX} ${rootOriginY} C ${outputCurveCtrlX} ${rootOriginY} ${outputCurveCtrlX} ${out2Y + 20} ${outputX} ${out2Y + 20}`}
                   color={T.deploy}
                   width={1.6}
                   T={T}
                 />
                 <Connector
-                  d={`M ${execPinRightX} ${execPinY} C ${outputCurveCtrlX} ${execPinY} ${outputCurveCtrlX} ${out3Y + 20} ${outputX} ${out3Y + 20}`}
+                  d={`M ${rootOriginX} ${rootOriginY} C ${outputCurveCtrlX} ${rootOriginY} ${outputCurveCtrlX} ${out3Y + 20} ${outputX} ${out3Y + 20}`}
                   color={T.accent}
                   width={1.3}
                   T={T}
@@ -1942,13 +1895,6 @@ function Canvas({
                   }
                 />
               ))}
-
-              <ExecNode
-                x={execX}
-                y={execY}
-                selected={isSelected("execution", "exec")}
-                onClick={() => onSelect("execution", "exec")}
-              />
 
               <OutputPin
                 x={outputX}
@@ -2188,88 +2134,6 @@ function CondNode({
         <span style={{ color: valIsRef ? T.primaryLight : T.accent }}>{val}</span>
       </div>
       <Pin x={196} y={h / 2 - 4} color={T.primary} />
-    </div>
-  );
-}
-
-function ExecNode({ x, y, selected, onClick }: { x: number; y: number; selected?: boolean; onClick?: () => void }) {
-  const T = useT();
-  return (
-    <div
-      onClick={onClick}
-      onKeyDown={onClick ? (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onClick();
-        }
-      } : undefined}
-      role={onClick ? "button" : undefined}
-      tabIndex={onClick ? 0 : undefined}
-      style={{
-        position: "absolute",
-        left: x,
-        top: y,
-        width: 240,
-        height: 108,
-        background: T.surfaceLow,
-        borderRadius: 12,
-        padding: "14px 16px",
-        cursor: onClick ? "pointer" : undefined,
-        boxShadow: selected
-          ? `0 0 0 2px ${T.accent}, 0 10px 30px -10px rgba(0,0,0,0.6)`
-          : `0 0 0 1px ${T.outlineFaint}, 0 4px 14px -8px rgba(0,0,0,0.5)`,
-        borderLeft: `3px solid ${T.accent}`,
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          fontFamily: T.fontMono,
-          fontSize: 10,
-          color: T.accent,
-          letterSpacing: 0.6,
-          textTransform: "uppercase",
-        }}
-      >
-        <span style={{ width: 4, height: 4, borderRadius: 2, background: T.accent }} />
-        execution
-      </div>
-      <div
-        style={{
-          fontFamily: T.fontHead,
-          fontSize: 16,
-          fontWeight: 500,
-          color: T.text,
-          marginTop: 6,
-          letterSpacing: -0.2,
-        }}
-      >
-        Buy · <span style={{ fontStyle: "italic", color: T.accent }}>10%</span> of book
-      </div>
-      <div
-        style={{
-          fontFamily: T.fontMono,
-          fontSize: 11,
-          color: T.text3,
-          marginTop: 6,
-          display: "flex",
-          gap: 10,
-        }}
-      >
-        <span>
-          SL <span style={{ color: T.loss }}>5%</span>
-        </span>
-        <span>
-          TP <span style={{ color: T.gain }}>15%</span>
-        </span>
-        <span>
-          hold <span style={{ color: T.text2 }}>21d</span>
-        </span>
-      </div>
-      <Pin x={-4} y={50} color={T.primaryLight} />
-      <Pin x={236} y={50} color={T.accent} />
     </div>
   );
 }
@@ -3413,35 +3277,6 @@ function ConditionDrawer({
 }
 
 
-type ExitKey = "stopLoss" | "takeProfit" | "trailingStop" | "maxHolding";
-
-// "5%" / "5" → 5, "" / "—" → null. Bounded to [0, 100] to match backend
-// validators (stop_loss_pct etc are pct floats). parseDays is similar but
-// integers only and unbounded above.
-function parsePct(raw: string): number | null {
-  const cleaned = raw.replace(/[^0-9.]/g, "").trim();
-  if (!cleaned) return null;
-  const n = Number(cleaned);
-  if (!Number.isFinite(n)) return null;
-  return Math.max(0, Math.min(100, n));
-}
-
-function parseDays(raw: string): number | null {
-  const cleaned = raw.replace(/[^0-9]/g, "").trim();
-  if (!cleaned) return null;
-  const n = Number(cleaned);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return Math.floor(n);
-}
-
-function fmtPct(n: number | null | undefined): string {
-  return n == null ? "5%" : `${n}%`;
-}
-
-function fmtDays(n: number | null | undefined): string {
-  return n == null ? "21 days" : `${n} days`;
-}
-
 // Phase E GroupDrawer — mirrors ConditionDrawer's shape. Exposes the AND/OR
 // logic toggle, a read-only children summary, and the Ungroup / Delete
 // actions. Root groups can do neither (root is the strategy itself); the
@@ -3897,374 +3732,4 @@ function DeployUniverseModal({
   );
 }
 
-// Controlled ExecutionDrawer — Direction (long-only) and Exit-signal (no
-// separate exit tree in the data model) are intentionally hidden in PR-1.
-// Sizing maps to position_sizing.value (assumes fixed_percent, see ADR-10).
-function ExecutionDrawer({
-  exit,
-  sizing,
-  onApply,
-  onClose,
-}: {
-  exit: ExitRules;
-  sizing: PositionSizing;
-  onApply: (nextExit: ExitRules, nextSizing: PositionSizing) => void;
-  onClose: () => void;
-}) {
-  const T = useT();
-  const [sizingPct, setSizingPct] = useState<number>(() =>
-    Math.max(0, Math.min(100, Math.round(sizing.value)))
-  );
-  const [exits, setExits] = useState<Record<ExitKey, { on: boolean; value: string }>>(() => ({
-    stopLoss: {
-      on: exit.stop_loss_pct != null,
-      value: fmtPct(exit.stop_loss_pct),
-    },
-    takeProfit: {
-      on: exit.take_profit_pct != null,
-      value: fmtPct(exit.take_profit_pct),
-    },
-    trailingStop: {
-      on: exit.trailing_stop_pct != null,
-      value: fmtPct(exit.trailing_stop_pct),
-    },
-    maxHolding: {
-      on: exit.max_holding_days != null,
-      value: fmtDays(exit.max_holding_days),
-    },
-  }));
-
-  const slider = useSliderDrag((pct) => setSizingPct(Math.round(pct * 100)));
-
-  const toggleExit = (k: ExitKey) =>
-    setExits((prev) => ({ ...prev, [k]: { ...prev[k], on: !prev[k].on } }));
-  const setExitValue = (k: ExitKey, v: string) =>
-    setExits((prev) => ({ ...prev, [k]: { ...prev[k], value: v } }));
-
-  const handleSave = () => {
-    const nextExit: ExitRules = {
-      ...exit,
-      stop_loss_pct: exits.stopLoss.on ? parsePct(exits.stopLoss.value) : null,
-      take_profit_pct: exits.takeProfit.on ? parsePct(exits.takeProfit.value) : null,
-      trailing_stop_pct: exits.trailingStop.on ? parsePct(exits.trailingStop.value) : null,
-      max_holding_days: exits.maxHolding.on ? parseDays(exits.maxHolding.value) : null,
-    };
-    const nextSizing: PositionSizing = {
-      ...sizing,
-      value: sizingPct,
-    };
-    onApply(nextExit, nextSizing);
-  };
-
-  return (
-    <DrawerContainer>
-      <div style={{ padding: "18px 22px 0", position: "relative" }}>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close drawer"
-          style={{
-            position: "absolute",
-            top: 10,
-            right: 10,
-            width: 28,
-            height: 28,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "transparent",
-            border: "none",
-            borderRadius: 6,
-            color: T.text3,
-            cursor: "pointer",
-          }}
-        >
-          {Icon.close}
-        </button>
-        <Kicker color={T.accent}>execution node</Kicker>
-        <h2
-          style={{
-            fontFamily: T.fontHead,
-            fontSize: 22,
-            fontWeight: 500,
-            margin: "10px 0 4px",
-            letterSpacing: -0.4,
-          }}
-        >
-          Position <span style={{ fontStyle: "italic", color: T.accent }}>sizing</span> &amp; exits
-        </h2>
-      </div>
-      <div style={{ flex: 1, overflowX: "hidden", overflowY: "auto", padding: 22, paddingTop: 14 }}>
-        <Ribbon kicker="sizing" />
-        <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 }}>
-          <div style={{ position: "relative", display: "inline-flex", alignItems: "baseline" }}>
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={sizingPct}
-              onChange={(e) => {
-                const digits = e.target.value.replace(/[^0-9]/g, "");
-                if (digits === "") {
-                  setSizingPct(0);
-                  return;
-                }
-                const n = Number(digits);
-                if (Number.isFinite(n)) setSizingPct(Math.max(0, Math.min(100, n)));
-              }}
-              style={{
-                fontFamily: T.fontHead,
-                fontSize: 54,
-                color: T.text,
-                letterSpacing: -1,
-                fontVariantNumeric: "tabular-nums",
-                lineHeight: 1,
-                background: "transparent",
-                border: "none",
-                padding: 0,
-                width: 90,
-              }}
-            />
-            <span
-              style={{
-                fontFamily: T.fontHead,
-                fontSize: 54,
-                color: T.text,
-                letterSpacing: -1,
-                lineHeight: 1,
-              }}
-            >
-              %
-            </span>
-          </div>
-          <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
-            of portfolio per trade
-          </span>
-        </div>
-        <div
-          ref={slider.trackRef}
-          onPointerDown={slider.onPointerDown}
-          onPointerMove={slider.onPointerMove}
-          onPointerUp={slider.onPointerUp}
-          onPointerCancel={slider.onPointerUp}
-          style={{
-            marginTop: 14,
-            position: "relative",
-            height: 18,
-            display: "flex",
-            alignItems: "center",
-            cursor: "pointer",
-            touchAction: "none",
-          }}
-        >
-          <div
-            style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              height: 6,
-              borderRadius: 3,
-              background: T.surface3,
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                width: `${sizingPct}%`,
-                background: T.accent,
-                borderRadius: 3,
-                transition: "width 80ms linear",
-              }}
-            />
-          </div>
-          <div
-            style={{
-              position: "absolute",
-              left: `${sizingPct}%`,
-              top: "50%",
-              width: 16,
-              height: 16,
-              borderRadius: 8,
-              background: T.accent,
-              transform: "translate(-8px, -8px)",
-              boxShadow: `0 0 0 3px ${T.accent}33`,
-            }}
-          />
-        </div>
-
-        <Ribbon kicker="exits" />
-        <ExitRow
-          label="Stop loss"
-          value={exits.stopLoss.value}
-          color={T.loss}
-          on={exits.stopLoss.on}
-          onToggle={() => toggleExit("stopLoss")}
-          onValueChange={(v) => setExitValue("stopLoss", v)}
-        />
-        <ExitRow
-          label="Take profit"
-          value={exits.takeProfit.value}
-          color={T.gain}
-          on={exits.takeProfit.on}
-          onToggle={() => toggleExit("takeProfit")}
-          onValueChange={(v) => setExitValue("takeProfit", v)}
-        />
-        <ExitRow
-          label="Trailing stop"
-          value={exits.trailingStop.value}
-          on={exits.trailingStop.on}
-          onToggle={() => toggleExit("trailingStop")}
-          onValueChange={(v) => setExitValue("trailingStop", v)}
-        />
-        <ExitRow
-          label="Max holding"
-          value={exits.maxHolding.value}
-          on={exits.maxHolding.on}
-          onToggle={() => toggleExit("maxHolding")}
-          onValueChange={(v) => setExitValue("maxHolding", v)}
-        />
-
-        <div
-          style={{
-            marginTop: 18,
-            padding: 12,
-            borderRadius: 8,
-            background: T.warning + "10",
-            fontSize: 11.5,
-            color: T.text2,
-            lineHeight: 1.55,
-            display: "flex",
-            gap: 8,
-          }}
-        >
-          <span style={{ color: T.warning }}>{Icon.warn}</span>
-          <span>
-            With {sizingPct}% per trade and 5 concurrent positions, up to {Math.min(100, sizingPct * 5)}%
-            of portfolio can be deployed.
-          </span>
-        </div>
-      </div>
-      <div
-        style={{
-          padding: 14,
-          borderTop: `1px solid ${T.outlineFaint}`,
-          display: "flex",
-          gap: 8,
-        }}
-      >
-        <div style={{ flex: 1 }} />
-        <Btn variant="primary" size="sm" onClick={handleSave}>
-          Apply
-        </Btn>
-      </div>
-    </DrawerContainer>
-  );
-}
-
-function ExitRow({
-  label,
-  value,
-  color,
-  on,
-  onToggle,
-  onValueChange,
-}: {
-  label: string;
-  value: string;
-  color?: string;
-  on: boolean;
-  onToggle: () => void;
-  onValueChange?: (v: string) => void;
-}) {
-  const T = useT();
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "10px 0",
-        borderBottom: `1px dotted ${T.outlineFaint}`,
-        opacity: on ? 1 : 0.5,
-        transition: "opacity 140ms",
-      }}
-    >
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-pressed={on}
-        aria-label={label}
-        style={{
-          width: 36,
-          height: 24,
-          borderRadius: 12,
-          background: "transparent",
-          position: "relative",
-          border: "none",
-          padding: 0,
-          cursor: "pointer",
-          display: "inline-flex",
-          alignItems: "center",
-        }}
-      >
-        <span
-          aria-hidden
-          style={{
-            position: "absolute",
-            inset: "5px 5px",
-            borderRadius: 7,
-            background: on ? T.accent : T.surface3,
-            transition: "background 140ms",
-          }}
-        />
-        <span
-          aria-hidden
-          style={{
-            position: "absolute",
-            top: 7,
-            left: on ? 18 : 7,
-            width: 10,
-            height: 10,
-            borderRadius: 5,
-            background: "#fff",
-            transition: "left 140ms",
-          }}
-        />
-      </button>
-      <span style={{ fontFamily: T.fontSans, fontSize: 12.5, color: T.text, flex: 1 }}>
-        {label}
-      </span>
-      {onValueChange && on ? (
-        <input
-          type="text"
-          value={value}
-          onChange={(e) => onValueChange(e.target.value)}
-          style={{
-            fontFamily: T.fontMono,
-            fontSize: 12.5,
-            color: color || T.text2,
-            fontVariantNumeric: "tabular-nums",
-            background: "transparent",
-            border: "none",
-            padding: 0,
-            width: 80,
-            textAlign: "right",
-          }}
-        />
-      ) : (
-        <span
-          style={{
-            fontFamily: T.fontMono,
-            fontSize: 12.5,
-            color: color || T.text2,
-            fontVariantNumeric: "tabular-nums",
-          }}
-        >
-          {value}
-        </span>
-      )}
-    </div>
-  );
-}
 

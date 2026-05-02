@@ -23,12 +23,6 @@ export type Operator =
 
 export type ConditionLogic = "AND" | "OR";
 
-export type PositionSizingType =
-  | "fixed_percent"
-  | "fixed_amount"
-  | "risk_based"
-  | "equal_weight";
-
 // Keep `Indicator` as a string. The backend's enum is large and the frontend
 // renders whatever the rules contain — narrowing it here adds no safety and
 // invites drift if the backend extends the list.
@@ -81,30 +75,18 @@ export interface ConditionGroup {
   conditions: Array<SingleCondition | ConditionGroup>;
 }
 
-// ============ Rules / sizing / risk / filters ============
+// ============ Rules / filters ============
 
 export interface EntryRules {
   conditions: ConditionGroup;
 }
 
+// Post-B046 the strategy's exit rules carry only the indicator-based signal
+// exit tree. The four scalar guardrails (stop_loss_pct / take_profit_pct /
+// trailing_stop_pct / max_holding_days) moved to the bot row (`BotCreateBody`)
+// or the backtest request (`BacktestRequestBody`).
 export interface ExitRules {
   conditions?: ConditionGroup | null;
-  stop_loss_pct?: number | null;
-  take_profit_pct?: number | null;
-  trailing_stop_pct?: number | null;
-  max_holding_days?: number | null;
-}
-
-export interface PositionSizing {
-  type: PositionSizingType;
-  value: number;
-  max_position_size_pct: number;
-}
-
-export interface RiskManagement {
-  max_daily_loss_pct?: number | null;
-  max_portfolio_risk_pct?: number | null;
-  stop_trading_drawdown_pct?: number | null;
 }
 
 export interface StockFilters {
@@ -130,6 +112,10 @@ export interface LatestBacktestSummary {
   completed_at: string;
 }
 
+// Post-B046 the strategy response mirrors `StrategyBase` plus lifecycle
+// metadata. Universe and risk fields no longer round-trip — the universe
+// snapshot for a deployed strategy is exposed through the deploy-status
+// endpoint (`scan_filters` / `scan_symbols`), not on this row.
 export interface StrategyResponse {
   id: number;
   user_id: string;
@@ -137,11 +123,6 @@ export interface StrategyResponse {
   description?: string | null;
   entry_rules: EntryRules;
   exit_rules: ExitRules;
-  position_sizing: PositionSizing;
-  risk_management?: RiskManagement | null;
-  stock_filters?: StockFilters | null;
-  stock_symbols?: string[] | null;
-  max_positions: number;
   status: StrategyStatus;
   trading_mode: TradingMode;
   created_at?: string | null;
@@ -172,16 +153,15 @@ export interface StrategyListParams {
   status_filter?: StrategyStatus;
 }
 
+// Post-B046 the strategy carries only what defines *the rules*. Universe
+// (stock_filters / stock_symbols) and risk (position_sizing / risk_management
+// / max_positions) are no longer accepted on /strategies — they live on the
+// bot row, the backtest request, or the deploy request.
 export interface StrategyCreateBody {
   name: string;
   description?: string | null;
   entry_rules: EntryRules;
   exit_rules: ExitRules;
-  position_sizing: PositionSizing;
-  risk_management?: RiskManagement | null;
-  stock_filters?: StockFilters | null;
-  stock_symbols?: string[] | null;
-  max_positions?: number;
 }
 
 export type StrategyUpdateBody = Partial<StrategyCreateBody> & {
@@ -205,7 +185,6 @@ export interface StrategyUpdateResponse {
 export interface IndicatorMeta {
   indicators: Record<string, string[]>;
   operators: { value: Operator; label: string }[];
-  position_sizing_types: { value: PositionSizingType; label: string }[];
 }
 
 export interface DataRangeResponse {

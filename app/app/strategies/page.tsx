@@ -4,7 +4,6 @@ import { signBackendJwt } from "@/lib/api/jwt";
 import {
   getStrategies,
   type StrategyResponse,
-  type StockFilters,
 } from "@/lib/api/strategies";
 import { StrategiesView, type Strategy, type Status, type OutputKind } from "./strategies-view";
 
@@ -23,18 +22,6 @@ function formatRelative(iso: string | null | undefined): { updated: string; upda
   if (d < 30) return { updated: `${d}d ago`, updatedMin: min };
   const mo = Math.floor(d / 30);
   return { updated: `${mo}mo ago`, updatedMin: min };
-}
-
-function deriveUniverse(filters: StockFilters | null | undefined, symbols: string[] | null | undefined): string {
-  if (symbols && symbols.length > 0) {
-    if (symbols.length <= 2) return symbols.join(", ");
-    return `${symbols.length} symbols`;
-  }
-  if (filters?.sectors && filters.sectors.length > 0) {
-    if (filters.sectors.length === 1) return filters.sectors[0];
-    return `${filters.sectors.length} sectors`;
-  }
-  return "KSE-100";
 }
 
 function mapStatus(s: StrategyResponse["status"]): Status {
@@ -85,7 +72,6 @@ function mapStrategy(s: StrategyResponse): Strategy {
     bt,
     sharpe: sharpeNum,
     outputs,
-    universe: deriveUniverse(s.stock_filters, s.stock_symbols),
     updated,
     updatedMin,
     lastScanMin,

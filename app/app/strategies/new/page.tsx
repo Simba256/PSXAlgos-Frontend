@@ -12,9 +12,6 @@ import type {
   StrategyCreateBody,
   StrategyCreateResponse,
   EntryRules,
-  ExitRules,
-  PositionSizing,
-  StockFilters,
   SingleCondition,
 } from "@/lib/api/strategies";
 
@@ -25,8 +22,6 @@ type PresetKey =
   | "bollinger_squeeze"
   | "macd_cross"
   | "blank";
-
-type UniverseKey = "kse100" | "kse30" | "banks" | "oil_gas" | "custom";
 
 type AfterKey = "editor" | "backtest";
 
@@ -127,22 +122,6 @@ const PRESETS: Preset[] = [
   },
 ];
 
-interface Universe {
-  key: UniverseKey;
-  label: string;
-  count: string;
-  desc: string;
-  summary: string;
-}
-
-const UNIVERSES: Universe[] = [
-  { key: "kse100", label: "KSE-100", count: "100 symbols", desc: "Broadest coverage, most signals", summary: "KSE-100 · 100 symbols" },
-  { key: "kse30", label: "KSE-30", count: "30 symbols", desc: "Blue chips only, higher quality", summary: "KSE-30 · 30 symbols" },
-  { key: "banks", label: "Banks", count: "15 symbols", desc: "Sector-concentrated", summary: "Banks · 15 symbols" },
-  { key: "oil_gas", label: "Oil & Gas", count: "12 symbols", desc: "Sector-concentrated", summary: "Oil & Gas · 12 symbols" },
-  { key: "custom", label: "Custom", count: "—", desc: "Pick specific symbols", summary: "Custom selection" },
-];
-
 // Each preset maps to a minimal valid backend `StrategyCreate.entry_rules`.
 // These are STARTER conditions — users are expected to refine them in the
 // editor afterwards. Mismatches between the preset's `baseRule` text (which
@@ -190,54 +169,20 @@ function presetToEntryRules(key: PresetKey): EntryRules {
   return { conditions: { kind: "group", logic: "AND", conditions } };
 }
 
-function universeToFilters(key: UniverseKey): {
-  stock_symbols: string[] | null;
-  stock_filters: StockFilters | null;
-} {
-  switch (key) {
-    case "kse100":
-    case "kse30":
-      // No backend universe shortcut — leave both null and let the strategy
-      // run against all active stocks. Real KSE-100/30 membership filtering
-      // belongs in a dedicated index-membership feature.
-      return { stock_symbols: null, stock_filters: null };
-    case "banks":
-      return { stock_symbols: null, stock_filters: { sectors: ["Commercial Banks"] } };
-    case "oil_gas":
-      return { stock_symbols: null, stock_filters: { sectors: ["Oil & Gas Exploration Companies"] } };
-    case "custom":
-      // User refines in the editor.
-      return { stock_symbols: null, stock_filters: null };
-  }
-}
-
-function buildCreateBody(preset: Preset, universeKey: UniverseKey): StrategyCreateBody {
-  const exit: ExitRules = {
-    stop_loss_pct: 3.0,
-    take_profit_pct: 8.0,
-  };
-  const sizing: PositionSizing = {
-    type: "fixed_percent",
-    value: 2.0,
-    max_position_size_pct: 20.0,
-  };
-  const { stock_symbols, stock_filters } = universeToFilters(universeKey);
+// Post-B046 the strategy carries only what defines *the rules*. Universe
+// and risk live on the bot/backtest/deploy request, not the strategy.
+function buildCreateBody(preset: Preset): StrategyCreateBody {
   return {
     name: preset.defaultName,
     description: `${preset.desc}.`,
     entry_rules: presetToEntryRules(preset.key),
-    exit_rules: exit,
-    position_sizing: sizing,
-    stock_symbols,
-    stock_filters,
-    max_positions: 5,
+    exit_rules: {},
   };
 }
 
 export default function WizardPage() {
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<1 | 2>(1);
   const [presetKey, setPresetKey] = useState<PresetKey>("mean_reversion");
-  const [universeKey, setUniverseKey] = useState<UniverseKey>("kse100");
   const [afterKey, setAfterKey] = useState<AfterKey>("editor");
   const [submitErr, setSubmitErr] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -247,11 +192,10 @@ export default function WizardPage() {
   const padX = pick(bp, PAD.page);
 
   const preset = PRESETS.find((p) => p.key === presetKey) ?? PRESETS[0];
-  const universe = UNIVERSES.find((u) => u.key === universeKey) ?? UNIVERSES[0];
 
   async function onCreate() {
     setSubmitErr(null);
-    const body = buildCreateBody(preset, universeKey);
+    const body = buildCreateBody(preset);
     let result: StrategyCreateResponse;
     try {
       const res = await fetch("/api/strategies", {
@@ -302,8 +246,8 @@ export default function WizardPage() {
           }
           meta={
             <>
-              <span>Step {step} of 3</span>
-              <span style={{ color: T.text3 }}>~2 minutes</span>
+              <span>Step {step} of 2</span>
+              <span style={{ color: T.text3 }}>~1 minute</span>
               <span style={{ color: T.text3 }}>Esc to cancel</span>
             </>
           }
@@ -329,8 +273,7 @@ export default function WizardPage() {
           {(
             [
               ["01", "Start from", "preset · blank · template"],
-              ["02", "Shape it", "universe · rules · risk"],
-              ["03", "Ship it", "name · description · save"],
+              ["02", "Ship it", "name · description · save"],
             ] as const
           ).map(([n, t, d], i) => {
             const active = i + 1 === step;
@@ -414,14 +357,6 @@ export default function WizardPage() {
           {step === 2 && (
             <Step2
               preset={preset}
-              universeKey={universeKey}
-              onUniverse={setUniverseKey}
-            />
-          )}
-          {step === 3 && (
-            <Step3
-              preset={preset}
-              universe={universe}
               afterKey={afterKey}
               onAfter={setAfterKey}
             />
@@ -440,21 +375,20 @@ export default function WizardPage() {
         >
           <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
             {step === 1 && "Tip: start from a preset, you can always rewire it later."}
-            {step === 2 && "Tip: broader universe = more signals, tighter filters = higher quality."}
-            {step === 3 && "A good name is short and describes the edge."}
+            {step === 2 && "A good name is short and describes the edge."}
           </span>
           <div style={{ flex: 1 }} />
           {step > 1 && (
-            <Btn variant="ghost" size="md" onClick={() => setStep((s) => (s - 1) as 1 | 2 | 3)}>
+            <Btn variant="ghost" size="md" onClick={() => setStep((s) => (s - 1) as 1 | 2)}>
               ← Back
             </Btn>
           )}
-          {step < 3 && (
-            <Btn variant="primary" size="md" onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3)}>
+          {step < 2 && (
+            <Btn variant="primary" size="md" onClick={() => setStep((s) => (s + 1) as 1 | 2)}>
               Continue →
             </Btn>
           )}
-          {step === 3 && (
+          {step === 2 && (
             <Btn
               variant="primary"
               size="md"
@@ -631,211 +565,10 @@ function Step1({
 
 function Step2({
   preset,
-  universeKey,
-  onUniverse,
-}: {
-  preset: Preset;
-  universeKey: UniverseKey;
-  onUniverse: (k: UniverseKey) => void;
-}) {
-  const T = useT();
-  const { bp } = useBreakpoint();
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: pick(bp, {
-          mobile: "1fr",
-          tablet: "1.2fr 1fr",
-          desktop: "1.2fr 1fr",
-        }),
-        gap: pick(bp, { mobile: 36, tablet: 40, desktop: 60 }),
-      }}
-    >
-      <div>
-        <Kicker>universe</Kicker>
-        <h3
-          style={{
-            fontFamily: T.fontHead,
-            fontSize: 24,
-            fontWeight: 500,
-            margin: "10px 0 18px",
-            letterSpacing: -0.4,
-          }}
-        >
-          What stocks should this watch?
-        </h3>
-        <div
-          role="radiogroup"
-          aria-label="Universe"
-          style={{ display: "flex", flexDirection: "column", gap: 1, background: T.outlineFaint }}
-        >
-          {UNIVERSES.map((u) => {
-            const sel = u.key === universeKey;
-            return (
-              <button
-                key={u.key}
-                type="button"
-                role="radio"
-                aria-checked={sel}
-                onClick={() => onUniverse(u.key)}
-                style={{
-                  background: sel ? T.surfaceLow : T.surface,
-                  padding: "14px 16px",
-                  display: "grid",
-                  gridTemplateColumns: "20px 1fr 100px",
-                  gap: 14,
-                  alignItems: "center",
-                  outline: sel ? `2px solid ${T.primary}` : "none",
-                  outlineOffset: -2,
-                  border: "none",
-                  textAlign: "left",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  color: "inherit",
-                }}
-              >
-                <span
-                  style={{
-                    width: 14,
-                    height: 14,
-                    borderRadius: 999,
-                    background: sel ? T.primary : "transparent",
-                    boxShadow: `inset 0 0 0 1.5px ${sel ? T.primary : T.outline}`,
-                  }}
-                />
-                <div>
-                  <div style={{ fontFamily: T.fontHead, fontSize: 14, fontWeight: 500, color: T.text }}>
-                    {u.label}
-                  </div>
-                  <div style={{ fontSize: 11.5, color: T.text3, marginTop: 2 }}>{u.desc}</div>
-                </div>
-                <span
-                  style={{
-                    fontFamily: T.fontMono,
-                    fontSize: 11,
-                    color: T.text3,
-                    textAlign: "right",
-                  }}
-                >
-                  {u.count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        <div style={{ marginTop: 36 }}>
-          <Kicker>risk defaults</Kicker>
-          <h3
-            style={{
-              fontFamily: T.fontHead,
-              fontSize: 20,
-              fontWeight: 500,
-              margin: "8px 0 14px",
-              letterSpacing: -0.3,
-            }}
-          >
-            Set the guardrails.
-          </h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-            {(
-              [
-                ["Stop loss", "−3.0%", T.loss, ""],
-                ["Take profit", "+8.0%", T.gain, ""],
-                ["Position size", "2%", T.text, "of capital"],
-                ["Max concurrent", "5", T.text, "positions"],
-              ] as const
-            ).map(([label, value, c, unit]) => (
-              <div key={label}>
-                <div
-                  style={{
-                    fontFamily: T.fontMono,
-                    fontSize: 10.5,
-                    color: T.text3,
-                    textTransform: "uppercase",
-                    letterSpacing: 0.6,
-                    marginBottom: 6,
-                  }}
-                >
-                  {label}
-                </div>
-                <div
-                  style={{
-                    fontFamily: T.fontHead,
-                    fontSize: 28,
-                    fontWeight: 500,
-                    color: c,
-                  }}
-                >
-                  {value}
-                  {unit && <span style={{ fontSize: 14, color: T.text3 }}> {unit}</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div>
-        <Ribbon kicker="preview · what you picked" />
-        <div style={{ marginTop: 14 }}>
-          <DotRow label="Starting point" value={preset.name} />
-          <DotRow
-            label="Universe"
-            value={UNIVERSES.find((u) => u.key === universeKey)?.summary ?? "—"}
-          />
-          <DotRow label="Base rule" value={preset.baseRule} />
-          <DotRow label="Confirmation" value={preset.confirmation} />
-          <DotRow label="Stop loss" value="−3.0%" color={T.loss} />
-          <DotRow label="Take profit" value="+8.0%" color={T.gain} />
-          <DotRow label="Position size" value="2% of capital" />
-          <DotRow label="Max concurrent" value="5 positions" />
-        </div>
-
-        <div
-          style={{
-            marginTop: 28,
-            padding: 20,
-            background: T.surfaceLow,
-            borderRadius: 6,
-            border: `1px dashed ${T.outlineFaint}`,
-          }}
-        >
-          <div
-            style={{
-              fontFamily: T.fontMono,
-              fontSize: 10.5,
-              color: T.primaryLight,
-              letterSpacing: 0.7,
-              textTransform: "uppercase",
-              marginBottom: 8,
-            }}
-          >
-            Estimated behavior
-          </div>
-          <div style={{ fontSize: 13, color: T.text2, lineHeight: 1.6 }}>
-            Based on historical KSE-100 data, this configuration would fire roughly
-            <span style={{ color: T.text }}> 3–6 signals/week</span> with a
-            <span style={{ color: T.gain }}> 58% historical win rate</span>.
-          </div>
-          <div style={{ marginTop: 10, fontFamily: T.fontMono, fontSize: 10.5, color: T.text3 }}>
-            You can tune all of this later in the editor.
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Step3({
-  preset,
-  universe,
   afterKey,
   onAfter,
 }: {
   preset: Preset;
-  universe: Universe;
   afterKey: AfterKey;
   onAfter: (k: AfterKey) => void;
 }) {
@@ -933,8 +666,8 @@ function Step3({
             }}
           >
             {preset.key === "mean_reversion"
-              ? `Buys oversold ${universe.label} names when RSI dips below 30 with above-average volume. Exits on +8% / −3% or trend reversal.`
-              : `${preset.desc}. Runs on ${universe.label}.`}
+              ? "Buys oversold names when RSI dips below 30 with above-average volume. Exits on signal-driven rules or guardrails set at deploy / backtest time."
+              : `${preset.desc}. Universe and risk are picked when you deploy or backtest.`}
           </div>
         </div>
 
@@ -1008,11 +741,27 @@ function Step3({
         <div style={{ marginTop: 14 }}>
           <DotRow label="Name" value={preset.defaultName} bold />
           <DotRow label="Type" value={preset.type} />
-          <DotRow label="Universe" value={universe.label} />
-          <DotRow label="Conditions" value="2 rules · AND" />
-          <DotRow label="Stop / target" value="−3.0% / +8.0%" />
-          <DotRow label="Position" value="2% · max 5 open" />
+          <DotRow label="Base rule" value={preset.baseRule} />
+          <DotRow label="Confirmation" value={preset.confirmation} />
           <DotRow label="Status" value="Draft" color={T.text3} />
+        </div>
+
+        <div
+          style={{
+            marginTop: 18,
+            padding: "10px 12px",
+            background: T.surfaceLow,
+            border: `1px dashed ${T.outlineFaint}`,
+            borderRadius: 6,
+            fontFamily: T.fontMono,
+            fontSize: 11,
+            color: T.text3,
+            lineHeight: 1.55,
+          }}
+        >
+          Universe and risk guardrails are picked at <span style={{ color: T.text2 }}>deploy</span>,{" "}
+          <span style={{ color: T.text2 }}>backtest</span>, or <span style={{ color: T.text2 }}>bot</span>{" "}
+          time — not on the strategy itself.
         </div>
 
         <div style={{ marginTop: 28 }}>

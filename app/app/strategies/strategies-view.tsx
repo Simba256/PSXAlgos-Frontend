@@ -34,7 +34,6 @@ export interface Strategy {
   bt: string;
   sharpe: number | null;
   outputs: OutputKind[];
-  universe: string;
   updated: string;
   updatedMin: number;
   // Minutes since the signal scanner last ran this strategy. Used to render
@@ -631,7 +630,6 @@ function coerceStrategy(raw: unknown, idx: number): Strategy {
     bt: typeof r.bt === "string" ? r.bt : "—",
     sharpe: typeof r.sharpe === "number" ? r.sharpe : null,
     outputs,
-    universe: typeof r.universe === "string" ? r.universe : "KSE-100",
     updated: "just now",
     updatedMin: 0,
     lastScanMin: Number.MAX_SAFE_INTEGER,
@@ -645,7 +643,6 @@ function StrategyTable({ rows }: { rows: Strategy[] }) {
     { label: "name", width: "1.5fr", mono: false, primary: true },
     { label: "type", width: "140px", mono: false },
     { label: "status", width: "110px" },
-    { label: "universe", width: "110px" },
     { label: "backtest", align: "right", width: "90px" },
     { label: "sharpe", align: "right", width: "70px" },
     { label: "outputs", width: "120px", mobileFullWidth: true },
@@ -661,7 +658,6 @@ function StrategyTable({ rows }: { rows: Strategy[] }) {
     s,
     s.type,
     s.status,
-    s.universe,
     s.bt,
     s.sharpe,
     s.outputs,
@@ -720,19 +716,18 @@ function StrategyTable({ rows }: { rows: Strategy[] }) {
             </span>
           );
         }
-        if (ci === 3) return <span style={{ color: T.text3 }}>{cell as string}</span>;
-        if (ci === 4) {
+        if (ci === 3) {
           const str = String(cell);
           if (str === "—") return <span style={{ color: T.text3 }}>{str}</span>;
           return <span style={{ color: str.startsWith("+") ? T.gain : T.loss }}>{str}</span>;
         }
-        if (ci === 5)
+        if (ci === 4)
           return cell == null ? (
             <span style={{ color: T.text3 }}>—</span>
           ) : (
             <span style={{ color: T.text2 }}>{(cell as number).toFixed(2)}</span>
           );
-        if (ci === 6) {
+        if (ci === 5) {
           const outs = cell as OutputKind[];
           return (
             <span style={{ display: "inline-flex", gap: 5 }}>
@@ -766,7 +761,7 @@ function StrategyTable({ rows }: { rows: Strategy[] }) {
             </span>
           );
         }
-        if (ci === 7) {
+        if (ci === 6) {
           const n = cell as number;
           return (
             <span style={{ color: n > 0 ? T.text : T.text3, fontWeight: n > 0 ? 600 : 400 }}>
@@ -774,7 +769,7 @@ function StrategyTable({ rows }: { rows: Strategy[] }) {
             </span>
           );
         }
-        if (ci === 8) return <span style={{ color: T.text3 }}>{cell as string}</span>;
+        if (ci === 7) return <span style={{ color: T.text3 }}>{cell as string}</span>;
         return cell as ReactNode;
       }}
     />
