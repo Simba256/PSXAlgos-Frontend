@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { DayPicker } from "react-day-picker";
 import { parseISO } from "date-fns";
@@ -17,6 +17,11 @@ import {
   Kicker,
   useFlash,
 } from "@/components/atoms";
+import {
+  EMPTY_UNIVERSE_AND_RISK,
+  UniverseAndRiskFields,
+  type UniverseAndRiskValue,
+} from "@/components/universe-and-risk-fields";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
 import type {
@@ -25,6 +30,7 @@ import type {
   BacktestJobStatus,
   BacktestResultResponse,
 } from "@/lib/api/strategies";
+import { getAllStocks, type StockResponse } from "@/lib/api/stocks";
 
 export interface StrategyOption {
   id: number;
@@ -143,10 +149,42 @@ export function BacktestNewView({
   const [endDate, setEndDate] = useState<string>(
     initialEnd ?? defaultRange.end,
   );
+  const [initialCapital, setInitialCapital] = useState<number>(1_000_000);
+  const [universeAndRisk, setUniverseAndRisk] = useState<UniverseAndRiskValue>(
+    EMPTY_UNIVERSE_AND_RISK,
+  );
 
   const [running, setRunning] = useState(false);
 
   const selectedStrategy = strategies.find((s) => s.id === strategyId) ?? null;
+
+  // PSX universe — fetched once on mount, used for sector + symbol pickers.
+  const [stocks, setStocks] = useState<StockResponse[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const all = await getAllStocks().catch(() => []);
+      if (!cancelled) setStocks(all);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const availableSectors = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of stocks) {
+      if (s.sector_name && s.is_active) set.add(s.sector_name);
+    }
+    return Array.from(set).sort();
+  }, [stocks]);
+  const availableSymbols = useMemo(
+    () =>
+      stocks
+        .filter((s) => s.is_active)
+        .map((s) => ({ symbol: s.symbol, name: s.name }))
+        .sort((a, b) => a.symbol.localeCompare(b.symbol)),
+    [stocks],
+  );
 
   async function pollJob(stratId: number, jobId: string): Promise<BacktestJobStatus> {
     for (let i = 0; i < 30; i++) {
@@ -182,6 +220,10 @@ export function BacktestNewView({
       setFlash("Date range must span at least 7 days.");
       return;
     }
+    if (!Number.isFinite(initialCapital) || initialCapital <= 0) {
+      setFlash("Initial capital must be greater than zero.");
+      return;
+    }
     setRunning(true);
     try {
       const startRes = await fetch(`/api/strategies/${strategyId}/backtest`, {
@@ -190,7 +232,14 @@ export function BacktestNewView({
         body: JSON.stringify({
           start_date: startDate,
           end_date: endDate,
-          initial_capital: 1_000_000,
+          initial_capital: initialCapital,
+          stock_filters: universeAndRisk.stock_filters,
+          stock_symbols: universeAndRisk.stock_symbols,
+          stop_loss_pct: universeAndRisk.stop_loss_pct ?? null,
+          take_profit_pct: universeAndRisk.take_profit_pct ?? null,
+          trailing_stop_pct: universeAndRisk.trailing_stop_pct ?? null,
+          max_holding_days: universeAndRisk.max_holding_days ?? null,
+          max_positions: universeAndRisk.max_positions ?? null,
         }),
       });
       if (!startRes.ok) {
@@ -261,11 +310,11 @@ export function BacktestNewView({
               <>
                 <span>{selectedStrategy.name}</span>
                 <span style={{ color: T.text3 }}>
-                  universe + filters set on the strategy itself
+                  pick the universe + risk this run should use
                 </span>
               </>
             ) : (
-              <span>pick a strategy and a date range, then run</span>
+              <span>pick a strategy, set date range + universe, then run</span>
             )
           }
           actions={
@@ -295,7 +344,7 @@ export function BacktestNewView({
                 display: "flex",
                 flexDirection: "column",
                 gap: 28,
-                maxWidth: 760,
+                maxWidth: 880,
               }}
             >
               <StrategyPicker
@@ -313,7 +362,19 @@ export function BacktestNewView({
                 disabled={running}
               />
 
-              <UniverseNote selectedStrategy={selectedStrategy} />
+              <InitialCapitalBlock
+                value={initialCapital}
+                onChange={setInitialCapital}
+                disabled={running}
+              />
+
+              <UniverseAndRiskFields
+                value={universeAndRisk}
+                onChange={setUniverseAndRisk}
+                availableSectors={availableSectors}
+                availableSymbols={availableSymbols}
+                disabled={running}
+              />
 
               <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
                 <Btn
@@ -656,43 +717,83 @@ function DateTrigger({
   );
 }
 
-function UniverseNote({
-  selectedStrategy,
+function InitialCapitalBlock({
+  value,
+  onChange,
+  disabled,
 }: {
-  selectedStrategy: StrategyOption | null;
+  value: number;
+  onChange: (v: number) => void;
+  disabled: boolean;
 }) {
   const T = useT();
+  const presets = [100_000, 500_000, 1_000_000, 5_000_000, 10_000_000];
   return (
-    <div
-      style={{
-        padding: "12px 14px",
-        background: T.surfaceLow,
-        border: `1px dashed ${T.outlineFaint}`,
-        borderRadius: 4,
-        fontSize: 12.5,
-        color: T.text2,
-        lineHeight: 1.55,
-        maxWidth: 620,
-      }}
-    >
-      <span style={{ color: T.text3, fontFamily: T.fontMono, fontSize: 10.5, letterSpacing: 0.5, textTransform: "uppercase", marginRight: 8 }}>
-        universe
-      </span>
-      Bound to the strategy&rsquo;s own filters and symbol list — edit those on{" "}
-      {selectedStrategy ? (
-        <Link
-          href={`/strategies/${selectedStrategy.id}`}
-          style={{ color: T.primaryLight }}
-        >
-          its editor
-        </Link>
-      ) : (
-        <Link href="/strategies" style={{ color: T.primaryLight }}>
-          the strategy editor
-        </Link>
-      )}{" "}
-      if you need a different basket. Initial capital defaults to{" "}
-      <span style={{ color: T.text }}>PKR 1,000,000</span>.
+    <div>
+      <Kicker info="Starting capital used to size each simulated trade.">
+        initial capital · PKR
+      </Kicker>
+      <div
+        style={{
+          marginTop: 10,
+          display: "flex",
+          alignItems: "center",
+          gap: 14,
+          flexWrap: "wrap",
+        }}
+      >
+        <input
+          type="number"
+          value={value}
+          min={1}
+          step={10000}
+          disabled={disabled}
+          onChange={(e) => {
+            const n = parseFloat(e.target.value);
+            if (Number.isFinite(n) && n > 0) onChange(n);
+          }}
+          style={{
+            background: T.surface,
+            color: T.text,
+            border: "none",
+            boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+            borderRadius: 6,
+            padding: "10px 14px",
+            fontFamily: T.fontMono,
+            fontSize: 14,
+            width: 200,
+          }}
+        />
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {presets.map((amount) => {
+            const active = value === amount;
+            const label =
+              amount >= 1_000_000 ? `${amount / 1_000_000}M` : `${amount / 1000}K`;
+            return (
+              <button
+                key={amount}
+                type="button"
+                onClick={() => onChange(amount)}
+                disabled={disabled}
+                aria-pressed={active}
+                style={{
+                  fontFamily: T.fontMono,
+                  fontSize: 11,
+                  padding: "6px 12px",
+                  borderRadius: 999,
+                  background: active ? T.primary : "transparent",
+                  color: active ? "#fff" : T.text2,
+                  border: `1px solid ${active ? T.primary : T.outlineFaint}`,
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.5 : 1,
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

@@ -406,6 +406,16 @@ export interface BacktestRequestBody {
   start_date: string; // YYYY-MM-DD
   end_date: string;
   initial_capital?: number;
+
+  // B045 — universe + risk overrides for this run. Each is optional; the
+  // backend persists the resolved snapshot in BacktestResult.run_config.
+  stock_filters?: StockFilters | null;
+  stock_symbols?: string[] | null;
+  stop_loss_pct?: number | null;
+  take_profit_pct?: number | null;
+  trailing_stop_pct?: number | null;
+  max_holding_days?: number | null;
+  max_positions?: number | null;
 }
 
 export interface BacktestJobPending {
