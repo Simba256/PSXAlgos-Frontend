@@ -975,19 +975,12 @@ function StrategySection({
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
-  const [showDrafts, setShowDrafts] = useSessionStorage<boolean>(
-    "psx:bt:show-drafts",
-    false,
-  );
   const [query, setQuery] = useState("");
 
-  const draftCount = strategies.filter((s) => s.status === "DRAFT").length;
-
-  // ACTIVE first, then PAUSED, then drafts (only when toggled on).
+  // ACTIVE first, then PAUSED, then DRAFT, then ARCHIVED.
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     const filtered = strategies.filter((s) => {
-      if (s.status === "DRAFT" && !showDrafts) return false;
       if (q && !s.name.toLowerCase().includes(q)) return false;
       return true;
     });
@@ -999,7 +992,7 @@ function StrategySection({
     };
     filtered.sort((a, b) => order[a.status] - order[b.status] || a.name.localeCompare(b.name));
     return filtered;
-  }, [strategies, showDrafts, query]);
+  }, [strategies, query]);
 
   const selected = strategies.find((s) => s.id === value) ?? null;
 
@@ -1195,35 +1188,6 @@ function StrategySection({
                 })
               )}
             </div>
-            {draftCount > 0 && (
-              <div
-                style={{
-                  borderTop: `1px solid ${T.outlineFaint}`,
-                  padding: "8px 12px",
-                  display: "flex",
-                  alignItems: "center",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setShowDrafts((v) => !v)}
-                  style={{
-                    appearance: "none",
-                    background: "transparent",
-                    border: "none",
-                    cursor: "pointer",
-                    fontFamily: T.fontMono,
-                    fontSize: 10.5,
-                    color: T.text3,
-                    letterSpacing: 0.6,
-                    textTransform: "uppercase",
-                    padding: 0,
-                  }}
-                >
-                  {showDrafts ? "hide" : "show"} drafts ({draftCount})
-                </button>
-              </div>
-            )}
           </div>
         )}
       </div>
