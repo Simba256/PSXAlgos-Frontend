@@ -142,20 +142,13 @@ export function BacktestIndexView({
             )
           }
           actions={
-            <>
-              <Link href="/strategies" style={{ textDecoration: "none" }}>
-                <Btn variant="ghost" size="sm">
-                  Strategies
+            hasStrategies ? (
+              <Link href="/backtest/new" style={{ textDecoration: "none" }}>
+                <Btn variant="primary" size="sm" icon={Icon.plus}>
+                  Run new backtest
                 </Btn>
               </Link>
-              {hasStrategies && (
-                <Link href="/backtest/new" style={{ textDecoration: "none" }}>
-                  <Btn variant="primary" size="sm" icon={Icon.plus}>
-                    Run new backtest
-                  </Btn>
-                </Link>
-              )}
-            </>
+            ) : null
           }
         />
 
