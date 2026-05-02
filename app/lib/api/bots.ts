@@ -129,11 +129,30 @@ export interface PerformanceResponse {
   equity_curve: PerformanceSnapshot[];
 }
 
+// Mirrors backend StockFilters (psxDataPortal/backend/app/schemas/strategy.py:321).
+export interface StockFilters {
+  sectors?: string[] | null;
+  min_price?: number | null;
+  max_price?: number | null;
+  min_volume?: number | null;
+  min_market_cap?: number | null;
+}
+
 export interface BotCreateBody {
   strategy_id: number;
   name: string;
   allocated_capital: number;
   max_positions?: number;
+
+  // Universe (B044). One or both; explicit symbols override filters.
+  stock_filters?: StockFilters | null;
+  stock_symbols?: string[] | null;
+
+  // Risk guardrails (B044)
+  stop_loss_pct?: number | null;
+  take_profit_pct?: number | null;
+  trailing_stop_pct?: number | null;
+  max_holding_days?: number | null;
 }
 
 export interface BotUpdateBody {

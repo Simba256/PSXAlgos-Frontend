@@ -53,6 +53,7 @@ export function UniverseAndRiskFields({
   onChange,
   availableSectors,
   availableSymbols,
+  showUniverse = true,
   showRisk = true,
   disabled = false,
 }: {
@@ -60,6 +61,9 @@ export function UniverseAndRiskFields({
   onChange: (next: UniverseAndRiskValue) => void;
   availableSectors: string[];
   availableSymbols: SymbolOption[];
+  /** Render the universe block (sectors / symbols / filters). Default true. */
+  showUniverse?: boolean;
+  /** Render the risk guardrail block. Default true. */
   showRisk?: boolean;
   disabled?: boolean;
 }) {
@@ -102,74 +106,81 @@ export function UniverseAndRiskFields({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
-      <Section
-        kicker="universe · sectors"
-        info="Pick one or more sectors. The strategy will scan every active stock in the chosen sectors."
-      >
-        <SectorChips
-          available={availableSectors}
-          selected={filters.sectors ?? []}
-          onToggle={toggleSector}
-          disabled={disabled}
-        />
-      </Section>
+      {showUniverse && (
+        <>
+          <Section
+            kicker="universe · sectors"
+            info="Pick one or more sectors. The strategy will scan every active stock in the chosen sectors."
+          >
+            <SectorChips
+              available={availableSectors}
+              selected={filters.sectors ?? []}
+              onToggle={toggleSector}
+              disabled={disabled}
+            />
+          </Section>
 
-      <Section
-        kicker="universe · explicit symbols"
-        info="Optional. Add tickers to lock the universe to those symbols only — overrides sectors and filters."
-      >
-        <SymbolPicker
-          available={availableSymbols}
-          selected={symbols}
-          onAdd={addSymbol}
-          onRemove={removeSymbol}
-          disabled={disabled}
-        />
-        {symbols.length === 0 && filters.sectors && filters.sectors.length > 0 && (
-          <FaintNote>using sectors above — no explicit allowlist</FaintNote>
-        )}
-      </Section>
+          <Section
+            kicker="universe · explicit symbols"
+            info="Optional. Add tickers to lock the universe to those symbols only — overrides sectors and filters."
+          >
+            <SymbolPicker
+              available={availableSymbols}
+              selected={symbols}
+              onAdd={addSymbol}
+              onRemove={removeSymbol}
+              disabled={disabled}
+            />
+            {symbols.length === 0 && filters.sectors && filters.sectors.length > 0 && (
+              <FaintNote>using sectors above — no explicit allowlist</FaintNote>
+            )}
+          </Section>
 
-      <Section kicker="universe · filters" info="Optional numeric guardrails. Leave blank to skip.">
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-            gap: 14,
-            maxWidth: 640,
-          }}
-        >
-          <NumberInput
-            label="min price (PKR)"
-            value={filters.min_price ?? null}
-            onChange={(v) => patchFilters({ min_price: v })}
-            disabled={disabled}
-            min={0}
-          />
-          <NumberInput
-            label="max price (PKR)"
-            value={filters.max_price ?? null}
-            onChange={(v) => patchFilters({ max_price: v })}
-            disabled={disabled}
-            min={0}
-          />
-          <NumberInput
-            label="min daily volume"
-            value={filters.min_volume ?? null}
-            onChange={(v) => patchFilters({ min_volume: v })}
-            disabled={disabled}
-            min={0}
-            integer
-          />
-          <NumberInput
-            label="min market cap"
-            value={filters.min_market_cap ?? null}
-            onChange={(v) => patchFilters({ min_market_cap: v })}
-            disabled={disabled}
-            min={0}
-          />
-        </div>
-      </Section>
+          <Section
+            kicker="universe · filters"
+            info="Optional numeric guardrails. Leave blank to skip."
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                gap: 14,
+                maxWidth: 640,
+              }}
+            >
+              <NumberInput
+                label="min price (PKR)"
+                value={filters.min_price ?? null}
+                onChange={(v) => patchFilters({ min_price: v })}
+                disabled={disabled}
+                min={0}
+              />
+              <NumberInput
+                label="max price (PKR)"
+                value={filters.max_price ?? null}
+                onChange={(v) => patchFilters({ max_price: v })}
+                disabled={disabled}
+                min={0}
+              />
+              <NumberInput
+                label="min daily volume"
+                value={filters.min_volume ?? null}
+                onChange={(v) => patchFilters({ min_volume: v })}
+                disabled={disabled}
+                min={0}
+                integer
+              />
+              <NumberInput
+                label="min market cap"
+                value={filters.min_market_cap ?? null}
+                onChange={(v) => patchFilters({ min_market_cap: v })}
+                disabled={disabled}
+                min={0}
+              />
+            </div>
+          </Section>
+        </>
+      )}
 
       {showRisk && (
         <Section

@@ -2,32 +2,33 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
 import { Btn, DotRow, EditorialHeader, Kicker, Ribbon } from "@/components/atoms";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
+import {
+  EMPTY_UNIVERSE_AND_RISK,
+  UniverseAndRiskFields,
+  type UniverseAndRiskValue,
+} from "@/components/universe-and-risk-fields";
 import type { BotResponse } from "@/lib/api/bots";
 import type { StrategyResponse } from "@/lib/api/strategies";
+import { getAllStocks, type StockResponse } from "@/lib/api/stocks";
 
 interface StrategyPreview {
   name: string;
-  // Last-backtest summary the user picked the strategy for. null when the
-  // strategy has never been backtested — preview shows "—" then.
   totalReturnPct: number | null;
   sharpe: number | null;
   status: StrategyResponse["status"];
 }
 
+const DEFAULT_NAME = `Bot ${new Date().toISOString().slice(0, 10)}`;
+
 export default function BotWizardPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
-  // strategyId is read from ?strategy_id=… on mount. Reading via
-  // window.location instead of useSearchParams keeps the page out of the
-  // Next 16 CSR-bailout error if it ever ends up prerendered.
   const [strategyId, setStrategyId] = useState<number | null>(null);
-  // Resolved strategy details for the wizard preview. Null while loading,
-  // and stays null if the fetch fails — preview falls back to "—" sentinels.
   const [strategy, setStrategy] = useState<StrategyPreview | null>(null);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -36,6 +37,34 @@ export default function BotWizardPage() {
   const { bp, isMobile } = useBreakpoint();
   const padX = pick(bp, PAD.page);
 
+  // Wizard form state — single source of truth for all three stages.
+  const [name, setName] = useState(DEFAULT_NAME);
+  const [allocatedCapital, setAllocatedCapital] = useState<number>(1_000_000);
+  const [maxPositions, setMaxPositions] = useState<number>(5);
+  const [universeAndRisk, setUniverseAndRisk] = useState<UniverseAndRiskValue>(
+    EMPTY_UNIVERSE_AND_RISK,
+  );
+
+  // PSX stock universe — fetched once on mount, used for sector + symbol pickers.
+  const [stocks, setStocks] = useState<StockResponse[]>([]);
+  const availableSectors = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of stocks) {
+      if (s.sector_name && s.is_active) set.add(s.sector_name);
+    }
+    return Array.from(set).sort();
+  }, [stocks]);
+  const availableSymbols = useMemo(
+    () =>
+      stocks
+        .filter((s) => s.is_active)
+        .map((s) => ({ symbol: s.symbol, name: s.name }))
+        .sort((a, b) => a.symbol.localeCompare(b.symbol)),
+    [stocks],
+  );
+
+  // strategyId from query string. Reading via window keeps the page out of
+  // the Next 16 CSR-bailout error if it's ever prerendered.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const raw = new URL(window.location.href).searchParams.get("strategy_id");
@@ -44,8 +73,7 @@ export default function BotWizardPage() {
     if (Number.isFinite(n) && n > 0) setStrategyId(n);
   }, []);
 
-  // Fetch the strategy once we have an id. Failures here are non-fatal: the
-  // wizard still works against the raw id, the preview just shows "—".
+  // Fetch strategy preview. Failures here are non-fatal (preview shows "—").
   useEffect(() => {
     if (!strategyId) return;
     let cancelled = false;
@@ -68,7 +96,7 @@ export default function BotWizardPage() {
           status: s.status,
         });
       } catch {
-        // swallow — preview will use "—" placeholders
+        // swallow
       }
     })();
     return () => {
@@ -76,10 +104,30 @@ export default function BotWizardPage() {
     };
   }, [strategyId]);
 
+  // Load PSX universe once.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const all = await getAllStocks().catch(() => []);
+      if (!cancelled) setStocks(all);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function onLaunch() {
     setSubmitErr(null);
     if (!strategyId) {
       setSubmitErr("Open a strategy and use 'Spin up bot' to bind one.");
+      return;
+    }
+    if (!name.trim()) {
+      setSubmitErr("Give the bot a name.");
+      return;
+    }
+    if (!Number.isFinite(allocatedCapital) || allocatedCapital <= 0) {
+      setSubmitErr("Allocated capital must be greater than zero.");
       return;
     }
     let bot: BotResponse;
@@ -89,11 +137,15 @@ export default function BotWizardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           strategy_id: strategyId,
-          // Wizard shows hardcoded values for the alpha. Real edits land in
-          // the dashboard when the bot is paused.
-          name: "Bot " + new Date().toISOString().slice(0, 10),
-          allocated_capital: 1_000_000,
-          max_positions: 5,
+          name: name.trim(),
+          allocated_capital: allocatedCapital,
+          max_positions: maxPositions,
+          stock_filters: universeAndRisk.stock_filters,
+          stock_symbols: universeAndRisk.stock_symbols,
+          stop_loss_pct: universeAndRisk.stop_loss_pct ?? null,
+          take_profit_pct: universeAndRisk.take_profit_pct ?? null,
+          trailing_stop_pct: universeAndRisk.trailing_stop_pct ?? null,
+          max_holding_days: universeAndRisk.max_holding_days ?? null,
         }),
       });
       if (!res.ok) {
@@ -112,6 +164,7 @@ export default function BotWizardPage() {
     }
     startTransition(() => router.push(`/bots/${bot.id}`));
   }
+
   return (
     <AppFrame route="/bots">
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -173,8 +226,8 @@ export default function BotWizardPage() {
         >
           {(
             [
-              ["01", "Capital", "starting balance"],
-              ["02", "Sizing", "how much per trade"],
+              ["01", "Capital", "starting balance & sizing"],
+              ["02", "Universe", "what to scan"],
               ["03", "Safety rails", "when to halt"],
             ] as const
           ).map(([n, t, d], i) => {
@@ -255,11 +308,43 @@ export default function BotWizardPage() {
           }}
         >
           <div>
-            {step === 1 && <Step1 />}
-            {step === 2 && <Step2 />}
-            {step === 3 && <Step3 />}
+            {step === 1 && (
+              <CapitalStep
+                name={name}
+                onName={setName}
+                allocatedCapital={allocatedCapital}
+                onAllocatedCapital={setAllocatedCapital}
+                maxPositions={maxPositions}
+                onMaxPositions={setMaxPositions}
+              />
+            )}
+            {step === 2 && (
+              <UniverseAndRiskFields
+                value={universeAndRisk}
+                onChange={setUniverseAndRisk}
+                availableSectors={availableSectors}
+                availableSymbols={availableSymbols}
+                showRisk={false}
+              />
+            )}
+            {step === 3 && (
+              <UniverseAndRiskFields
+                value={universeAndRisk}
+                onChange={setUniverseAndRisk}
+                availableSectors={availableSectors}
+                availableSymbols={availableSymbols}
+                showUniverse={false}
+              />
+            )}
           </div>
-          <Preview step={step} strategy={strategy} />
+          <Preview
+            step={step}
+            strategy={strategy}
+            name={name}
+            allocatedCapital={allocatedCapital}
+            maxPositions={maxPositions}
+            value={universeAndRisk}
+          />
         </div>
 
         <div
@@ -321,64 +406,147 @@ export default function BotWizardPage() {
   );
 }
 
-function Step1() {
+function CapitalStep({
+  name,
+  onName,
+  allocatedCapital,
+  onAllocatedCapital,
+  maxPositions,
+  onMaxPositions,
+}: {
+  name: string;
+  onName: (v: string) => void;
+  allocatedCapital: number;
+  onAllocatedCapital: (v: number) => void;
+  maxPositions: number;
+  onMaxPositions: (v: number) => void;
+}) {
   const T = useT();
+  const presets = [100_000, 500_000, 1_000_000, 5_000_000, 10_000_000];
+
   return (
-    <>
-      <Kicker>starting capital</Kicker>
-      <h3
-        style={{
-          fontFamily: T.fontHead,
-          fontSize: 24,
-          fontWeight: 500,
-          margin: "10px 0 24px",
-          letterSpacing: -0.4,
-        }}
-      >
-        How much paper money does this bot start with?
-      </h3>
-      <div
-        style={{
-          fontFamily: T.fontHead,
-          fontSize: "clamp(40px, 10vw, 64px)",
-          fontWeight: 500,
-          letterSpacing: -1.4,
-          color: T.text,
-          lineHeight: 1.05,
-        }}
-      >
-        <span
+    <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+      <div>
+        <Kicker>bot name</Kicker>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => onName(e.target.value)}
+          placeholder="e.g. Momentum · live"
           style={{
-            color: T.text3,
-            fontSize: "clamp(18px, 4.5vw, 28px)",
-            marginRight: 10,
+            marginTop: 10,
+            background: T.surface,
+            color: T.text,
+            border: "none",
+            boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+            borderRadius: 6,
+            padding: "10px 14px",
+            fontFamily: T.fontSans,
+            fontSize: 15,
+            width: "100%",
+            maxWidth: 420,
+          }}
+        />
+      </div>
+
+      <div>
+        <Kicker info="Paper money the bot starts with. Used for sizing each trade.">
+          starting capital · PKR
+        </Kicker>
+        <div
+          style={{
+            marginTop: 12,
+            fontFamily: T.fontHead,
+            fontSize: "clamp(40px, 10vw, 64px)",
+            fontWeight: 500,
+            letterSpacing: -1.4,
+            color: T.text,
+            lineHeight: 1.05,
           }}
         >
-          PKR
-        </span>
-        1,000,000
-      </div>
-      <div style={{ marginTop: 16, display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {(["100K", "500K", "1M", "5M", "10M"] as const).map((p, i) => (
-          <span
-            key={p}
-            style={{
-              fontFamily: T.fontMono,
-              fontSize: 11,
-              padding: "6px 14px",
-              borderRadius: 999,
-              background: i === 2 ? T.primary : "transparent",
-              color: i === 2 ? "#fff" : T.text2,
-              boxShadow: `0 0 0 1px ${i === 2 ? T.primary : T.outlineFaint}`,
+          <input
+            type="number"
+            value={allocatedCapital}
+            min={1}
+            step={10000}
+            onChange={(e) => {
+              const n = parseFloat(e.target.value);
+              if (Number.isFinite(n) && n > 0) onAllocatedCapital(n);
             }}
-          >
-            {p}
-          </span>
-        ))}
+            style={{
+              background: "transparent",
+              color: T.text,
+              border: "none",
+              outline: "none",
+              padding: 0,
+              fontFamily: T.fontHead,
+              fontSize: "inherit",
+              fontWeight: 500,
+              letterSpacing: -1.4,
+              width: "100%",
+              maxWidth: 360,
+            }}
+          />
+        </div>
+        <div style={{ marginTop: 14, display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {presets.map((amount) => {
+            const active = allocatedCapital === amount;
+            const label = amount >= 1_000_000 ? `${amount / 1_000_000}M` : `${amount / 1000}K`;
+            return (
+              <button
+                key={amount}
+                type="button"
+                onClick={() => onAllocatedCapital(amount)}
+                aria-pressed={active}
+                style={{
+                  fontFamily: T.fontMono,
+                  fontSize: 11,
+                  padding: "6px 14px",
+                  borderRadius: 999,
+                  background: active ? T.primary : "transparent",
+                  color: active ? "#fff" : T.text2,
+                  border: `1px solid ${active ? T.primary : T.outlineFaint}`,
+                  cursor: "pointer",
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
       </div>
+
+      <div>
+        <Kicker info="Cap on how many positions the bot can hold open at the same time.">
+          max concurrent positions
+        </Kicker>
+        <input
+          type="number"
+          value={maxPositions}
+          min={1}
+          max={20}
+          step={1}
+          onChange={(e) => {
+            const n = parseInt(e.target.value, 10);
+            if (Number.isFinite(n) && n >= 1 && n <= 20) onMaxPositions(n);
+          }}
+          style={{
+            marginTop: 10,
+            background: T.surface,
+            color: T.text,
+            border: "none",
+            boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+            borderRadius: 6,
+            padding: "10px 14px",
+            fontFamily: T.fontMono,
+            fontSize: 14,
+            width: 140,
+          }}
+        />
+      </div>
+
       <div
         style={{
-          marginTop: 32,
           padding: 14,
           background: T.surfaceLow,
           borderRadius: 6,
@@ -387,212 +555,57 @@ function Step1() {
           lineHeight: 1.6,
         }}
       >
-        This is paper money. No real broker is connected. The bot simulates a portfolio so you can
-        see how the strategy would have performed.
+        Paper money — no real broker is connected. The bot simulates a portfolio so you can see
+        how the strategy would have performed.
       </div>
-    </>
-  );
-}
-
-function Step2() {
-  const T = useT();
-  return (
-    <>
-      <Kicker>position sizing</Kicker>
-      <h3
-        style={{
-          fontFamily: T.fontHead,
-          fontSize: 24,
-          fontWeight: 500,
-          margin: "10px 0 24px",
-          letterSpacing: -0.4,
-        }}
-      >
-        How big is each trade?
-      </h3>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 18 }}>
-        <div>
-          <div
-            style={{
-              fontFamily: T.fontMono,
-              fontSize: 10.5,
-              color: T.text3,
-              textTransform: "uppercase",
-              letterSpacing: 0.6,
-              marginBottom: 6,
-            }}
-          >
-            Position size
-          </div>
-          <div style={{ fontFamily: T.fontHead, fontSize: 38, fontWeight: 500 }}>2.0%</div>
-          <div style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3, marginTop: 4 }}>
-            ≈ PKR 20,000 per trade
-          </div>
-        </div>
-        <div>
-          <div
-            style={{
-              fontFamily: T.fontMono,
-              fontSize: 10.5,
-              color: T.text3,
-              textTransform: "uppercase",
-              letterSpacing: 0.6,
-              marginBottom: 6,
-            }}
-          >
-            Max concurrent
-          </div>
-          <div style={{ fontFamily: T.fontHead, fontSize: 38, fontWeight: 500 }}>
-            5 <span style={{ fontSize: 16, color: T.text3 }}>positions</span>
-          </div>
-          <div style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3, marginTop: 4 }}>
-            max 10% exposure
-          </div>
-        </div>
-      </div>
-
-      <div style={{ marginTop: 32 }}>
-        <div
-          style={{
-            fontFamily: T.fontMono,
-            fontSize: 10.5,
-            color: T.text3,
-            textTransform: "uppercase",
-            letterSpacing: 0.6,
-            marginBottom: 10,
-          }}
-        >
-          Sizing method
-        </div>
-        {(
-          [
-            ["Fixed %", "Always 2% of current equity", true],
-            ["Kelly", "Scale by historical edge", false],
-            ["Fixed PKR", "Always PKR 20,000 per trade", false],
-          ] as const
-        ).map(([n, d, sel]) => (
-          <div
-            key={n}
-            style={{
-              padding: "12px 14px",
-              background: sel ? T.surfaceLow : "transparent",
-              borderTop: `1px solid ${T.outlineFaint}`,
-              display: "grid",
-              gridTemplateColumns: "20px 1fr",
-              gap: 12,
-              alignItems: "center",
-            }}
-          >
-            <span
-              style={{
-                width: 14,
-                height: 14,
-                borderRadius: 999,
-                background: sel ? T.primary : "transparent",
-                boxShadow: `inset 0 0 0 1.5px ${sel ? T.primary : T.outline}`,
-              }}
-            />
-            <div>
-              <div style={{ fontFamily: T.fontHead, fontSize: 13.5, fontWeight: 500 }}>{n}</div>
-              <div style={{ fontSize: 11.5, color: T.text3, marginTop: 2 }}>{d}</div>
-            </div>
-          </div>
-        ))}
-        <div style={{ height: 1, background: T.outlineFaint }} />
-      </div>
-    </>
-  );
-}
-
-function Step3() {
-  const T = useT();
-  return (
-    <>
-      <Kicker color={T.warning}>safety rails</Kicker>
-      <h3
-        style={{
-          fontFamily: T.fontHead,
-          fontSize: 24,
-          fontWeight: 500,
-          margin: "10px 0 8px",
-          letterSpacing: -0.4,
-        }}
-      >
-        When should the bot stop itself?
-      </h3>
-      <p style={{ fontSize: 13, color: T.text3, lineHeight: 1.55, marginBottom: 20, maxWidth: 480 }}>
-        These are hard caps. Crossing one pauses or halts the bot — you&apos;ll get a notification
-        and can restart after review.
-      </p>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 16 }}>
-        {(
-          [
-            ["Max drawdown", "−15%", T.loss, "Pause bot if equity drops 15% from peak"],
-            ["Daily loss cap", "−3%", T.loss, "Halt for the day, resume tomorrow"],
-            ["Trading window", "10:00–15:15", T.text2, "PSX market hours, PKT"],
-            ["Kill-switch", "On", T.gain, "One-tap stop-all from dashboard"],
-          ] as const
-        ).map(([l, v, c, d]) => (
-          <div
-            key={l}
-            style={{
-              padding: 16,
-              background: T.surfaceLow,
-              borderRadius: 6,
-              border: `1px solid ${T.outlineFaint}`,
-            }}
-          >
-            <div
-              style={{
-                fontFamily: T.fontMono,
-                fontSize: 10.5,
-                color: T.text3,
-                textTransform: "uppercase",
-                letterSpacing: 0.6,
-              }}
-            >
-              {l}
-            </div>
-            <div
-              style={{
-                fontFamily: T.fontHead,
-                fontSize: 26,
-                fontWeight: 500,
-                color: c,
-                marginTop: 4,
-              }}
-            >
-              {v}
-            </div>
-            <div style={{ fontSize: 11.5, color: T.text3, marginTop: 6, lineHeight: 1.4 }}>{d}</div>
-          </div>
-        ))}
-      </div>
-    </>
+    </div>
   );
 }
 
 function Preview({
   step,
   strategy,
+  name,
+  allocatedCapital,
+  maxPositions,
+  value,
 }: {
   step: 1 | 2 | 3;
   strategy: StrategyPreview | null;
+  name: string;
+  allocatedCapital: number;
+  maxPositions: number;
+  value: UniverseAndRiskValue;
 }) {
   const T = useT();
   const fmtPct = (n: number | null): string =>
     n === null ? "—" : `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+  const fmtPctOrDash = (n: number | null | undefined): string =>
+    n == null ? "—" : `${n}%`;
+  const fmtNumOrDash = (n: number | null | undefined): string =>
+    n == null ? "—" : String(n);
   const backtestColor =
     strategy?.totalReturnPct == null
       ? T.text3
       : strategy.totalReturnPct >= 0
       ? T.gain
       : T.loss;
+
+  const filters = value.stock_filters ?? {};
+  const sectors = filters.sectors ?? [];
+  const symbols = value.stock_symbols ?? [];
+  const universeSummary = (() => {
+    if (symbols.length > 0) return `${symbols.length} explicit ticker${symbols.length === 1 ? "" : "s"}`;
+    if (sectors.length > 0)
+      return sectors.length === 1 ? sectors[0] : `${sectors.length} sectors`;
+    return "—";
+  })();
+
   return (
     <div>
       <Ribbon kicker="preview · your bot" />
       <div style={{ marginTop: 14 }}>
-        <DotRow label="Name" value="Momentum · live" bold />
+        <DotRow label="Name" value={name || "—"} bold />
         <DotRow
           label="Strategy"
           value={strategy?.name ?? "—"}
@@ -608,15 +621,35 @@ function Preview({
           value={strategy?.sharpe == null ? "—" : strategy.sharpe.toFixed(2)}
           color={strategy?.sharpe == null ? T.text3 : T.text2}
         />
-        <DotRow label="Starting capital" value="PKR 1,000,000" />
-        <DotRow label="Position size" value="2% fixed" />
-        <DotRow label="Max concurrent" value="5 positions" />
-        <DotRow label="Max drawdown" value="−15%" color={step >= 3 ? T.loss : T.text3} />
-        <DotRow label="Daily loss cap" value="−3%" color={step >= 3 ? T.loss : T.text3} />
         <DotRow
-          label="Trading window"
-          value={step >= 3 ? "10:00–15:15 PKT" : "—"}
-          color={step >= 3 ? T.text2 : T.text3}
+          label="Starting capital"
+          value={`PKR ${allocatedCapital.toLocaleString()}`}
+        />
+        <DotRow label="Max concurrent" value={`${maxPositions} positions`} />
+        <DotRow
+          label="Universe"
+          value={universeSummary}
+          color={universeSummary === "—" ? T.text3 : T.text2}
+        />
+        <DotRow
+          label="Stop loss"
+          value={fmtPctOrDash(value.stop_loss_pct)}
+          color={value.stop_loss_pct != null && step >= 3 ? T.loss : T.text3}
+        />
+        <DotRow
+          label="Take profit"
+          value={fmtPctOrDash(value.take_profit_pct)}
+          color={value.take_profit_pct != null && step >= 3 ? T.gain : T.text3}
+        />
+        <DotRow
+          label="Trailing stop"
+          value={fmtPctOrDash(value.trailing_stop_pct)}
+          color={value.trailing_stop_pct != null && step >= 3 ? T.text2 : T.text3}
+        />
+        <DotRow
+          label="Max holding days"
+          value={fmtNumOrDash(value.max_holding_days)}
+          color={value.max_holding_days != null && step >= 3 ? T.text2 : T.text3}
         />
       </div>
       {step === 3 && (
