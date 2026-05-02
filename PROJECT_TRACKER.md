@@ -1,6 +1,6 @@
 # Project Tracker
 
-> Last updated: 2026-05-02 (backend — B047 wires deploy-time universe into the signal scanner, resolving the deferred decision)
+> Last updated: 2026-05-02 (frontend — Slice 1: shared `<UniverseAndRiskFields>` component built; reusable across `/bots/new`, `/backtest/new`, deploy modal)
 
 ## Project Summary
 PSX Algos — marketing site + in-app experience for a no-code strategy authoring, backtesting, and paper-trading product for the Pakistan Stock Exchange. Next.js 16 App Router, inline-style React UI.
@@ -9,7 +9,13 @@ PSX Algos — marketing site + in-app experience for a no-code strategy authorin
 **Status**: Active — backend disassociation shipped (B044/B045/B046) and signal scanner universe wired up at deploy time (B047). Frontend UI for the new bot/backtest universe + risk pickers, plus the deploy-with-universe modal, is the next session.
 
 ## In Progress
-- [ ] **Frontend wiring for B044/B045/B046/B047** — `/backtest/new` needs a `<UniverseAndRiskFields>` section in place of the current `<UniverseNote>` placeholder; `/bots/new` needs the same picker; `/strategies/new` wizard drops Stage 2 entirely (universe + risk + max concurrent move out); strategy editor universe / sizing / risk drawers can be removed. **B047 added**: deploy modal needs to collect `stock_filters` and/or `stock_symbols` and POST them in the deploy request body (without a body the strategy deploys with NULL universe → zero signals fire). Re-deploying overwrites universe (no need to undeploy first). Frontend was deferred per user direction during B044-B047.
+- [ ] **Frontend wiring for B044/B045/B046/B047 — sliced into 6 parts.**
+  - [x] **Slice 1**: shared `<UniverseAndRiskFields>` component at `app/components/universe-and-risk-fields.tsx` — sectors as toggle-chips, explicit symbols as searchable input + chip list, optional numeric filters (min/max price, min volume, min market cap), optional risk block (`showRisk` prop, default true) with stop-loss / take-profit / trailing-stop / max holding days / max concurrent positions. Mirrors `BacktestRequest` / `BotCreate` / `DeployRequest` exactly. `EMPTY_UNIVERSE_AND_RISK` exported as the seed value. Pure UI — parent fetches `/stocks` and passes derived `availableSectors[]` + `availableSymbols[]` down. Inline symbol picker (not Combobox) so we can distinguish "user typing" from "user committed a symbol". `tsc --noEmit` + `npm run build` clean.
+  - [ ] Slice 2: wire into `/bots/new` (B044) — replaces the current hardcoded Step 1/2/3 mocks with real state + POST `stock_filters` / `stock_symbols` / risk fields.
+  - [ ] Slice 3: wire into `/backtest/new` (B045) — replace `<UniverseNote>` placeholder; POST these in the backtest start request.
+  - [ ] Slice 4: deploy modal (B047) — collect `stock_filters` / `stock_symbols` and POST in deploy body. Without this wiring the strategy deploys with NULL universe → zero signals fire.
+  - [ ] Slice 5: `/strategies/new` wizard drops Stage 2 entirely (universe + risk + max concurrent moved out).
+  - [ ] Slice 6: strategy editor universe / sizing / risk drawers removed.
 - [ ] **Backend wiring — Phase 4: production cutover** — Vercel project, env vars (NEXTAUTH_SECRET must match Railway byte-for-byte), CORS origin add to backend, DNS, decommission old project. No frontend code changes here.
 
 ## Upcoming / Planned
