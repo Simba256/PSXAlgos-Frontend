@@ -90,7 +90,7 @@ export function Segmented<V extends string>({
               appearance: "none",
               background: "transparent",
               border: "none",
-              padding: "7px 14px",
+              padding: "5px 12px",
               cursor: disabled ? "not-allowed" : "pointer",
               opacity: disabled ? 0.55 : 1,
               color: active ? T.text : T.text2,
@@ -99,11 +99,11 @@ export function Segmented<V extends string>({
               fontWeight: active ? 500 : 400,
               letterSpacing: 0.2,
               transition: "color 200ms cubic-bezier(0.23, 1, 0.32, 1)",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 2,
-              minWidth: 92,
+              display: "inline-flex",
+              alignItems: "baseline",
+              gap: 6,
+              minWidth: 0,
+              whiteSpace: "nowrap",
             }}
           >
             <span>{opt.label}</span>
@@ -111,13 +111,13 @@ export function Segmented<V extends string>({
               <span
                 style={{
                   fontFamily: T.fontMono,
-                  fontSize: 9.5,
-                  color: active ? T.text3 : T.text3,
+                  fontSize: 10,
+                  color: T.text3,
                   letterSpacing: 0.4,
                   textTransform: "uppercase",
                 }}
               >
-                {opt.hint}
+                · {opt.hint}
               </span>
             )}
           </button>
