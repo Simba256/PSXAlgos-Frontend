@@ -9,6 +9,7 @@ import { useBreakpoint, PAD, pick } from "./responsive";
 import { LogoMark } from "./logo";
 import { AuthModal } from "./auth-modal";
 import { UserMenu } from "./user-menu";
+import { NotificationBell } from "./notifications/notification-bell";
 
 type MarketingItem =
   | { kind: "link"; href: string; label: string }
@@ -206,6 +207,7 @@ export function TopNav({ route }: { route?: string }) {
                 </span>
               </span>
             )}
+            <NotificationBell size={26} />
             <UserMenu size={26} />
           </div>
         )}
