@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT, type Tokens } from "@/components/theme";
 import { Btn, DotRow, EditorialHeader, Kicker, Ribbon } from "@/components/atoms";
@@ -169,12 +169,26 @@ function presetToEntryRules(key: PresetKey): EntryRules {
   return { conditions: { kind: "group", logic: "AND", conditions } };
 }
 
+// Slug preview only — the backend assigns the canonical strategy_id on create
+// and returns it. We show this so the user has a sense of what the URL will
+// look like; we don't send it.
+function slugify(input: string): string {
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40) || "untitled";
+}
+
 // Post-B046 the strategy carries only what defines *the rules*. Universe
 // and risk live on the bot/backtest/deploy request, not the strategy.
-function buildCreateBody(preset: Preset): StrategyCreateBody {
+function buildCreateBody(preset: Preset, name: string, description: string): StrategyCreateBody {
+  const trimmedName = name.trim() || preset.defaultName;
+  const trimmedDesc = description.trim();
   return {
-    name: preset.defaultName,
-    description: `${preset.desc}.`,
+    name: trimmedName,
+    description: trimmedDesc || `${preset.desc}.`,
     entry_rules: presetToEntryRules(preset.key),
     exit_rules: {},
   };
@@ -192,10 +206,19 @@ export default function WizardPage() {
   const padX = pick(bp, PAD.page);
 
   const preset = PRESETS.find((p) => p.key === presetKey) ?? PRESETS[0];
+  const [name, setName] = useState<string>(preset.defaultName);
+  const [description, setDescription] = useState<string>(`${preset.desc}.`);
+  // Reset name/description whenever the user picks a different preset, so the
+  // identity step starts from the new preset's defaults rather than stale text
+  // from the previous one.
+  useEffect(() => {
+    setName(preset.defaultName);
+    setDescription(`${preset.desc}.`);
+  }, [preset.key, preset.defaultName, preset.desc]);
 
   async function onCreate() {
     setSubmitErr(null);
-    const body = buildCreateBody(preset);
+    const body = buildCreateBody(preset, name, description);
     let result: StrategyCreateResponse;
     try {
       const res = await fetch("/api/strategies", {
@@ -359,6 +382,10 @@ export default function WizardPage() {
               preset={preset}
               afterKey={afterKey}
               onAfter={setAfterKey}
+              name={name}
+              onName={setName}
+              description={description}
+              onDescription={setDescription}
             />
           )}
         </div>
@@ -567,10 +594,18 @@ function Step2({
   preset,
   afterKey,
   onAfter,
+  name,
+  onName,
+  description,
+  onDescription,
 }: {
   preset: Preset;
   afterKey: AfterKey;
   onAfter: (k: AfterKey) => void;
+  name: string;
+  onName: (v: string) => void;
+  description: string;
+  onDescription: (v: string) => void;
 }) {
   const T = useT();
   const { bp } = useBreakpoint();
@@ -578,6 +613,8 @@ function Step2({
     { key: "editor", title: "Open editor", desc: "Fine-tune rules and logic" },
     { key: "backtest", title: "Run backtest", desc: "Test on last 12 months" },
   ];
+  const slug = slugify(name);
+  const summaryName = name.trim() || preset.defaultName;
   return (
     <div
       style={{
@@ -617,23 +654,32 @@ function Step2({
           >
             Name
           </div>
-          <div
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => onName(e.target.value.slice(0, 50))}
+            maxLength={50}
+            placeholder={preset.defaultName}
+            aria-label="Strategy name"
             style={{
+              width: "100%",
               fontFamily: T.fontHead,
               fontSize: 36,
               fontWeight: 500,
               letterSpacing: -0.6,
               padding: "10px 0",
+              border: "none",
               borderBottom: `2px solid ${T.primary}`,
+              borderRadius: 0,
+              background: "transparent",
               color: T.text,
+              outline: "none",
+              caretColor: T.primary,
             }}
-          >
-            {preset.defaultName}
-            <span style={{ color: T.primary, animation: "psx-blink 1s infinite" }}>|</span>
-          </div>
+          />
           <div style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3, marginTop: 6 }}>
-            {preset.defaultName.length} / 50 · ID will be{" "}
-            <span style={{ color: T.text2 }}>{preset.defaultId}</span>
+            {name.length} / 50 · ID will be{" "}
+            <span style={{ color: T.text2 }}>{slug}</span>
           </div>
         </div>
 
@@ -653,22 +699,28 @@ function Step2({
               (optional)
             </span>
           </div>
-          <div
+          <textarea
+            value={description}
+            onChange={(e) => onDescription(e.target.value)}
+            placeholder={`${preset.desc}. Universe and risk are picked when you deploy or backtest.`}
+            aria-label="Strategy description"
+            rows={3}
             style={{
+              width: "100%",
               padding: "12px 14px",
               background: T.surfaceLow,
               borderRadius: 6,
               border: `1px solid ${T.outlineFaint}`,
+              fontFamily: "inherit",
               fontSize: 13,
               lineHeight: 1.6,
-              color: T.text2,
+              color: T.text,
               minHeight: 72,
+              resize: "vertical",
+              outline: "none",
+              caretColor: T.primary,
             }}
-          >
-            {preset.key === "mean_reversion"
-              ? "Buys oversold names when RSI dips below 30 with above-average volume. Exits on signal-driven rules or guardrails set at deploy / backtest time."
-              : `${preset.desc}. Universe and risk are picked when you deploy or backtest.`}
-          </div>
+          />
         </div>
 
         <div style={{ marginTop: 28 }}>
@@ -739,7 +791,7 @@ function Step2({
       <div>
         <Ribbon kicker="final summary" />
         <div style={{ marginTop: 14 }}>
-          <DotRow label="Name" value={preset.defaultName} bold />
+          <DotRow label="Name" value={summaryName} bold />
           <DotRow label="Type" value={preset.type} />
           <DotRow label="Base rule" value={preset.baseRule} />
           <DotRow label="Confirmation" value={preset.confirmation} />
