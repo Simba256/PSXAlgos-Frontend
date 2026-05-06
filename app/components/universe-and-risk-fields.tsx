@@ -24,8 +24,11 @@ export interface StockFilters {
 }
 
 export interface UniverseAndRiskValue {
-  // Universe — one or both. An explicit symbol allowlist takes precedence
-  // over filters in the backend engine when both are set.
+  // Universe — sectors and explicit symbols are MERGED via UNION on the
+  // backend (see app/services/universe.py, B048):
+  //     universe = ((sectors ∩ is_active) ∪ explicit) ∩ numeric_filters
+  // Numeric filters apply uniformly to both branches. Explicit symbols
+  // bypass `is_active` so backtests can include delisted names.
   stock_filters: StockFilters | null;
   stock_symbols: string[] | null;
 
@@ -110,7 +113,7 @@ export function UniverseAndRiskFields({
         <>
           <Section
             kicker="universe · sectors"
-            info="Pick one or more sectors. The strategy will scan every active stock in the chosen sectors."
+            info="Pick one or more sectors. Active stocks in those sectors join the universe."
           >
             <SectorChips
               available={availableSectors}
@@ -122,7 +125,7 @@ export function UniverseAndRiskFields({
 
           <Section
             kicker="universe · explicit symbols"
-            info="Optional. Add tickers to lock the universe to those symbols only — overrides sectors and filters."
+            info="Optional. Tickers added here are merged with the sector list — they don't replace it. Use this to add specific stocks (including delisted names for backtests) on top of a sector pick."
           >
             <SymbolPicker
               available={availableSymbols}
@@ -132,13 +135,18 @@ export function UniverseAndRiskFields({
               disabled={disabled}
             />
             {symbols.length === 0 && filters.sectors && filters.sectors.length > 0 && (
-              <FaintNote>using sectors above — no explicit allowlist</FaintNote>
+              <FaintNote>sectors only — no explicit tickers added</FaintNote>
+            )}
+            {symbols.length > 0 && filters.sectors && filters.sectors.length > 0 && (
+              <FaintNote>
+                universe = sectors ∪ explicit tickers (numeric filters apply to both)
+              </FaintNote>
             )}
           </Section>
 
           <Section
             kicker="universe · filters"
-            info="Optional numeric guardrails. Leave blank to skip."
+            info="Optional numeric guardrails. Apply to both sector matches and explicit tickers. Leave blank to skip."
           >
             <div
               style={{

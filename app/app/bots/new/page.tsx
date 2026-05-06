@@ -595,10 +595,17 @@ function Preview({
   const sectors = filters.sectors ?? [];
   const symbols = value.stock_symbols ?? [];
   const universeSummary = (() => {
-    if (symbols.length > 0) return `${symbols.length} explicit ticker${symbols.length === 1 ? "" : "s"}`;
-    if (sectors.length > 0)
-      return sectors.length === 1 ? sectors[0] : `${sectors.length} sectors`;
-    return "—";
+    // Sectors and explicit tickers compose under union semantics on the
+    // backend (B048) — both can be set and they're merged, not exclusive.
+    const parts: string[] = [];
+    if (sectors.length > 0) {
+      parts.push(sectors.length === 1 ? sectors[0] : `${sectors.length} sectors`);
+    }
+    if (symbols.length > 0) {
+      parts.push(`${symbols.length} ticker${symbols.length === 1 ? "" : "s"}`);
+    }
+    if (parts.length === 0) return "—";
+    return parts.join(" + ");
   })();
 
   return (

@@ -18,7 +18,6 @@ import {
   useFlash,
 } from "@/components/atoms";
 import { Disclosure } from "@/components/disclosure";
-import { Segmented } from "@/components/segmented";
 import { MultiSelectPopover } from "@/components/multi-select-popover";
 import { useSessionStorage } from "@/components/use-session-storage";
 import { Icon } from "@/components/icons";
@@ -141,9 +140,13 @@ function formatPickerLabel(iso: string): string {
   });
 }
 
-/* ────────── Universe mode ────────── */
+/* ────────── Universe ────────── */
 
-type UniverseMode = "all" | "sector" | "ticker";
+// Universe = ((sectors ∩ active) ∪ explicit tickers) ∩ numeric_filters.
+// Mirrors the shared resolver in psxDataPortal/backend/app/services/universe.py.
+// All three slots are independent and always visible — there's no longer a
+// "mode" toggle that hides one against another. Empty + empty + no filters
+// falls back to "all active" via the backend default.
 
 interface NumericFilters {
   min_price: number | null;
@@ -249,7 +252,6 @@ export function BacktestNewView({
   const [endDate, setEndDate] = useState<string>(initialEnd ?? defaultRange.end);
   const [initialCapital, setInitialCapital] = useState<number>(1_000_000);
 
-  const [universeMode, setUniverseMode] = useState<UniverseMode>("all");
   const [selectedSectors, setSelectedSectors] = useState<string[]>([]);
   const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
   const [numericFilters, setNumericFilters] = useState<NumericFilters>(EMPTY_FILTERS);
@@ -288,22 +290,29 @@ export function BacktestNewView({
   );
   const totalActive = availableSymbols.length;
 
-  // Live universe size derives from mode + sector membership. This is the
-  // headline number in the sticky rail — the QuantConnect-style "what
-  // your run looks like" preview. Numeric filters (price/volume/cap) apply
-  // at backtest time on the backend so we can't reflect them client-side
-  // without an extra round-trip; the rail surfaces filter count as a
-  // sub-line instead.
+  // Live universe size = |((sectors ∩ active) ∪ explicit_tickers)|.
+  // Numeric filters (price/volume/cap) apply on the backend at run time so
+  // they're not reflected client-side — the rail surfaces filter count as
+  // a sub-line instead. With both sectors and tickers empty we surface the
+  // resolver's "all active" default so the user sees the real run scope.
   const universeSize = useMemo(() => {
-    if (universeMode === "ticker") return selectedTickers.length;
-    const pool = stocks.filter((s) => s.is_active);
-    if (universeMode === "sector") {
-      if (selectedSectors.length === 0) return 0;
-      const set = new Set(selectedSectors);
-      return pool.filter((s) => s.sector_name && set.has(s.sector_name)).length;
+    const active = stocks.filter((s) => s.is_active);
+    const noSectors = selectedSectors.length === 0;
+    const noTickers = selectedTickers.length === 0;
+    if (noSectors && noTickers) return active.length;
+    const sectorSet = new Set(selectedSectors);
+    const tickerSet = new Set(selectedTickers.map((s) => s.toUpperCase()));
+    const union = new Set<string>();
+    for (const s of active) {
+      if (s.sector_name && sectorSet.has(s.sector_name)) union.add(s.symbol);
     }
-    return pool.length;
-  }, [stocks, universeMode, selectedSectors, selectedTickers]);
+    // Explicit tickers may include delisted names — count any matching row,
+    // not just active ones (mirrors the resolver's delisted-opt-in branch).
+    for (const s of stocks) {
+      if (tickerSet.has(s.symbol.toUpperCase())) union.add(s.symbol);
+    }
+    return union.size;
+  }, [stocks, selectedSectors, selectedTickers]);
 
   const tradingDays = useMemo(
     () => tradingDaysBetween(startDate, endDate),
@@ -350,37 +359,28 @@ export function BacktestNewView({
       setFlash("Initial capital must be greater than zero.");
       return;
     }
-    if (universeMode === "sector" && selectedSectors.length === 0) {
-      setFlash("Pick at least one sector or switch back to All.");
-      return;
-    }
-    if (universeMode === "ticker" && selectedTickers.length === 0) {
-      setFlash("Add at least one ticker or switch back to All.");
-      return;
-    }
+    // No mode-specific validation under union semantics — every combination
+    // (sectors only, tickers only, both, neither) is a legitimate input.
+    // Empty + empty + no filters falls back to "all active" on the backend.
 
-    // Translate the universe-mode UI into the backend payload (mirrors
-    // BacktestRequest in psxDataPortal/backend/app/schemas/strategy.py).
-    // - "all" → no sectors, no symbols, filters optional
-    // - "sector" → sectors set, symbols null
-    // - "ticker" → symbols set, sectors null (overrides anyway)
-    const payloadFilters =
-      universeMode === "ticker"
-        ? null
-        : (() => {
-            const merged = {
-              sectors: universeMode === "sector" ? selectedSectors : null,
-              ...numericFilters,
-            };
-            const empty =
-              (!merged.sectors || merged.sectors.length === 0) &&
-              merged.min_price == null &&
-              merged.max_price == null &&
-              merged.min_volume == null &&
-              merged.min_market_cap == null;
-            return empty ? null : merged;
-          })();
-    const payloadSymbols = universeMode === "ticker" ? selectedTickers : null;
+    // Always send both fields. Mirrors BacktestRequest in
+    // psxDataPortal/backend/app/schemas/strategy.py — the backend's
+    // resolve_universe() merges them via UNION, then applies numeric
+    // filters uniformly to the result.
+    const payloadFilters = (() => {
+      const merged = {
+        sectors: selectedSectors.length > 0 ? selectedSectors : null,
+        ...numericFilters,
+      };
+      const empty =
+        (!merged.sectors || merged.sectors.length === 0) &&
+        merged.min_price == null &&
+        merged.max_price == null &&
+        merged.min_volume == null &&
+        merged.min_market_cap == null;
+      return empty ? null : merged;
+    })();
+    const payloadSymbols = selectedTickers.length > 0 ? selectedTickers : null;
 
     setRunning(true);
     try {
@@ -442,7 +442,12 @@ export function BacktestNewView({
     detectActivePreset(startDate, endDate) === "1Y" && !initialStart;
   const usingDefaultCapital = initialCapital === 1_000_000;
   const usingDefaultRisk = risksEqual(riskCaps, RISK_DEFAULTS);
-  const usingDefaultUniverse = universeMode === "all";
+  // "Default" universe = nothing picked, no filters → resolver falls back
+  // to all active. Keeps the rail's "· default" hint accurate.
+  const usingDefaultUniverse =
+    selectedSectors.length === 0 &&
+    selectedTickers.length === 0 &&
+    activeFilterCount(numericFilters) === 0;
 
   return (
     <AppFrame route="/backtest">
@@ -537,8 +542,6 @@ export function BacktestNewView({
                 />
 
                 <UniverseSection
-                  mode={universeMode}
-                  onMode={setUniverseMode}
                   sectors={selectedSectors}
                   onSectors={setSelectedSectors}
                   tickers={selectedTickers}
@@ -585,7 +588,6 @@ export function BacktestNewView({
                   rangeIsDefault={usingDefaultRange}
                   capital={initialCapital}
                   capitalIsDefault={usingDefaultCapital}
-                  universeMode={universeMode}
                   universeSize={universeSize}
                   totalActive={totalActive}
                   selectedSectorsCount={selectedSectors.length}
@@ -661,7 +663,6 @@ function RunRail({
   rangeIsDefault,
   capital,
   capitalIsDefault,
-  universeMode,
   universeSize,
   totalActive,
   selectedSectorsCount,
@@ -680,7 +681,6 @@ function RunRail({
   rangeIsDefault: boolean;
   capital: number;
   capitalIsDefault: boolean;
-  universeMode: UniverseMode;
   universeSize: number;
   totalActive: number;
   selectedSectorsCount: number;
@@ -695,14 +695,19 @@ function RunRail({
   const T = useT();
   const rangeLabel = `${formatPickerLabel(startDate)} → ${formatPickerLabel(endDate)}`;
   const universeLabel = (() => {
-    if (universeMode === "all")
-      return `All active · ${universeSize.toLocaleString("en-PK")} tickers`;
-    if (universeMode === "sector") {
-      if (selectedSectorsCount === 0) return `— pick at least 1 sector`;
-      return `${selectedSectorsCount} sector${selectedSectorsCount === 1 ? "" : "s"} · ${universeSize.toLocaleString("en-PK")} tickers`;
+    const noSectors = selectedSectorsCount === 0;
+    const noTickers = selectedTickersCount === 0;
+    if (noSectors && noTickers) {
+      return `All active · ${totalActive.toLocaleString("en-PK")} tickers`;
     }
-    if (selectedTickersCount === 0) return `— add at least 1 ticker`;
-    return `${selectedTickersCount} ticker${selectedTickersCount === 1 ? "" : "s"}`;
+    const parts: string[] = [];
+    if (selectedSectorsCount > 0) {
+      parts.push(`${selectedSectorsCount} sector${selectedSectorsCount === 1 ? "" : "s"}`);
+    }
+    if (selectedTickersCount > 0) {
+      parts.push(`${selectedTickersCount} ticker${selectedTickersCount === 1 ? "" : "s"}`);
+    }
+    return `${parts.join(" ∪ ")} · ${universeSize.toLocaleString("en-PK")} tickers`;
   })();
   const riskLabel = (() => {
     const parts: string[] = [];
@@ -1516,8 +1521,6 @@ function CapitalSection({
 /* ────────── Universe section ────────── */
 
 function UniverseSection({
-  mode,
-  onMode,
   sectors,
   onSectors,
   tickers,
@@ -1529,8 +1532,6 @@ function UniverseSection({
   totalActive,
   disabled,
 }: {
-  mode: UniverseMode;
-  onMode: (m: UniverseMode) => void;
   sectors: string[];
   onSectors: (next: string[]) => void;
   tickers: string[];
@@ -1553,75 +1554,73 @@ function UniverseSection({
     filterCount === 0
       ? "no filters"
       : `${filterCount} filter${filterCount === 1 ? "" : "s"} applied`;
+  const noUniverse = sectors.length === 0 && tickers.length === 0;
 
   return (
     <Section
       label="universe"
-      hint="Which stocks the strategy scans on each trading day. Pick All to scan every active PSX ticker."
+      hint="Which stocks the strategy scans on each trading day. Sectors + tickers + filters compose under union semantics — pick any combination."
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        <Segmented
-          ariaLabel="universe mode"
-          value={mode}
-          onChange={(m) => {
-            // View Transitions API gives us a free cross-fade where supported.
-            type DocWithVT = Document & {
-              startViewTransition?: (cb: () => void) => unknown;
-            };
-            const doc = document as DocWithVT;
-            if (typeof doc.startViewTransition === "function") {
-              doc.startViewTransition(() => onMode(m));
-            } else {
-              onMode(m);
-            }
-          }}
-          disabled={disabled}
-          options={[
-            { value: "all", label: "All active", hint: `${totalActive} tickers` },
-            { value: "sector", label: "By sector" },
-            { value: "ticker", label: "Specific tickers" },
-          ]}
-        />
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+        {noUniverse && (
+          <div
+            style={{
+              fontFamily: T.fontSans,
+              fontSize: 12.5,
+              color: T.text3,
+              lineHeight: 1.5,
+              maxWidth: 560,
+            }}
+          >
+            Nothing picked → every active PSX ticker ({totalActive.toLocaleString("en-PK")})
+            will be scanned. Add sectors, tickers, or numeric filters below to narrow it down.
+          </div>
+        )}
 
-        <div key={mode} style={{ animation: "psx-fade-in 180ms ease-out" }}>
-          {mode === "all" && (
+        <UniverseSubsection
+          kicker="sectors"
+          info="Active stocks in the picked sectors join the universe."
+        >
+          <MultiSelectPopover
+            label="sectors"
+            placeholder="pick sectors…"
+            options={availableSectors.map((s) => ({ value: s }))}
+            selected={sectors}
+            onChange={onSectors}
+            disabled={disabled}
+          />
+        </UniverseSubsection>
+
+        <UniverseSubsection
+          kicker="explicit tickers"
+          info="Add specific tickers — merged with the sector list (UNION). Delisted names are allowed for backtests."
+        >
+          <SymbolPickerInline
+            available={availableSymbols}
+            selected={tickers}
+            onAdd={(sym) => {
+              const norm = sym.trim().toUpperCase();
+              if (!norm || tickers.includes(norm)) return;
+              onTickers([...tickers, norm]);
+            }}
+            onRemove={(sym) => onTickers(tickers.filter((t) => t !== sym))}
+            disabled={disabled}
+          />
+          {sectors.length > 0 && tickers.length > 0 && (
             <div
               style={{
-                fontFamily: T.fontSans,
-                fontSize: 12.5,
+                marginTop: 10,
+                fontFamily: T.fontMono,
+                fontSize: 11,
                 color: T.text3,
-                lineHeight: 1.5,
-                maxWidth: 560,
+                letterSpacing: 0.3,
               }}
             >
-              The strategy will scan every active PSX ticker ({totalActive.toLocaleString("en-PK")}).
-              Apply numeric filters below to narrow without picking sectors manually.
+              universe = {sectors.length} sector{sectors.length === 1 ? "" : "s"}{" "}
+              ∪ {tickers.length} ticker{tickers.length === 1 ? "" : "s"} (numeric filters apply to both)
             </div>
           )}
-          {mode === "sector" && (
-            <MultiSelectPopover
-              label="sectors"
-              placeholder="pick sectors…"
-              options={availableSectors.map((s) => ({ value: s }))}
-              selected={sectors}
-              onChange={onSectors}
-              disabled={disabled}
-            />
-          )}
-          {mode === "ticker" && (
-            <SymbolPickerInline
-              available={availableSymbols}
-              selected={tickers}
-              onAdd={(sym) => {
-                const norm = sym.trim().toUpperCase();
-                if (!norm || tickers.includes(norm)) return;
-                onTickers([...tickers, norm]);
-              }}
-              onRemove={(sym) => onTickers(tickers.filter((t) => t !== sym))}
-              disabled={disabled}
-            />
-          )}
-        </div>
+        </UniverseSubsection>
 
         <Disclosure
           label="numeric filters"
@@ -1671,6 +1670,23 @@ function UniverseSection({
         </Disclosure>
       </div>
     </Section>
+  );
+}
+
+function UniverseSubsection({
+  kicker,
+  info,
+  children,
+}: {
+  kicker: string;
+  info: string;
+  children: ReactNode;
+}) {
+  return (
+    <div>
+      <Kicker info={info}>{kicker}</Kicker>
+      <div style={{ marginTop: 10 }}>{children}</div>
+    </div>
   );
 }
 

@@ -503,12 +503,18 @@ export function EditorView({
       setSavedAt(Date.now());
       setDeployModal(null);
       const summary = (() => {
-        if (value.stock_symbols && value.stock_symbols.length > 0) {
-          return `${value.stock_symbols.length} ticker${value.stock_symbols.length === 1 ? "" : "s"}`;
-        }
         const sectors = value.stock_filters?.sectors ?? [];
-        if (sectors.length > 0) return sectors.length === 1 ? sectors[0] : `${sectors.length} sectors`;
-        return "no universe — scanner will stay quiet until re-deploy";
+        const symbols = value.stock_symbols ?? [];
+        const parts: string[] = [];
+        if (sectors.length > 0) {
+          parts.push(sectors.length === 1 ? sectors[0] : `${sectors.length} sectors`);
+        }
+        if (symbols.length > 0) {
+          parts.push(`${symbols.length} ticker${symbols.length === 1 ? "" : "s"}`);
+        }
+        if (parts.length === 0) return "no universe — scanner will stay quiet until re-deploy";
+        // Sectors and tickers are merged via UNION on the backend (B048).
+        return parts.join(" + ");
       })();
       setFlash(`Strategy deployed · ${summary}`);
     } catch (err) {
