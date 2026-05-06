@@ -159,11 +159,11 @@ function presetToEntryRules(key: PresetKey): EntryRules {
       ];
       break;
     case "blank":
-      // Backend requires at least one condition. Pick a deliberately mild one
-      // so the user *will* want to edit it.
-      conditions = [
-        { kind: "condition", indicator: "rsi", operator: "<", value: { type: "constant", value: 50 } },
-      ];
+      // Truly blank: backend allows empty entry trees on DRAFT strategies
+      // and only enforces "at least one leaf" at execution-path entries
+      // (deploy / backtest / bot create+start / status→ACTIVE/PAUSED).
+      // The user lands in the editor with a clean canvas.
+      conditions = [];
       break;
   }
   return { conditions: { kind: "group", logic: "AND", conditions } };
