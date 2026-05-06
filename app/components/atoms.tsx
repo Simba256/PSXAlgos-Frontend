@@ -933,11 +933,24 @@ export function Ribbon({
 
 /* ────────── Combobox (autocomplete with free-text fallback) ──────────
 
-   Permissive autocomplete: the input is always editable text, the dropdown
-   is a *hint* sourced from `options`. Free-text typed values pass through
-   `onChange` even if they're not in the list — so a stale/missing symbol
-   doesn't block submission. Filtering is a case-insensitive prefix match
-   on the option's `label` and `keywords`.
+   Permissive autocomplete with two-state separation:
+
+   - `value` (controlled by parent) is the committed selection. It's what the
+     parent reads on submit and what the input displays when the user isn't
+     actively filtering.
+   - `query` (internal) is the transient filter — what the user is currently
+     typing. Filtering uses `query`, so opening the dropdown on a populated
+     field shows the full menu instead of "things that look like the current
+     value." This separation is what every mature combobox library (Headless
+     UI, cmdk, react-select) uses; the previous single-state approach caused
+     a select-RSI-then-only-RSI-shows-up bug.
+
+   Freeform input is preserved: every keystroke still calls `onChange(query)`
+   so callers like the portfolio symbol picker keep working when the user
+   types a value that isn't in the list and clicks "Add".
+
+   A chevron button toggles the dropdown explicitly so the affordance is
+   visible — no need to know that focusing the input opens the menu.
 */
 
 export interface ComboOption {
@@ -976,10 +989,16 @@ export function Combobox({
   const T = useT();
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
+  // null = not actively filtering (display `value`, show all options).
+  // string = user is typing (display query, filter by it).
+  const [query, setQuery] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const displayValue = query ?? value;
 
   const matches = useMemo(() => {
-    const q = value.trim().toLowerCase();
+    const q = (query ?? "").trim().toLowerCase();
     if (!q) return options.slice(0, maxResults);
     const starts: ComboOption[] = [];
     const contains: ComboOption[] = [];
@@ -991,7 +1010,7 @@ export function Combobox({
       if (starts.length >= maxResults) break;
     }
     return [...starts, ...contains].slice(0, maxResults);
-  }, [value, options, maxResults]);
+  }, [query, options, maxResults]);
 
   // Keep highlight in range when matches change.
   useEffect(() => {
@@ -1002,22 +1021,34 @@ export function Combobox({
   useEffect(() => {
     if (!open) return;
     function onDocClick(e: MouseEvent) {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+      if (!wrapRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery(null);
+      }
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
 
+  function openDropdown() {
+    setOpen(true);
+    setHighlight(0);
+    // Reset query so the full option list is visible. The committed value
+    // still shows in the input until the user starts typing.
+    setQuery(null);
+  }
+
   function commit(opt: ComboOption) {
     onChange(transform ? transform(opt.value) : opt.value);
+    setQuery(null);
     setOpen(false);
   }
 
   function onKey(e: ReactKeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setOpen(true);
-      setHighlight((h) => (matches.length === 0 ? 0 : (h + 1) % matches.length));
+      if (!open) openDropdown();
+      else setHighlight((h) => (matches.length === 0 ? 0 : (h + 1) % matches.length));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setOpen(true);
@@ -1027,13 +1058,15 @@ export function Combobox({
       commit(matches[highlight]);
     } else if (e.key === "Escape") {
       setOpen(false);
+      setQuery(null);
     } else if (e.key === "Tab" && open && matches[highlight]) {
       // Tab acts as accept-and-move-on so power users can chain fields fast.
       commit(matches[highlight]);
     }
   }
 
-  const showDropdown = open && (matches.length > 0 || (value.length > 0 && emptyHint));
+  const showDropdown =
+    open && (matches.length > 0 || ((query ?? "").length > 0 && emptyHint));
 
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
@@ -1046,21 +1079,36 @@ export function Combobox({
           borderRadius: 8,
           boxShadow: `0 0 0 1px ${T.outlineFaint}`,
           display: "flex",
-          alignItems: "baseline",
+          alignItems: "center",
           gap: 8,
         }}
       >
         <input
+          ref={inputRef}
           type="text"
-          value={value}
+          value={displayValue}
           placeholder={placeholder}
           autoComplete="off"
+          role="combobox"
+          aria-expanded={open}
+          aria-autocomplete="list"
           onChange={(e) => {
-            onChange(transform ? transform(e.target.value) : e.target.value);
+            const next = transform ? transform(e.target.value) : e.target.value;
+            // Track query for filtering AND propagate to parent on every
+            // keystroke so freeform-submit consumers (portfolio symbol/strategy
+            // pickers) keep their existing "submit as typed" behavior.
+            setQuery(next);
+            onChange(next);
             setOpen(true);
             setHighlight(0);
           }}
-          onFocus={() => setOpen(true)}
+          onFocus={() => {
+            openDropdown();
+            // Select-all so the next keystroke replaces the committed value
+            // instead of appending to it. Defer to next frame because Safari
+            // collapses selection on focus.
+            requestAnimationFrame(() => inputRef.current?.select());
+          }}
           onKeyDown={onKey}
           style={{
             background: "transparent",
@@ -1073,6 +1121,38 @@ export function Combobox({
             outline: "none",
           }}
         />
+        <button
+          type="button"
+          aria-label={open ? "Close options" : "Open options"}
+          tabIndex={-1}
+          onMouseDown={(e) => {
+            // Prevent the input losing focus when clicking the chevron.
+            e.preventDefault();
+            if (open) {
+              setOpen(false);
+              setQuery(null);
+            } else {
+              openDropdown();
+              inputRef.current?.focus();
+            }
+          }}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "transparent",
+            border: "none",
+            padding: 0,
+            margin: 0,
+            color: T.text3,
+            cursor: "pointer",
+            transform: open ? "rotate(-90deg)" : "rotate(90deg)",
+            transition: "transform 120ms ease",
+            lineHeight: 0,
+          }}
+        >
+          {Icon.chev}
+        </button>
       </div>
       {showDropdown && (
         <div
