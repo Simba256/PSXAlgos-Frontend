@@ -983,6 +983,9 @@ export function Combobox({
   placeholder?: string;
   transform?: (v: string) => string;
   mono?: boolean;
+  /** Cap on filtered results when the user is actively typing. Browsing
+      the full menu (no query) is uncapped — the dropdown's `overflowY:auto`
+      handles scrolling for long lists like the ~824 PSX symbol universe. */
   maxResults?: number;
   emptyHint?: string;
 }) {
@@ -999,7 +1002,10 @@ export function Combobox({
 
   const matches = useMemo(() => {
     const q = (query ?? "").trim().toLowerCase();
-    if (!q) return options.slice(0, maxResults);
+    // Browsing the full menu: return every option and rely on the
+    // dropdown's max-height + overflowY for scrolling. Capping here would
+    // hide indicators / symbols the user can't reach by scrolling.
+    if (!q) return options;
     const starts: ComboOption[] = [];
     const contains: ComboOption[] = [];
     for (const opt of options) {
