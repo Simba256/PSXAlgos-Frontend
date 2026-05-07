@@ -82,11 +82,21 @@ export interface EntryRules {
 }
 
 // Post-B046 the strategy's exit rules carry only the indicator-based signal
-// exit tree. The four scalar guardrails (stop_loss_pct / take_profit_pct /
-// trailing_stop_pct / max_holding_days) moved to the bot row (`BotCreateBody`)
-// or the backtest request (`BacktestRequestBody`).
+// exit tree. Hybrid exits (Option C, 2026-05-07) reintroduce the four scalar
+// guardrails as `default_risk` — strategy-level defaults that bot rows and
+// backtest requests inherit when they leave their own field nullable. See
+// `docs/research/EXITS_DECISION_SYNTHESIS.md` and
+// `docs/EXITS_IMPLEMENTATION_PLAN.md`. Position sizing stays off-strategy.
+export interface DefaultRisk {
+  stop_loss_pct?: number | null;
+  take_profit_pct?: number | null;
+  trailing_stop_pct?: number | null;
+  max_holding_days?: number | null;
+}
+
 export interface ExitRules {
   conditions?: ConditionGroup | null;
+  default_risk?: DefaultRisk | null;
 }
 
 export interface StockFilters {

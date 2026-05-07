@@ -22,12 +22,15 @@ import {
   UniverseAndRiskFields,
   type UniverseAndRiskValue,
 } from "@/components/universe-and-risk-fields";
+import { RiskDefaultsNode } from "@/components/strategy-editor/risk-defaults-node";
+import { StatusStrip } from "@/components/strategy-editor/status-strip";
 import { getAllStocks, type StockResponse } from "@/lib/api/stocks";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick, clampPx } from "@/components/responsive";
 import type {
   ConditionLogic,
   ConditionValue,
+  DefaultRisk,
   ExitRules,
   IndicatorMeta,
   Operator,
@@ -209,10 +212,17 @@ type SaveStatus = "idle" | "saving" | "error";
 // shape. They live on the bot row, the backtest request, or the deploy
 // request. Anything the editor used to send for those concerns has been
 // dropped.
+//
+// Hybrid exits (Option C, 2026-05-07): `default_risk` is back on the strategy
+// — strategy-level scalar guardrail defaults that bots/backtests inherit when
+// their own field is null. Authored on the canvas via RiskDefaultsNode (Phase
+// 4). Sent on every save; an empty `riskDefaults` object clears all four
+// defaults. See `docs/EXITS_IMPLEMENTATION_PLAN.md`.
 export function buildUpdateBody(
   name: string,
   tree: ConditionGroup,
   exit: ExitRules,
+  riskDefaults: DefaultRisk,
 ): StrategyUpdateBody {
   return {
     name,
@@ -220,6 +230,7 @@ export function buildUpdateBody(
     exit_rules: {
       ...exit,
       conditions: exit.conditions ? normalizeWireGroup(exit.conditions) : exit.conditions,
+      default_risk: riskDefaults,
     },
   };
 }
@@ -267,12 +278,23 @@ export function EditorView({
   const [tree, setTree] = useState<ConditionGroup>(() =>
     fromBackend(initialStrategy.entry_rules.conditions),
   );
-  // Post-B046 the editor no longer mutates exit guardrails or sizing — those
-  // moved to the bot row / backtest request / deploy request. We still hold
-  // the signal-based exit-tree object so it round-trips on save without
-  // being lost (older strategies may carry one even though no editor surface
-  // currently authors it).
-  const [exit] = useState<ExitRules>(initialStrategy.exit_rules ?? {});
+  // Post-B046 the editor stopped mutating exit guardrails / sizing. Hybrid
+  // exits (Option C, 2026-05-07) reintroduce the four scalar guardrails as
+  // strategy-level defaults under `exit_rules.default_risk`, authored on the
+  // canvas via the `RiskDefaultsNode` pin. The signal-based exit-tree branch
+  // (`exit_rules.conditions`) round-trips through `exit` so older strategies
+  // carrying one don't lose it on save. Phase 4 ships `default_risk` editing
+  // through `riskDefaults`; the parallel right-side authoring tree is a
+  // follow-up — for now the conditions blob is read-only.
+  const [exit, setExit] = useState<ExitRules>(initialStrategy.exit_rules ?? {});
+  const [riskDefaults, setRiskDefaults] = useState<DefaultRisk>(
+    initialStrategy.exit_rules?.default_risk ?? {},
+  );
+  // `setExit` is wired so a future Phase 4b/5 mutation surface (right-side
+  // exit-tree editor) can land without a second state refactor. Until then
+  // the only mutation comes from `riskDefaults`, which `buildUpdateBody`
+  // merges back into `exit_rules.default_risk` on save.
+  void setExit;
   const [dirty, setDirty] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [name, setName] = useState<string>(initialStrategy.name);
@@ -328,6 +350,16 @@ export function EditorView({
     );
   const close = () => setSelection(null);
 
+  // Risk-defaults change handler. Wraps setRiskDefaults + setDirty so the
+  // save toolbar lights up the moment the user types, and Phase 5 forms see
+  // the updated default the next time they fetch the strategy. The PUT body
+  // built by `buildUpdateBody` always sends the full `default_risk` object
+  // (nulls included), so blanking a field reaches the backend cleanly.
+  const handleRiskDefaultsChange = (next: DefaultRisk) => {
+    setRiskDefaults(next);
+    setDirty(true);
+  };
+
   // Performs the actual PUT. Split out so the impact-warning modal can call
   // it directly after confirmation, bypassing the pre-flight check.
   // `silent: true` is used by autosave to skip the success flash (otherwise
@@ -343,7 +375,7 @@ export function EditorView({
       if (!opts?.silent) setFlash("A strategy needs at least one condition");
       return;
     }
-    const body = buildUpdateBody(name, tree, exit);
+    const body = buildUpdateBody(name, tree, exit, riskDefaults);
     setSaveStatus("saving");
     try {
       const res = await fetch(`/api/strategies/${initialStrategy.id}`, {
@@ -798,6 +830,9 @@ export function EditorView({
             pendingPicker={pendingPicker}
             consumePendingPicker={consumePendingPicker}
             strategyId={initialStrategy.id}
+            riskDefaults={riskDefaults}
+            onRiskDefaultsChange={handleRiskDefaultsChange}
+            latestBacktest={initialStrategy.latest_backtest ?? null}
           />
           {creating && (
             <ConditionDrawer
@@ -1443,6 +1478,9 @@ function Canvas({
   pendingPicker,
   consumePendingPicker,
   strategyId,
+  riskDefaults,
+  onRiskDefaultsChange,
+  latestBacktest,
 }: {
   tree: ConditionGroup;
   selection: Selection;
@@ -1455,6 +1493,18 @@ function Canvas({
   pendingPicker: { parentId: CondId; index: number } | null;
   consumePendingPicker: (parentId: CondId, index: number) => void;
   strategyId: number;
+  // Hybrid exits (Option C, Phase 4): the four scalar guardrails the
+  // RiskDefaultsNode authors. Sent on every save via `buildUpdateBody`.
+  riskDefaults: DefaultRisk;
+  onRiskDefaultsChange: (next: DefaultRisk) => void;
+  // Most-recent backtest summary (joined into the strategy response).
+  // Drives the StatusStrip's backtest segment; null when no backtest has
+  // been run yet.
+  latestBacktest: {
+    id: number;
+    total_return_pct: number | string;
+    completed_at: string;
+  } | null;
 }) {
   const isSelected = (kind: SelKind, id: CondId) =>
     selection?.kind === kind && selection.id === id;
@@ -1713,25 +1763,35 @@ function Canvas({
           groupMap.set(root.id, root);
           for (const g of nestedGroups) groupMap.set(g.id, g);
 
-          // Output pins (Backtest / Live signals / Automate) live outside
-          // the entry tree. With the layered layout the root gate is
-          // anchored at a FIXED X (`ROOT_GATE_X` in layout.ts), so deeper
-          // trees grow leftward into negative X while the output column
-          // stays put on the right. Post-B046 the ExecNode that used to sit
-          // between the entry tree and the outputs is gone — the wire goes
-          // straight from the entry root to each output pin. The
-          // `rootOriginX/Y` pair tracks the actual outgoing pin so
-          // single-child trees still wire from the leaf without going
-          // through a hidden gate.
+          // Right-side anchor. The layered layout pins the root gate at
+          // FIXED X (`ROOT_GATE_X` in layout.ts), so deeper trees grow
+          // leftward into negative X while the right anchor stays put.
+          // `rootOriginX/Y` tracks the actual outgoing pin so single-child
+          // trees still wire from the leaf without going through a hidden
+          // gate.
+          //
+          // Phase 4 (Option C hybrid exits, 2026-05-07): the right side used
+          // to host three OutputPins (Backtest / Live signals / Automate)
+          // stacked vertically. They've been replaced by the pinned
+          // `RiskDefaultsNode` — strategy-level scalar guardrail defaults
+          // that bots/backtests inherit. The OutputPins' navigation role
+          // moved into the bottom-right `StatusStrip` pill so the canvas
+          // right edge isn't double-occupied. The full parallel exit-tree
+          // authoring (mirror of the entry tree) is a follow-up; today only
+          // the scalar defaults pin lives on the right.
           const ROOT_TO_OUTPUT_GAP = 402;
           const rootOriginX = root.showGate ? root.gateX + GATE_W : root.pinX;
           const rootOriginY = root.showGate ? root.gateY : root.pinY;
           const outputX = root.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
           const outputCurveCtrlX = (rootOriginX + outputX) / 2;
-          const outputCenterY = root.pinY;
-          const out1Y = outputCenterY - 224;
-          const out2Y = outputCenterY - 36;
-          const out3Y = outputCenterY + 136;
+          // RiskDefaultsNode coordinates. The node's top sits at
+          // `riskNodeY`; its pin (left edge, vertically offset by
+          // PIN_OFFSET_Y) lands at `riskPinY`. We solve for `riskNodeY` so
+          // the pin lines up with the root's outgoing pin Y, giving the
+          // single connector a clean horizontal flow.
+          const riskPinY = root.pinY;
+          const riskNodeY = riskPinY - RiskDefaultsNode.PIN_OFFSET_Y;
+          const riskPinX = outputX;
 
           // Each non-root group with a visible gate, plus each leaf,
           // contributes one wire to its parent gate. Groups whose own gate
@@ -1810,22 +1870,12 @@ function Canvas({
                     T={T}
                   />
                 ))}
+                {/* Single root → RiskDefaultsNode connector. Replaces the
+                    three OutputPin curves the canvas used to fan out. */}
                 <Connector
-                  d={`M ${rootOriginX} ${rootOriginY} C ${outputCurveCtrlX} ${rootOriginY} ${outputCurveCtrlX} ${out1Y + 20} ${outputX} ${out1Y + 20}`}
+                  d={`M ${rootOriginX} ${rootOriginY} C ${outputCurveCtrlX} ${rootOriginY} ${outputCurveCtrlX} ${riskPinY} ${riskPinX} ${riskPinY}`}
                   color={T.primary}
-                  width={1.3}
-                  T={T}
-                />
-                <Connector
-                  d={`M ${rootOriginX} ${rootOriginY} C ${outputCurveCtrlX} ${rootOriginY} ${outputCurveCtrlX} ${out2Y + 20} ${outputX} ${out2Y + 20}`}
-                  color={T.deploy}
-                  width={1.6}
-                  T={T}
-                />
-                <Connector
-                  d={`M ${rootOriginX} ${rootOriginY} C ${outputCurveCtrlX} ${rootOriginY} ${outputCurveCtrlX} ${out3Y + 20} ${outputX} ${out3Y + 20}`}
-                  color={T.accent}
-                  width={1.3}
+                  width={1.4}
                   T={T}
                 />
               </svg>
@@ -1902,39 +1952,11 @@ function Canvas({
                 />
               ))}
 
-              <OutputPin
+              <RiskDefaultsNode
                 x={outputX}
-                y={out1Y}
-                tint={T.primary}
-                glyph="⎈"
-                title="Backtest"
-                status="+14.2%"
-                statusColor={T.gain}
-                sub="last run 2m ago"
-                href={`/backtest?strategy_id=${strategyId}`}
-              />
-              <OutputPin
-                x={outputX}
-                y={out2Y}
-                tint={deployed ? T.deploy : T.text3}
-                glyph="◉"
-                title="Live signals"
-                status={deployed ? "Deployed" : "Paused"}
-                statusColor={deployed ? T.deploy : T.text3}
-                sub={deployed ? "3 today · 100 scanned" : "feed halted"}
-                emphasized={deployed}
-                href="/signals"
-              />
-              <OutputPin
-                x={outputX}
-                y={out3Y}
-                tint={T.accent}
-                glyph="◇"
-                title="Automate"
-                status="No bot"
-                statusColor={T.text3}
-                sub="bind for paper trading"
-                href={`/bots/new?strategy_id=${strategyId}`}
+                y={riskNodeY}
+                value={riskDefaults}
+                onChange={onRiskDefaultsChange}
               />
             </>
           );
@@ -1977,6 +1999,36 @@ function Canvas({
         <ZoomBtn onClick={() => bumpZoom(1.2)} label="+" />
         <span style={{ width: 1, height: 14, background: T.outlineFaint, margin: "0 4px" }} />
         <ZoomBtn onClick={resetView} label="fit" />
+      </div>
+
+      {/* Phase 4: StatusStrip carries the navigation role the three OutputPins
+          used to (Backtest / Live signals / Automate). Sits just above the
+          zoom-controls pill on the right; slides with the drawer same way. */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: 60,
+          right: drawerOpen ? 412 : 24,
+          zIndex: 5,
+          transition: "right 240ms cubic-bezier(0.4, 0, 0.2, 1)",
+        }}
+      >
+        <StatusStrip
+          strategyId={strategyId}
+          deployed={deployed}
+          backtest={
+            latestBacktest
+              ? {
+                  totalReturnPct: Number(latestBacktest.total_return_pct),
+                  completedAt: latestBacktest.completed_at,
+                }
+              : null
+          }
+          // Bot binding lights up in Phase 6 once the picker modal is wired;
+          // until then we don't surface a ghost "No bot" segment that pads
+          // the strip without doing anything useful.
+          botBinding={null}
+        />
       </div>
 
       <div
@@ -2261,95 +2313,6 @@ function GateButton({
     >
       <GateGlyph logic={logic} size={GATE_W * 0.5} />
     </button>
-  );
-}
-
-function OutputPin({
-  x,
-  y,
-  tint,
-  glyph,
-  title,
-  status,
-  statusColor,
-  sub,
-  emphasized,
-  href,
-}: {
-  x: number;
-  y: number;
-  tint: string;
-  glyph: string;
-  title: string;
-  status: string;
-  statusColor: string;
-  sub: string;
-  emphasized?: boolean;
-  href?: string;
-}) {
-  const T = useT();
-  const body = (
-    <div
-      style={{
-        position: "absolute",
-        left: x,
-        top: y,
-        width: 180,
-        padding: "12px 14px",
-        background: T.surfaceLow,
-        borderRadius: 10,
-        textDecoration: "none",
-        boxShadow: emphasized
-          ? `0 0 0 1px ${tint}88, 0 0 0 4px ${tint}18, 0 6px 24px -10px rgba(0,0,0,0.55)`
-          : `0 0 0 1px ${T.outlineFaint}, 0 4px 14px -8px rgba(0,0,0,0.5)`,
-      }}
-    >
-      <Pin x={-4} y={20} color={tint} />
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span
-          style={{
-            width: 22,
-            height: 22,
-            borderRadius: 6,
-            background: tint + "22",
-            color: tint,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontFamily: T.fontHead,
-            fontSize: 13,
-          }}
-        >
-          {glyph}
-        </span>
-        <span style={{ fontFamily: T.fontHead, fontSize: 14, fontWeight: 500, color: T.text }}>
-          {title}
-        </span>
-      </div>
-      <div
-        style={{
-          marginTop: 8,
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          fontFamily: T.fontMono,
-          fontSize: 12,
-        }}
-      >
-        {emphasized && <StatusDot color={statusColor} pulse />}
-        <span style={{ color: statusColor, fontVariantNumeric: "tabular-nums" }}>{status}</span>
-      </div>
-      <div style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3, marginTop: 3 }}>
-        {sub}
-      </div>
-    </div>
-  );
-  return href ? (
-    <Link href={href} style={{ textDecoration: "none" }}>
-      {body}
-    </Link>
-  ) : (
-    body
   );
 }
 
