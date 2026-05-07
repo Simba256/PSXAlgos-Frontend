@@ -185,9 +185,74 @@ export interface StrategyCreateResponse {
   strategy: StrategyResponse;
 }
 
+// ============ Inheritance / default-risk update flow (Phase 3+6) ============
+
+// Names of the four scalar risk fields that participate in the inheritance
+// flow. Mirrors `RISK_FIELDS` in backend `app.services.risk_inheritance`.
+// Position sizing and `max_concurrent_positions` are deliberately excluded —
+// they're not part of `default_risk` and never inherit.
+export type RiskField =
+  | "stop_loss_pct"
+  | "take_profit_pct"
+  | "trailing_stop_pct"
+  | "max_holding_days";
+
+export interface InheritanceWarningBot {
+  id: number;
+  name: string;
+  // BotStatus value (`ACTIVE` / `PAUSED` / `STOPPED`). The backend filters
+  // out STOPPED so this is always one of the first two in practice.
+  status: string;
+  // Subset of `changed_fields` that THIS bot is currently inheriting (its
+  // row column is NULL on each named field). The picker only asks about
+  // these — fields the bot has already overridden are silently skipped.
+  inherited_fields: RiskField[];
+}
+
+export interface InheritanceWarning {
+  changed_fields: RiskField[];
+  // Pre-update default for the changed fields only. `null` means "no
+  // default was set" — distinct from a numeric default of zero.
+  old_values: Partial<Record<RiskField, number | null>>;
+  new_values: Partial<Record<RiskField, number | null>>;
+  affected_bots: InheritanceWarningBot[];
+}
+
+export interface ApplyDefaultRiskRequest {
+  // Bots that should KEEP inheriting — their row stays NULL on the
+  // changed fields, so the next signal evaluation picks up the new
+  // strategy default.
+  propagate_to_bot_ids: number[];
+  // Bots that should be FROZEN at the OLD default — old_default_risk is
+  // copied into their row for each changed field, severing future
+  // inheritance.
+  snapshot_bot_ids: number[];
+  changed_fields: RiskField[];
+  // The pre-PUT default values, captured by the editor before save and
+  // forwarded so the snapshot writes the value the bot WAS running
+  // under, not the value the strategy now carries.
+  old_default_risk: DefaultRisk | null;
+}
+
+export interface ApplyDefaultRiskResponse {
+  // == len(propagate_to_bot_ids); reported back so the UI can show
+  // "N bots will pick up the new value" verbatim.
+  propagated_count: number;
+  // Number of bots that actually had at least one column written. May be
+  // less than `len(snapshot_bot_ids)` when a bot already had an explicit
+  // value on every changed field (no-op).
+  snapshotted_count: number;
+}
+
 export interface StrategyUpdateResponse {
   success: boolean;
   strategy: StrategyResponse;
+  // Present iff the PUT changed `default_risk` AND at least one
+  // non-stopped bot was inheriting one of the changed fields. Drives
+  // the per-bot inheritance picker modal — the PUT itself does NOT
+  // propagate the change, the user resolves the warning by calling
+  // `applyDefaultRisk` with two ID lists.
+  inheritance_warnings?: InheritanceWarning;
 }
 
 // ============ Meta endpoints ============
@@ -265,6 +330,24 @@ export async function deleteStrategy(
     jwt,
     method: "DELETE",
   });
+}
+
+// Resolves the inheritance warning returned by `updateStrategy` — see
+// `InheritanceWarning` and `ApplyDefaultRiskRequest`. Single round-trip,
+// atomic on the backend (every snapshot lands or none do).
+export async function applyDefaultRisk(
+  jwt: string,
+  id: number,
+  body: ApplyDefaultRiskRequest,
+): Promise<ApplyDefaultRiskResponse> {
+  return apiFetch<ApplyDefaultRiskResponse>(
+    `/strategies/${id}/apply-default-risk`,
+    {
+      jwt,
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 export interface StrategyDependentBot {

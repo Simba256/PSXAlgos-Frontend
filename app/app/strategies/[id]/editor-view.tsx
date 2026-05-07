@@ -24,6 +24,10 @@ import {
 } from "@/components/universe-and-risk-fields";
 import { RiskDefaultsNode } from "@/components/strategy-editor/risk-defaults-node";
 import { StatusStrip } from "@/components/strategy-editor/status-strip";
+import {
+  InheritanceWarningModal,
+  type InheritanceWarningModalSubmit,
+} from "@/components/strategy-editor/inheritance-warning-modal";
 import { getAllStocks, type StockResponse } from "@/lib/api/stocks";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick, clampPx } from "@/components/responsive";
@@ -33,10 +37,12 @@ import type {
   DefaultRisk,
   ExitRules,
   IndicatorMeta,
+  InheritanceWarning,
   Operator,
   SingleCondition,
   StrategyResponse,
   StrategyUpdateBody,
+  StrategyUpdateResponse,
   StrategyDependentBot,
   StrategyDependentsResponse,
   Timeframe,
@@ -324,6 +330,17 @@ export function EditorView({
   // PSX universe loaded once on demand (first deploy modal open) so the
   // typical editing session doesn't pay for the /stocks fetch.
   const [stocks, setStocks] = useState<StockResponse[]>([]);
+  // Phase 6 — per-bot inheritance picker. `warning` is the response slice
+  // from the most recent PUT; `oldDefaultRisk` is the pre-save snapshot the
+  // apply call needs (the strategy now carries the new value, the old value
+  // lives only in this object). `busy` covers the apply round-trip and
+  // `error` surfaces a backend rejection in the modal without dismissing it.
+  const [inheritanceModal, setInheritanceModal] = useState<{
+    warning: InheritanceWarning;
+    oldDefaultRisk: DefaultRisk | null;
+    busy: boolean;
+    error: string | null;
+  } | null>(null);
   const router = useRouter();
 
   async function fetchDependents(): Promise<StrategyDependentsResponse | null> {
@@ -376,6 +393,18 @@ export function EditorView({
       return;
     }
     const body = buildUpdateBody(name, tree, exit, riskDefaults);
+    // Phase 6 — capture the strategy's *previous* default-risk before the
+    // PUT lands so we can hand the snapshot value to apply-default-risk.
+    // The backend response carries the new value on the strategy and the
+    // old value only inside `inheritance_warnings.old_values`, but old_values
+    // is sliced to changed fields — for the request we want the full old
+    // default so future re-edits during the same modal interaction stay
+    // referentially clean. Reads off `initialStrategy` (server-rendered) on
+    // the first save and off the in-memory state thereafter; for autosave
+    // the order is irrelevant since `riskDefaults` is the new value, not
+    // the old one. This is just the saved-state snapshot at PUT time.
+    const oldDefaultRisk: DefaultRisk | null =
+      (initialStrategy.exit_rules?.default_risk ?? null) as DefaultRisk | null;
     setSaveStatus("saving");
     try {
       const res = await fetch(`/api/strategies/${initialStrategy.id}`, {
@@ -401,9 +430,39 @@ export function EditorView({
         }
         throw new Error(message);
       }
+      // Parse the success response so we can detect Phase 6 inheritance
+      // warnings. `StrategyUpdateResponse.inheritance_warnings` is optional
+      // — present iff default_risk changed AND at least one non-stopped bot
+      // inherits a changed field. We tolerate parse failures (treat as
+      // "no warnings" rather than blocking the save flow).
+      let parsed: StrategyUpdateResponse | null = null;
+      try {
+        parsed = (await res.json()) as StrategyUpdateResponse;
+      } catch {
+        parsed = null;
+      }
       setSavedAt(Date.now());
       setDirty(false);
       setSaveStatus("idle");
+      // Open the per-bot picker modal when the backend reports affected
+      // bots. Suppress for autosave (`silent`) — the user wasn't watching
+      // for a save event, popping a modal under them is jarring.
+      if (
+        !opts?.silent &&
+        parsed?.inheritance_warnings &&
+        parsed.inheritance_warnings.affected_bots.length > 0
+      ) {
+        setInheritanceModal({
+          warning: parsed.inheritance_warnings,
+          oldDefaultRisk,
+          busy: false,
+          error: null,
+        });
+        // Don't fire the "Draft saved" toast — the modal is the user's
+        // primary feedback. They'll see a confirmation toast when they
+        // resolve it.
+        return;
+      }
       if (!opts?.silent) {
         // Phase E / E3: empty groups are allowed but surface a soft warning so
         // the author knows they evaluate to True (matches backend semantics).
@@ -419,6 +478,67 @@ export function EditorView({
     } catch (err) {
       setSaveStatus("error");
       setFlash(err instanceof Error ? err.message : "Save failed");
+    }
+  };
+
+  // Phase 6 — submit the user's per-bot picks to the apply-default-risk
+  // endpoint. The strategy edit has already committed; this round-trip
+  // resolves the open question of which bots inherit vs. snapshot. On
+  // success we close the modal and surface a count toast; on failure we
+  // keep the modal open so the user can retry without losing their picks.
+  const performApplyInheritance = async (
+    decision: InheritanceWarningModalSubmit,
+  ) => {
+    if (!inheritanceModal) return;
+    setInheritanceModal((m) =>
+      m ? { ...m, busy: true, error: null } : m,
+    );
+    try {
+      const res = await fetch(
+        `/api/strategies/${initialStrategy.id}/apply-default-risk`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            propagate_to_bot_ids: decision.propagate_to_bot_ids,
+            snapshot_bot_ids: decision.snapshot_bot_ids,
+            changed_fields: inheritanceModal.warning.changed_fields,
+            old_default_risk: inheritanceModal.oldDefaultRisk,
+          }),
+        },
+      );
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let message = `Apply failed (${res.status})`;
+        if (text) {
+          try {
+            const data = JSON.parse(text);
+            if (data && typeof data.error === "string") message = data.error;
+            else message = text;
+          } catch {
+            message = text;
+          }
+        }
+        throw new Error(message);
+      }
+      const data = (await res.json()) as {
+        propagated_count: number;
+        snapshotted_count: number;
+      };
+      setInheritanceModal(null);
+      const parts: string[] = [];
+      if (data.propagated_count > 0)
+        parts.push(`${data.propagated_count} inheriting`);
+      if (data.snapshotted_count > 0)
+        parts.push(`${data.snapshotted_count} snapshotted`);
+      setFlash(
+        parts.length > 0 ? `Defaults applied · ${parts.join(" · ")}` : "Defaults applied",
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Apply failed";
+      setInheritanceModal((m) =>
+        m ? { ...m, busy: false, error: message } : m,
+      );
     }
   };
 
@@ -951,6 +1071,23 @@ export function EditorView({
           busy={deployModal.busy}
           onCancel={() => setDeployModal(null)}
           onConfirm={() => performDeploy(deployModal.value)}
+        />
+      )}
+      {inheritanceModal && (
+        <InheritanceWarningModal
+          warning={inheritanceModal.warning}
+          busy={inheritanceModal.busy}
+          error={inheritanceModal.error}
+          onCancel={() => {
+            // Cancelling leaves the strategy edit in place but skips the
+            // propagate/snapshot decision — every affected bot keeps
+            // inheriting live, so the new default flows through on the
+            // next signal evaluation. Same outcome as "all inherit", but
+            // the user explicitly opted out of acknowledging it.
+            setInheritanceModal(null);
+            setFlash("Draft saved · all bots will inherit the new defaults");
+          }}
+          onConfirm={performApplyInheritance}
         />
       )}
     </AppFrame>
