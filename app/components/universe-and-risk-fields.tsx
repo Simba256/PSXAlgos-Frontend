@@ -12,6 +12,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useT } from "./theme";
 import { Kicker } from "./atoms";
+import { InheritableField } from "./inheritable-field";
+import type { DefaultRisk } from "@/lib/api/strategies";
 
 // Mirrors backend StockFilters (strategy.py:321). All fields optional;
 // missing or null means "no constraint on this dimension".
@@ -59,6 +61,7 @@ export function UniverseAndRiskFields({
   showUniverse = true,
   showRisk = true,
   disabled = false,
+  strategyDefaults = null,
 }: {
   value: UniverseAndRiskValue;
   onChange: (next: UniverseAndRiskValue) => void;
@@ -69,6 +72,13 @@ export function UniverseAndRiskFields({
   /** Render the risk guardrail block. Default true. */
   showRisk?: boolean;
   disabled?: boolean;
+  /**
+   * Strategy-level risk defaults (Option C hybrid exits). When provided, the
+   * four exit-risk fields render as InheritableField — ghost when the form
+   * value is null, overridden when the user enters a number. `max_positions`
+   * isn't part of strategy defaults, so it stays a plain field.
+   */
+  strategyDefaults?: DefaultRisk | null;
 }) {
   const filters = value.stock_filters ?? {};
   const symbols = value.stock_symbols ?? [];
@@ -193,45 +203,57 @@ export function UniverseAndRiskFields({
       {showRisk && (
         <Section
           kicker="risk · guardrails"
-          info="Hard caps applied per trade. Leave blank for none."
+          info={
+            strategyDefaults
+              ? "The strategy authored defaults for these — leave a field on Inherit to follow the strategy, or click Override to set a per-instance cap."
+              : "Hard caps applied per trade. Leave blank for none."
+          }
         >
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
               gap: 14,
-              maxWidth: 640,
+              maxWidth: 720,
             }}
           >
-            <NumberInput
+            <InheritableField
               label="stop loss %"
+              defaultFromStrategy={strategyDefaults?.stop_loss_pct}
               value={value.stop_loss_pct ?? null}
               onChange={(v) => onChange({ ...value, stop_loss_pct: v })}
               disabled={disabled}
+              unit="%"
               min={0}
               max={100}
             />
-            <NumberInput
+            <InheritableField
               label="take profit %"
+              defaultFromStrategy={strategyDefaults?.take_profit_pct}
               value={value.take_profit_pct ?? null}
               onChange={(v) => onChange({ ...value, take_profit_pct: v })}
               disabled={disabled}
+              unit="%"
               min={0}
               max={100}
             />
-            <NumberInput
+            <InheritableField
               label="trailing stop %"
+              defaultFromStrategy={strategyDefaults?.trailing_stop_pct}
               value={value.trailing_stop_pct ?? null}
               onChange={(v) => onChange({ ...value, trailing_stop_pct: v })}
               disabled={disabled}
+              unit="%"
               min={0}
               max={100}
             />
-            <NumberInput
+            <InheritableField
               label="max holding days"
+              defaultFromStrategy={strategyDefaults?.max_holding_days}
               value={value.max_holding_days ?? null}
               onChange={(v) => onChange({ ...value, max_holding_days: v })}
               disabled={disabled}
+              unit="d"
               min={1}
               integer
             />

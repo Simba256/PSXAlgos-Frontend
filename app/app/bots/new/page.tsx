@@ -14,7 +14,7 @@ import {
   type UniverseAndRiskValue,
 } from "@/components/universe-and-risk-fields";
 import type { BotResponse } from "@/lib/api/bots";
-import type { StrategyResponse } from "@/lib/api/strategies";
+import type { DefaultRisk, StrategyResponse } from "@/lib/api/strategies";
 import { getAllStocks, type StockResponse } from "@/lib/api/stocks";
 
 interface StrategyPreview {
@@ -22,6 +22,11 @@ interface StrategyPreview {
   totalReturnPct: number | null;
   sharpe: number | null;
   status: StrategyResponse["status"];
+  // Hybrid exits (Option C): the strategy may carry default risk caps that
+  // bot fields inherit when left null. Threaded through to UniverseAndRiskFields
+  // so the four exit-risk inputs render as InheritableField with ghost +
+  // override UX. See `docs/EXITS_IMPLEMENTATION_PLAN.md` Phase 5.
+  defaultRisk: DefaultRisk | null;
 }
 
 const DEFAULT_NAME = `Bot ${new Date().toISOString().slice(0, 10)}`;
@@ -94,6 +99,7 @@ export default function BotWizardPage() {
           totalReturnPct: toNum(lb?.total_return_pct),
           sharpe: toNum(lb?.sharpe_ratio),
           status: s.status,
+          defaultRisk: s.exit_rules?.default_risk ?? null,
         });
       } catch {
         // swallow
@@ -334,6 +340,7 @@ export default function BotWizardPage() {
                 availableSectors={availableSectors}
                 availableSymbols={availableSymbols}
                 showUniverse={false}
+                strategyDefaults={strategy?.defaultRisk ?? null}
               />
             )}
           </div>
@@ -584,6 +591,22 @@ function Preview({
     n == null ? "—" : `${n}%`;
   const fmtNumOrDash = (n: number | null | undefined): string =>
     n == null ? "—" : String(n);
+  // Effective-value resolver mirrors the backend's risk_inheritance service:
+  // override (form value) takes precedence; otherwise fall back to the
+  // strategy default. Returns the value plus whether it's inherited so the
+  // preview can render an "inherit" hint without lying about the active cap.
+  const eff = (
+    formValue: number | null | undefined,
+    strategyDefault: number | null | undefined,
+  ): { v: number | null; inherited: boolean } => {
+    if (formValue != null) return { v: formValue, inherited: false };
+    if (strategyDefault != null) return { v: strategyDefault, inherited: true };
+    return { v: null, inherited: false };
+  };
+  const stopLoss = eff(value.stop_loss_pct, strategy?.defaultRisk?.stop_loss_pct);
+  const takeProfit = eff(value.take_profit_pct, strategy?.defaultRisk?.take_profit_pct);
+  const trailingStop = eff(value.trailing_stop_pct, strategy?.defaultRisk?.trailing_stop_pct);
+  const maxHoldingDays = eff(value.max_holding_days, strategy?.defaultRisk?.max_holding_days);
   const backtestColor =
     strategy?.totalReturnPct == null
       ? T.text3
@@ -640,23 +663,39 @@ function Preview({
         />
         <DotRow
           label="Stop loss"
-          value={fmtPctOrDash(value.stop_loss_pct)}
-          color={value.stop_loss_pct != null && step >= 3 ? T.loss : T.text3}
+          value={
+            stopLoss.v == null
+              ? "—"
+              : `${fmtPctOrDash(stopLoss.v)}${stopLoss.inherited ? " · inherited" : ""}`
+          }
+          color={stopLoss.v != null && step >= 3 ? (stopLoss.inherited ? T.text3 : T.loss) : T.text3}
         />
         <DotRow
           label="Take profit"
-          value={fmtPctOrDash(value.take_profit_pct)}
-          color={value.take_profit_pct != null && step >= 3 ? T.gain : T.text3}
+          value={
+            takeProfit.v == null
+              ? "—"
+              : `${fmtPctOrDash(takeProfit.v)}${takeProfit.inherited ? " · inherited" : ""}`
+          }
+          color={takeProfit.v != null && step >= 3 ? (takeProfit.inherited ? T.text3 : T.gain) : T.text3}
         />
         <DotRow
           label="Trailing stop"
-          value={fmtPctOrDash(value.trailing_stop_pct)}
-          color={value.trailing_stop_pct != null && step >= 3 ? T.text2 : T.text3}
+          value={
+            trailingStop.v == null
+              ? "—"
+              : `${fmtPctOrDash(trailingStop.v)}${trailingStop.inherited ? " · inherited" : ""}`
+          }
+          color={trailingStop.v != null && step >= 3 ? T.text2 : T.text3}
         />
         <DotRow
           label="Max holding days"
-          value={fmtNumOrDash(value.max_holding_days)}
-          color={value.max_holding_days != null && step >= 3 ? T.text2 : T.text3}
+          value={
+            maxHoldingDays.v == null
+              ? "—"
+              : `${fmtNumOrDash(maxHoldingDays.v)}${maxHoldingDays.inherited ? " · inherited" : ""}`
+          }
+          color={maxHoldingDays.v != null && step >= 3 ? T.text2 : T.text3}
         />
       </div>
       {step === 3 && (

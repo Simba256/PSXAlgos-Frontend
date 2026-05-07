@@ -27,8 +27,11 @@ import type {
   BacktestJobPending,
   BacktestJobStatus,
   BacktestResultResponse,
+  StrategyResponse,
+  DefaultRisk,
 } from "@/lib/api/strategies";
 import { getAllStocks, type StockResponse } from "@/lib/api/stocks";
+import { InheritableField } from "@/components/inheritable-field";
 
 export interface StrategyOption {
   id: number;
@@ -256,10 +259,54 @@ export function BacktestNewView({
   const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
   const [numericFilters, setNumericFilters] = useState<NumericFilters>(EMPTY_FILTERS);
   const [riskCaps, setRiskCaps] = useState<RiskCaps>(RISK_DEFAULTS);
+  // Hybrid exits (Option C): when the selected strategy authored
+  // `exit_rules.default_risk`, the four inheritable risk fields render via
+  // InheritableField — ghost when null, overridden when the user types.
+  // See `docs/EXITS_IMPLEMENTATION_PLAN.md` Phase 5.
+  const [strategyDefaults, setStrategyDefaults] = useState<DefaultRisk | null>(null);
 
   const [running, setRunning] = useState(false);
 
   const selectedStrategy = strategies.find((s) => s.id === strategyId) ?? null;
+
+  // Pull the selected strategy's default_risk on selection. Failures here
+  // are non-fatal — the form falls back to no-default behavior, so the user
+  // can still run the backtest with their own risk caps.
+  useEffect(() => {
+    if (!strategyId) {
+      setStrategyDefaults(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/strategies/${strategyId}`);
+        if (!res.ok || cancelled) return;
+        const s = (await res.json()) as StrategyResponse;
+        const dr = s.exit_rules?.default_risk ?? null;
+        if (cancelled) return;
+        setStrategyDefaults(dr);
+        // Anchor-counter: where the strategy authored a default, clear the
+        // form's override so the field starts in ghost / inherit. Fields with
+        // no strategy default keep their current value (typically the
+        // RISK_DEFAULTS preset). max_positions isn't inheritable.
+        if (dr) {
+          setRiskCaps((cur) => ({
+            stop_loss_pct: dr.stop_loss_pct != null ? null : cur.stop_loss_pct,
+            take_profit_pct: dr.take_profit_pct != null ? null : cur.take_profit_pct,
+            trailing_stop_pct: dr.trailing_stop_pct != null ? null : cur.trailing_stop_pct,
+            max_holding_days: dr.max_holding_days != null ? null : cur.max_holding_days,
+            max_positions: cur.max_positions,
+          }));
+        }
+      } catch {
+        // swallow
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [strategyId]);
 
   // PSX universe — fetched once on mount, used for sector + symbol pickers.
   const [stocks, setStocks] = useState<StockResponse[]>([]);
@@ -558,6 +605,7 @@ export function BacktestNewView({
                   value={riskCaps}
                   onChange={setRiskCaps}
                   disabled={running}
+                  strategyDefaults={strategyDefaults}
                 />
 
                 {/* Mobile-only run row sits at the bottom of the form. On
@@ -595,6 +643,7 @@ export function BacktestNewView({
                   filtersActive={activeFilterCount(numericFilters)}
                   universeIsDefault={usingDefaultUniverse}
                   risk={riskCaps}
+                  strategyDefaults={strategyDefaults}
                   riskIsDefault={usingDefaultRisk}
                   running={running}
                   onRun={handleRun}
@@ -670,6 +719,7 @@ function RunRail({
   filtersActive,
   universeIsDefault,
   risk,
+  strategyDefaults,
   riskIsDefault,
   running,
   onRun,
@@ -688,6 +738,7 @@ function RunRail({
   filtersActive: number;
   universeIsDefault: boolean;
   risk: RiskCaps;
+  strategyDefaults: DefaultRisk | null;
   riskIsDefault: boolean;
   running: boolean;
   onRun: () => void;
@@ -710,12 +761,31 @@ function RunRail({
     return `${parts.join(" ∪ ")} · ${universeSize.toLocaleString("en-PK")} tickers`;
   })();
   const riskLabel = (() => {
+    // Mirror backend resolver: override (risk.X) wins, else strategy default,
+    // else absent. Inherited values get a "↳" prefix so the rail communicates
+    // both the effective cap and that it came from the strategy.
     const parts: string[] = [];
-    if (risk.stop_loss_pct != null) parts.push(`Stop ${risk.stop_loss_pct}%`);
-    if (risk.take_profit_pct != null) parts.push(`Take ${risk.take_profit_pct}%`);
-    if (risk.trailing_stop_pct != null) parts.push(`Trail ${risk.trailing_stop_pct}%`);
+    const stop = risk.stop_loss_pct ?? strategyDefaults?.stop_loss_pct ?? null;
+    if (stop != null) {
+      const tag = risk.stop_loss_pct == null && strategyDefaults?.stop_loss_pct != null ? "↳ " : "";
+      parts.push(`${tag}Stop ${stop}%`);
+    }
+    const take = risk.take_profit_pct ?? strategyDefaults?.take_profit_pct ?? null;
+    if (take != null) {
+      const tag = risk.take_profit_pct == null && strategyDefaults?.take_profit_pct != null ? "↳ " : "";
+      parts.push(`${tag}Take ${take}%`);
+    }
+    const trail = risk.trailing_stop_pct ?? strategyDefaults?.trailing_stop_pct ?? null;
+    if (trail != null) {
+      const tag = risk.trailing_stop_pct == null && strategyDefaults?.trailing_stop_pct != null ? "↳ " : "";
+      parts.push(`${tag}Trail ${trail}%`);
+    }
     if (risk.max_positions != null) parts.push(`Max ${risk.max_positions} pos`);
-    if (risk.max_holding_days != null) parts.push(`${risk.max_holding_days}d max`);
+    const hold = risk.max_holding_days ?? strategyDefaults?.max_holding_days ?? null;
+    if (hold != null) {
+      const tag = risk.max_holding_days == null && strategyDefaults?.max_holding_days != null ? "↳ " : "";
+      parts.push(`${tag}${hold}d max`);
+    }
     if (parts.length === 0) return "no caps applied";
     return parts.join(" · ");
   })();
@@ -1696,10 +1766,18 @@ function RiskSection({
   value,
   onChange,
   disabled,
+  strategyDefaults,
 }: {
   value: RiskCaps;
   onChange: (v: RiskCaps) => void;
   disabled: boolean;
+  /**
+   * When the selected strategy authored `default_risk`, the four inheritable
+   * exit fields render as InheritableField (ghost / overridden / no-default).
+   * Null when the strategy has no defaults — the form falls back to plain
+   * inputs and the legacy preset behavior.
+   */
+  strategyDefaults: DefaultRisk | null;
 }) {
   const T = useT();
   const activePreset: "balanced" | "aggressive" | "none" | "custom" = (() => {
@@ -1712,7 +1790,11 @@ function RiskSection({
   return (
     <Section
       label="risk caps"
-      hint="Hard exits applied to every simulated trade. Sensible defaults are pre-filled — tune or switch presets."
+      hint={
+        strategyDefaults
+          ? "The strategy authored defaults — leave a field on Inherit to follow the strategy, or click Override to set a per-backtest cap. Presets below override every field at once."
+          : "Hard exits applied to every simulated trade. Sensible defaults are pre-filled — tune or switch presets."
+      }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1771,36 +1853,48 @@ function RiskSection({
             maxWidth: 720,
           }}
         >
-          <RiskField
+          <InheritableField
             label="stop loss %"
             caption="Exit if a trade loses more than this."
+            defaultFromStrategy={strategyDefaults?.stop_loss_pct}
             value={value.stop_loss_pct}
             onChange={(v) => onChange({ ...value, stop_loss_pct: v })}
             disabled={disabled}
+            unit="%"
+            min={0}
             max={100}
           />
-          <RiskField
+          <InheritableField
             label="take profit %"
             caption="Exit when a trade gains more than this."
+            defaultFromStrategy={strategyDefaults?.take_profit_pct}
             value={value.take_profit_pct}
             onChange={(v) => onChange({ ...value, take_profit_pct: v })}
             disabled={disabled}
+            unit="%"
+            min={0}
             max={100}
           />
-          <RiskField
+          <InheritableField
             label="trailing stop %"
             caption="Lock in gains as price rises."
+            defaultFromStrategy={strategyDefaults?.trailing_stop_pct}
             value={value.trailing_stop_pct}
             onChange={(v) => onChange({ ...value, trailing_stop_pct: v })}
             disabled={disabled}
+            unit="%"
+            min={0}
             max={100}
           />
-          <RiskField
+          <InheritableField
             label="max holding days"
             caption="Force-close trades after this many days."
+            defaultFromStrategy={strategyDefaults?.max_holding_days}
             value={value.max_holding_days}
             onChange={(v) => onChange({ ...value, max_holding_days: v })}
             disabled={disabled}
+            unit="d"
+            min={1}
             integer
           />
           <RiskField
