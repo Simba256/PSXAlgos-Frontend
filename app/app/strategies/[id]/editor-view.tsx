@@ -80,6 +80,7 @@ import {
   layoutBounds,
   layoutTree,
   mirrorLayout,
+  shiftLayoutY,
   walkGroups,
   walkLeaves,
 } from "@/lib/strategy/layout";
@@ -1938,15 +1939,20 @@ function Canvas({
       setZoom(1);
       return;
     }
-    const root = layoutTree(tree);
-    const bounds = layoutBounds(root);
     const ROOT_TO_OUTPUT_GAP = 402;
     const RISK_NODE_W = RiskDefaultsNode.WIDTH;
     const RISK_TO_EXIT_GAP = 80;
-    const outputX = root.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
+    const rootRaw = layoutTree(tree);
+    const exitRawForMirror = layoutTree(exitTree);
+    const outputX = rootRaw.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
     const EXIT_ROOT_GATE_X = outputX + RISK_NODE_W + RISK_TO_EXIT_GAP;
     const mirrorAxisX = (EXIT_ROOT_GATE_X + 410 + GATE_W) / 2;
-    const exitRoot = mirrorLayout(layoutTree(exitTree), mirrorAxisX);
+    const exitMirrored = mirrorLayout(exitRawForMirror, mirrorAxisX);
+    // Y-align both root gates so the spine reads as one horizontal bar.
+    const unifiedGateY = Math.max(rootRaw.gateY, exitMirrored.gateY);
+    const root = shiftLayoutY(rootRaw, unifiedGateY - rootRaw.gateY);
+    const exitRoot = shiftLayoutY(exitMirrored, unifiedGateY - exitMirrored.gateY);
+    const bounds = layoutBounds(root);
     const exitBounds = layoutBounds(exitRoot);
     const fitMaxX = Math.max(outputX + RISK_NODE_W + 24, exitBounds.maxX) + 24;
     const fitMinX = Math.min(bounds.minX, exitBounds.minX) - 24;
@@ -2018,11 +2024,56 @@ function Canvas({
           // depth-1 tree the layout produces near-identical pixel positions
           // to the pre-Phase-C canvas; nested groups get boxed containers
           // with their own gate glyph.
-          const root = layoutTree(tree);
+          // Phase C: tree-aware auto-layout. The flat-list math from B is
+          // replaced by `layoutTree` (recursive size + place) which returns
+          // (x, y) for every node and per-group gate coordinates.
+          //
+          // Phase 4 (Option C hybrid exits, 2026-05-07): the right side used
+          // to host three OutputPins; replaced by the pinned
+          // `RiskDefaultsNode` — strategy-level scalar guardrail defaults.
+          //
+          // Phase 4b (2026-05-07): the right side now also hosts a parallel
+          // mirrored exit tree. Past the RiskDefaultsNode (right edge at
+          // `outputX + RISK_NODE_W`), the exit tree's mirrored layout
+          // begins — its root gate sits at `EXIT_ROOT_GATE_X`, leaves flow
+          // rightward via `mirrorLayout`'s X reflection.
+          //
+          // Phase 4b alignment fix (2026-05-08): each tree packs its own
+          // children top-down so their root gateYs differ; we Y-align both
+          // roots on `unifiedGateY = max(entryGateY, exitGateY)` via
+          // `shiftLayoutY`, and Risk Defaults centers on that same Y. The
+          // result: entry gate, Risk Defaults pin, exit gate all share one
+          // horizontal spine. Risk Defaults now also gets a wire on its
+          // right pin → exit root, so it reads as a junction (governs both
+          // entry- and exit-driven trades) rather than a one-sided dead-end.
+          const ROOT_TO_OUTPUT_GAP = 402;
+          const RISK_NODE_W = RiskDefaultsNode.WIDTH;
+          const RISK_TO_EXIT_GAP = 80;
+          const rootRaw = layoutTree(tree);
+          const exitRawForMirror = layoutTree(exitTree);
+          const outputX = rootRaw.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
+          // Place the exit root gate's left edge at `EXIT_ROOT_GATE_X` (just
+          // past RiskDefaultsNode + a small gap). Derive `mirrorAxisX` from
+          // the original ROOT_GATE_X (=410) anchor: a mirror about
+          // `mirrorAxisX` flips left edge of the root gate from
+          // `ROOT_GATE_X` to `2*mirrorAxisX - ROOT_GATE_X - GATE_W`. Solve
+          // `2*mirrorAxisX - ROOT_GATE_X - GATE_W = EXIT_ROOT_GATE_X` for
+          // axisX. After the mirror, leaves flow rightward, gate sits on
+          // the LEFT, slots position on the gate's right side.
+          const EXIT_ROOT_GATE_X = outputX + RISK_NODE_W + RISK_TO_EXIT_GAP;
+          const mirrorAxisX = (EXIT_ROOT_GATE_X + 410 + GATE_W) / 2;
+          const exitMirrored = mirrorLayout(exitRawForMirror, mirrorAxisX);
+          // Y-align: shift the smaller tree down so both root gates share
+          // `unifiedGateY`. delta = 0 for the taller tree (no-op).
+          const unifiedGateY = Math.max(rootRaw.gateY, exitMirrored.gateY);
+          const root = shiftLayoutY(rootRaw, unifiedGateY - rootRaw.gateY);
+          const exitRoot = shiftLayoutY(
+            exitMirrored,
+            unifiedGateY - exitMirrored.gateY,
+          );
+
           const allLeaves = walkLeaves(root);
           const nestedGroups = walkGroups(root); // excludes root
-          // Phase D: every group exposes between/end/empty slots that
-          // serve as click targets for the inline `+` picker.
           const slots = collectSlots(root);
           const isTreeEmpty = tree.children.length === 0;
 
@@ -2032,61 +2083,26 @@ function Canvas({
           groupMap.set(root.id, root);
           for (const g of nestedGroups) groupMap.set(g.id, g);
 
-          // Right-side anchor. The layered layout pins the root gate at
-          // FIXED X (`ROOT_GATE_X` in layout.ts), so deeper trees grow
-          // leftward into negative X while the right anchor stays put.
-          // `rootOriginX/Y` tracks the actual outgoing pin so single-child
-          // trees still wire from the leaf without going through a hidden
-          // gate.
-          //
-          // Phase 4 (Option C hybrid exits, 2026-05-07): the right side used
-          // to host three OutputPins (Backtest / Live signals / Automate)
-          // stacked vertically. They've been replaced by the pinned
-          // `RiskDefaultsNode` — strategy-level scalar guardrail defaults
-          // that bots/backtests inherit. The OutputPins' navigation role
-          // moved into the bottom-right `StatusStrip` pill so the canvas
-          // right edge isn't double-occupied.
-          //
-          // Phase 4b (2026-05-07): the right side now also hosts a parallel
-          // mirrored exit tree. The entry tree's geometry is unchanged; the
-          // RiskDefaultsNode pin still sits at `outputX` connected to the
-          // entry root pin (same connector as Phase 4). Past the
-          // RiskDefaultsNode (right edge at `outputX + RISK_NODE_W`), the
-          // exit tree's mirrored layout begins — its root gate sits at
-          // `EXIT_ROOT_GATE_X`, leaves flow rightward via `mirrorLayout`'s
-          // X reflection. The two trees share no logical wire (entry
-          // determines entries, exit-tree determines exits, RiskDefaultsNode
-          // governs both); they coexist visually as two condition surfaces
-          // on the same canvas.
-          const ROOT_TO_OUTPUT_GAP = 402;
-          const RISK_NODE_W = RiskDefaultsNode.WIDTH;
-          const RISK_TO_EXIT_GAP = 80;
+          // Right-side anchor. `rootOriginX/Y` tracks the actual outgoing
+          // pin so single-child trees still wire from the leaf without
+          // going through a hidden gate.
           const rootOriginX = root.showGate ? root.gateX + GATE_W : root.pinX;
           const rootOriginY = root.showGate ? root.gateY : root.pinY;
-          const outputX = root.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
           const outputCurveCtrlX = (rootOriginX + outputX) / 2;
-          // RiskDefaultsNode coordinates. The node's top sits at
-          // `riskNodeY`; its pin (left edge, vertically offset by
-          // PIN_OFFSET_Y) lands at `riskPinY`. We solve for `riskNodeY` so
-          // the pin lines up with the root's outgoing pin Y, giving the
-          // single connector a clean horizontal flow.
-          const riskPinY = root.pinY;
+          // RiskDefaultsNode coordinates. Pin Y is the unified gate Y
+          // (shared spine); the node top sits PIN_OFFSET_Y above so the pin
+          // lines up exactly. Left pin is `riskPinX`, right pin is
+          // `riskRightPinX = outputX + RISK_NODE_W` — the Risk node now
+          // bridges entry and exit trees instead of being a dead-end.
+          const riskPinY = unifiedGateY;
           const riskNodeY = riskPinY - RiskDefaultsNode.PIN_OFFSET_Y;
           const riskPinX = outputX;
+          const riskRightPinX = outputX + RISK_NODE_W;
 
-          // Mirrored exit-tree layout. Place the exit root gate's left edge
-          // at `EXIT_ROOT_GATE_X` (just past RiskDefaultsNode + a small gap)
-          // and derive `mirrorAxisX` from the original ROOT_GATE_X (=410)
-          // anchor: a mirror about `mirrorAxisX` flips left edge of the root
-          // gate from `ROOT_GATE_X` to `2*mirrorAxisX - ROOT_GATE_X - GATE_W`.
-          // We solve `2*mirrorAxisX - ROOT_GATE_X - GATE_W = EXIT_ROOT_GATE_X`
-          // for axisX. After the mirror, leaves flow rightward, gate sits
-          // on the LEFT, and the per-group "+ Add condition" slots position
-          // themselves on the gate's right side (mirror flips slot.cx too).
-          const EXIT_ROOT_GATE_X = outputX + RISK_NODE_W + RISK_TO_EXIT_GAP;
-          const mirrorAxisX = (EXIT_ROOT_GATE_X + 410 + GATE_W) / 2;
-          const exitRootRaw = layoutTree(exitTree);
-          const exitRoot = mirrorLayout(exitRootRaw, mirrorAxisX);
+          const exitOriginX = exitRoot.showGate ? exitRoot.gateX : exitRoot.pinX;
+          const exitOriginY = exitRoot.showGate ? exitRoot.gateY : exitRoot.pinY;
+          const exitCurveCtrlX = (riskRightPinX + exitOriginX) / 2;
+
           const exitLeaves = walkLeaves(exitRoot);
           const exitNestedGroups = walkGroups(exitRoot);
           const exitSlots = collectSlots(exitRoot);
@@ -2187,12 +2203,20 @@ function Canvas({
                     T={T}
                   />
                 ))}
-                {/* Entry root → RiskDefaultsNode connector. The exit tree
-                    is intentionally unwired — risk caps apply to both
-                    entry- and exit-driven trades, but the visual stays
-                    cleaner without a redundant exit-root → risk wire. */}
+                {/* Spine: entry root → Risk Defaults left pin, then Risk
+                    Defaults right pin → exit root. After Y-alignment all
+                    three points share `unifiedGateY` so the spine reads as
+                    one horizontal bar. Risk Defaults bridges both trees —
+                    the same scalar caps govern entry- and exit-driven
+                    trades, and the dual wire makes that visible. */}
                 <Connector
                   d={`M ${rootOriginX} ${rootOriginY} C ${outputCurveCtrlX} ${rootOriginY} ${outputCurveCtrlX} ${riskPinY} ${riskPinX} ${riskPinY}`}
+                  color={T.primary}
+                  width={1.4}
+                  T={T}
+                />
+                <Connector
+                  d={`M ${riskRightPinX} ${riskPinY} C ${exitCurveCtrlX} ${riskPinY} ${exitCurveCtrlX} ${exitOriginY} ${exitOriginX} ${exitOriginY}`}
                   color={T.primary}
                   width={1.4}
                   T={T}

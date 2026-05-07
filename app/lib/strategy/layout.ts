@@ -391,6 +391,30 @@ export function collectSlots(root: GroupLayout): InsertionSlot[] {
   return slots;
 }
 
+// Translates every Y coordinate of an already-placed layout by `delta`. Used
+// by the Phase 4b dual-tree canvas to align the entry and exit root gates on
+// a shared Y axis: each tree packs its own children top-down so their root
+// gateYs differ; we re-center the smaller tree to match the taller one so the
+// "spine" (entry gate → Risk Defaults → exit gate) reads as a single
+// horizontal bar.
+export function shiftLayoutY(layout: GroupLayout, delta: number): GroupLayout {
+  if (delta === 0) return layout;
+  const visit = (n: NodeLayout): NodeLayout => {
+    if (n.kind === "condition") {
+      return { ...n, y: n.y + delta, pinY: n.pinY + delta };
+    }
+    return {
+      ...n,
+      y: n.y + delta,
+      gateY: n.gateY + delta,
+      pinY: n.pinY + delta,
+      addSlotCy: n.addSlotCy + delta,
+      children: n.children.map(visit),
+    };
+  };
+  return visit(layout) as GroupLayout;
+}
+
 // Reflects every X coordinate of an already-placed layout about a vertical
 // axis at `axisX`. The reflected layout still reads top-to-bottom but flows
 // left-to-right (children right of root) instead of right-to-left, which is

@@ -81,7 +81,12 @@ export function RiskDefaultsNode({
         boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 4px 14px -8px rgba(0,0,0,0.5)`,
       }}
     >
+      {/* Two pins so Risk Defaults reads as a junction, not a dead-end:
+          left pin connects from the entry root gate, right pin connects to
+          the mirrored exit root gate. Both share NODE_PIN_OFFSET_Y so the
+          spine wire is a clean horizontal pass-through. */}
       <Pin x={-4} y={NODE_PIN_OFFSET_Y} color={T.primary} />
+      <Pin x={NODE_W - 4} y={NODE_PIN_OFFSET_Y} color={T.primary} />
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span
           style={{
