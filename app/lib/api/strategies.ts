@@ -412,6 +412,36 @@ export interface BacktestTrade {
   holding_days: number;
 }
 
+// Phase 7 — frozen snapshot of how each scalar risk field was resolved at
+// run time. Persisted on `BacktestResult.run_config.effective_risk` by the
+// backend's `_resolve_run_config` (backend/app/routers/strategies.py:62) via
+// `risk_inheritance.EffectiveRisk.to_dict()`. The result page reads this
+// instead of re-resolving against the strategy, which may have changed
+// since the run.
+export type EffectiveRiskSource = "explicit" | "default" | "none";
+
+export interface EffectiveRiskResolution {
+  // `null` iff source === "none" (no explicit override and no strategy
+  // default — the guardrail was inactive for this run).
+  value: number | null;
+  source: EffectiveRiskSource;
+}
+
+export interface EffectiveRiskSnapshot {
+  stop_loss_pct: EffectiveRiskResolution;
+  take_profit_pct: EffectiveRiskResolution;
+  trailing_stop_pct: EffectiveRiskResolution;
+  max_holding_days: EffectiveRiskResolution;
+}
+
+// Subset of `BacktestResult.run_config` that the result page reads. Other
+// keys (stock_filters, position_sizing, …) exist on the wire but aren't
+// rendered yet — leave them untyped rather than encoding shapes the UI
+// doesn't read, which would invite drift if the backend extends them.
+export interface BacktestRunConfig {
+  effective_risk?: EffectiveRiskSnapshot | null;
+}
+
 export interface BacktestResultResponse {
   id: number;
   strategy_id: number;
@@ -439,6 +469,11 @@ export interface BacktestResultResponse {
   avg_holding_days?: Decimal | null;
   equity_curve?: BacktestEquityPoint[] | null;
   trades?: BacktestTrade[] | null;
+  // Phase 7 — frozen snapshot of the run's resolved risk guardrails plus
+  // their source. Older results predating the snapshot may carry no
+  // `effective_risk` block (or no `run_config` at all); the panel falls
+  // back to a neutral "not recorded" state in that case.
+  run_config?: BacktestRunConfig | null;
   created_at?: string | null;
 }
 

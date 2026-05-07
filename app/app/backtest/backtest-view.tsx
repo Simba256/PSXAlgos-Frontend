@@ -8,6 +8,8 @@ import { useT } from "@/components/theme";
 import type {
   BacktestEquityPoint,
   BacktestResultResponse,
+  EffectiveRiskResolution,
+  EffectiveRiskSnapshot,
 } from "@/lib/api/strategies";
 import {
   Btn,
@@ -552,6 +554,14 @@ export function BacktestView({
                   actual run, which is misleading. Add it back once the
                   backend exposes a real breakdown. */}
 
+              {result && (
+                <div style={{ marginBottom: 28 }}>
+                  <EffectiveRiskPanel
+                    snapshot={result.run_config?.effective_risk ?? null}
+                  />
+                </div>
+              )}
+
               <div>
                 <Ribbon kicker="deploy?" color={T.deploy} />
                 <div
@@ -706,3 +716,154 @@ function TradeLog({ trades }: { trades: Trade[] }) {
   );
 }
 
+// Phase 7 — read-only attribution panel for the four scalar risk guardrails
+// the engine ran under. The backend's `_resolve_run_config` snapshots each
+// field's resolved value plus its source onto `BacktestResult.run_config.
+// effective_risk` so we don't have to re-resolve against a strategy that
+// may have changed since the run. Empty / missing snapshot (older results,
+// or runs that predate Phase 2) renders a single muted "not recorded" line
+// instead of guessing — the UI shouldn't fabricate values that weren't
+// captured.
+
+const RISK_ROWS: ReadonlyArray<{
+  field: keyof EffectiveRiskSnapshot;
+  label: string;
+  unit: "%" | "d";
+  integer?: boolean;
+}> = [
+  { field: "stop_loss_pct", label: "Stop loss", unit: "%" },
+  { field: "take_profit_pct", label: "Take profit", unit: "%" },
+  { field: "trailing_stop_pct", label: "Trailing", unit: "%" },
+  { field: "max_holding_days", label: "Max hold", unit: "d", integer: true },
+];
+
+function formatRiskValue(
+  value: number | null,
+  unit: "%" | "d",
+  integer: boolean,
+): string {
+  if (value == null) return "—";
+  if (integer) return `${Math.round(value)}${unit}`;
+  // Trim trailing zeros, cap at 2 decimals — matches the InheritableField
+  // and inheritance-warning-modal formatters so values read consistently
+  // across the app.
+  return `${Number(value.toFixed(2))}${unit}`;
+}
+
+function EffectiveRiskPanel({
+  snapshot,
+}: {
+  snapshot: EffectiveRiskSnapshot | null;
+}) {
+  const T = useT();
+
+  return (
+    <div>
+      <Ribbon kicker="effective risk" />
+      {snapshot ? (
+        <div style={{ marginTop: 6 }}>
+          {RISK_ROWS.map((row) => (
+            <RiskRow
+              key={row.field}
+              label={row.label}
+              unit={row.unit}
+              integer={row.integer ?? false}
+              resolution={snapshot[row.field]}
+            />
+          ))}
+          <p
+            style={{
+              margin: "12px 0 0",
+              fontSize: 11,
+              color: T.text3,
+              fontFamily: T.fontMono,
+              lineHeight: 1.5,
+            }}
+          >
+            captured at run time · sources won&apos;t shift if the strategy
+            default changes
+          </p>
+        </div>
+      ) : (
+        <div
+          style={{
+            marginTop: 6,
+            padding: "10px 12px",
+            border: `1px dashed ${T.outlineFaint}`,
+            borderRadius: 4,
+            fontFamily: T.fontMono,
+            fontSize: 11,
+            color: T.text3,
+            lineHeight: 1.5,
+          }}
+        >
+          risk snapshot not recorded for this run
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RiskRow({
+  label,
+  unit,
+  integer,
+  resolution,
+}: {
+  label: string;
+  unit: "%" | "d";
+  integer: boolean;
+  resolution: EffectiveRiskResolution;
+}) {
+  const T = useT();
+  const display = formatRiskValue(resolution.value, unit, integer);
+  // Source-driven typography: explicit overrides get the brand tint so the
+  // user can scan for "what did I change?" at a glance; defaults read as
+  // primary text (the run honored what the strategy authored); inactive
+  // fields fade so the absence is visible but not noisy.
+  const valueColor =
+    resolution.source === "explicit"
+      ? T.primaryLight
+      : resolution.source === "default"
+      ? T.text
+      : T.text3;
+  const sourceLabel =
+    resolution.source === "explicit"
+      ? "override"
+      : resolution.source === "default"
+      ? "default"
+      : "inactive";
+  const sourceColor =
+    resolution.source === "explicit" ? T.primaryLight : T.text3;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "baseline",
+        gap: 8,
+        padding: "7px 0",
+        borderBottom: `1px solid ${T.outlineFaint}`,
+        fontFamily: T.fontMono,
+        fontSize: 12,
+      }}
+    >
+      <span style={{ color: T.text2, flex: 1 }}>{label}</span>
+      <span style={{ color: valueColor, fontVariantNumeric: "tabular-nums" }}>
+        {display}
+      </span>
+      <span
+        style={{
+          fontSize: 10,
+          letterSpacing: 0.4,
+          textTransform: "uppercase",
+          color: sourceColor,
+          minWidth: 56,
+          textAlign: "right",
+        }}
+      >
+        {sourceLabel}
+      </span>
+    </div>
+  );
+}
