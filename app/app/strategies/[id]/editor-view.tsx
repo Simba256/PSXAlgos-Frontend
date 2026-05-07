@@ -60,7 +60,6 @@ import {
   leafFromCond,
   findNode,
   findParent,
-  normalizeWireGroup,
   removeNode,
   replaceNode,
   setGroupLogic,
@@ -80,12 +79,19 @@ import {
   collectSlots,
   layoutBounds,
   layoutTree,
+  mirrorLayout,
   walkGroups,
   walkLeaves,
 } from "@/lib/strategy/layout";
 
 type SelKind = "condition" | "group";
-type Selection = { kind: SelKind; id: CondId } | null;
+// Phase 4b — selection is now scoped to the tree it belongs to (`entry`
+// or `exit`). Leaf/group IDs are unique within a single tree but the two
+// trees are independent state slices, so source disambiguates which one
+// the drawer mutates. Pre-4b code that used `{kind, id}` only ever needed
+// to look in the entry tree; new mutations route by `source`.
+type SelSource = "entry" | "exit";
+type Selection = { kind: SelKind; id: CondId; source: SelSource } | null;
 
 type NodeKind = "momentum" | "trend" | "volume";
 
@@ -224,10 +230,18 @@ type SaveStatus = "idle" | "saving" | "error";
 // their own field is null. Authored on the canvas via RiskDefaultsNode (Phase
 // 4). Sent on every save; an empty `riskDefaults` object clears all four
 // defaults. See `docs/EXITS_IMPLEMENTATION_PLAN.md`.
+//
+// Phase 4b (2026-05-07): the signal-based exit tree is now first-class
+// editor state (`exitTree`). On save we re-serialize it via `toBackend` when
+// it has any leaves; an empty exit tree wires `conditions: null` so the
+// backend sees "no signal-based exits configured" rather than a structurally
+// empty group (which would always evaluate to True and exit on every bar).
+// Other `exit_rules` fields (e.g. metadata blobs) pass through `exit`.
 export function buildUpdateBody(
   name: string,
   tree: ConditionGroup,
   exit: ExitRules,
+  exitTree: ConditionGroup,
   riskDefaults: DefaultRisk,
 ): StrategyUpdateBody {
   return {
@@ -235,7 +249,7 @@ export function buildUpdateBody(
     entry_rules: { conditions: toBackend(tree) },
     exit_rules: {
       ...exit,
-      conditions: exit.conditions ? normalizeWireGroup(exit.conditions) : exit.conditions,
+      conditions: hasAnyLeaf(exitTree) ? toBackend(exitTree) : null,
       default_risk: riskDefaults,
     },
   };
@@ -287,20 +301,27 @@ export function EditorView({
   // Post-B046 the editor stopped mutating exit guardrails / sizing. Hybrid
   // exits (Option C, 2026-05-07) reintroduce the four scalar guardrails as
   // strategy-level defaults under `exit_rules.default_risk`, authored on the
-  // canvas via the `RiskDefaultsNode` pin. The signal-based exit-tree branch
-  // (`exit_rules.conditions`) round-trips through `exit` so older strategies
-  // carrying one don't lose it on save. Phase 4 ships `default_risk` editing
-  // through `riskDefaults`; the parallel right-side authoring tree is a
-  // follow-up — for now the conditions blob is read-only.
-  const [exit, setExit] = useState<ExitRules>(initialStrategy.exit_rules ?? {});
+  // canvas via the `RiskDefaultsNode` pin.
+  //
+  // Phase 4b (2026-05-07): `exit_rules.conditions` (signal-based exits) is now
+  // edited as a real tree (`exitTree`) on the right side of the canvas, mirror
+  // of the entry tree. `exit` retains any non-conditions / non-default_risk
+  // metadata so save can pass it through unchanged. `setExit` is unused today
+  // (no UI mutates the metadata) but the slot is here so a future field can
+  // land without a state refactor.
+  const [exit] = useState<ExitRules>(initialStrategy.exit_rules ?? {});
+  const [exitTree, setExitTree] = useState<ConditionGroup>(() =>
+    fromBackend(
+      initialStrategy.exit_rules?.conditions ?? {
+        kind: "group",
+        logic: "AND",
+        conditions: [],
+      },
+    ),
+  );
   const [riskDefaults, setRiskDefaults] = useState<DefaultRisk>(
     initialStrategy.exit_rules?.default_risk ?? {},
   );
-  // `setExit` is wired so a future Phase 4b/5 mutation surface (right-side
-  // exit-tree editor) can land without a second state refactor. Until then
-  // the only mutation comes from `riskDefaults`, which `buildUpdateBody`
-  // merges back into `exit_rules.default_risk` on save.
-  void setExit;
   const [dirty, setDirty] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [name, setName] = useState<string>(initialStrategy.name);
@@ -318,8 +339,8 @@ export function EditorView({
   // parent's; `kind: "delete-group"` fires for groups with 2+ children. Both
   // fall through to a direct mutation when no confirmation is needed.
   const [groupModal, setGroupModal] = useState<
-    | { kind: "ungroup"; groupId: CondId }
-    | { kind: "delete-group"; groupId: CondId }
+    | { kind: "ungroup"; groupId: CondId; source: SelSource }
+    | { kind: "delete-group"; groupId: CondId; source: SelSource }
     | null
   >(null);
   // B047 deploy modal — universe picker + Confirm. `null` = closed.
@@ -361,11 +382,25 @@ export function EditorView({
     return () => clearTimeout(t);
   }, [flash]);
 
-  const onSelect = (kind: SelKind, id: string) =>
+  // Phase 4b — selection scoped per tree. Same id can theoretically exist in
+  // both trees (UUIDs make this astronomically unlikely, but the source field
+  // makes the intent explicit), so toggle-off only fires when kind+id+source
+  // all match.
+  const onSelect = (kind: SelKind, id: string, source: SelSource = "entry") =>
     setSelection((prev) =>
-      prev?.kind === kind && prev.id === id ? null : { kind, id }
+      prev?.kind === kind && prev.id === id && prev.source === source
+        ? null
+        : { kind, id, source }
     );
   const close = () => setSelection(null);
+
+  // Phase 4b — pick the right state setter for source-routed mutations.
+  // Returns a tuple [tree, setTree] so callers can read+update without
+  // duplicating the conditional in every handler.
+  const treeFor = (
+    source: SelSource,
+  ): [ConditionGroup, React.Dispatch<React.SetStateAction<ConditionGroup>>] =>
+    source === "exit" ? [exitTree, setExitTree] : [tree, setTree];
 
   // Risk-defaults change handler. Wraps setRiskDefaults + setDirty so the
   // save toolbar lights up the moment the user types, and Phase 5 forms see
@@ -392,7 +427,7 @@ export function EditorView({
       if (!opts?.silent) setFlash("A strategy needs at least one condition");
       return;
     }
-    const body = buildUpdateBody(name, tree, exit, riskDefaults);
+    const body = buildUpdateBody(name, tree, exit, exitTree, riskDefaults);
     // Phase 6 — capture the strategy's *previous* default-risk before the
     // PUT lands so we can hand the snapshot value to apply-default-risk.
     // The backend response carries the new value on the strategy and the
@@ -681,19 +716,27 @@ export function EditorView({
   };
 
   // Create-mode wiring — clicking an inline `+` stages a draft cond and
-  // remembers (parentId, index) so the new leaf lands exactly where the
-  // user pointed. `index === undefined` falls back to "append to end",
-  // which is what every legacy code path already expected.
+  // remembers (parentId, index, source) so the new leaf lands exactly where
+  // the user pointed. `index === undefined` falls back to "append to end",
+  // which is what every legacy code path already expected. Phase 4b: source
+  // tracks which tree the slot belongs to so the create handler knows where
+  // to insert on apply.
   const [creating, setCreating] = useState<{
     parentId: CondId;
     index?: number;
+    source: SelSource;
     cond: SingleCondition;
   } | null>(null);
-  const handleAddCondition = (parentId: CondId = tree.id, index?: number) => {
+  const handleAddCondition = (
+    parentId: CondId,
+    index?: number,
+    source: SelSource = "entry",
+  ) => {
     setSelection(null);
     setCreating({
       parentId,
       index,
+      source,
       cond: {
         kind: "condition",
         indicator: "rsi",
@@ -714,61 +757,82 @@ export function EditorView({
   const [pendingPicker, setPendingPicker] = useState<{
     parentId: CondId;
     index: number;
+    source: SelSource;
   } | null>(null);
   const handleAddGroup = (
     parentId: CondId,
     index: number,
     logic: ConditionLogic,
+    source: SelSource = "entry",
   ) => {
     const fresh = emptyGroup(logic);
-    setTree((t) => insertChild(t, parentId, fresh, index));
-    setPendingPicker({ parentId: fresh.id, index: 0 });
+    const [, set] = treeFor(source);
+    set((t) => insertChild(t, parentId, fresh, index));
+    setPendingPicker({ parentId: fresh.id, index: 0, source });
     setDirty(true);
   };
   // Auto-clear pendingPicker once consumed so re-renders don't reopen it.
-  const consumePendingPicker = (parentId: CondId, index: number) => {
+  const consumePendingPicker = (
+    parentId: CondId,
+    index: number,
+    source: SelSource = "entry",
+  ) => {
     if (
       pendingPicker &&
       pendingPicker.parentId === parentId &&
-      pendingPicker.index === index
+      pendingPicker.index === index &&
+      pendingPicker.source === source
     ) {
       setPendingPicker(null);
     }
   };
 
-  const handleDeleteNode = (id: CondId) => {
-    const next = removeNode(tree, id);
-    if (!hasAnyLeaf(next)) {
+  // Phase 4b — entry-tree leaves still hard-block save on "no leaves left"
+  // (a strategy must have at least one entry condition). Exit-tree leaves
+  // are optional (an empty exit tree means "no signal-based exits, rely on
+  // risk defaults"), so deleting the last exit leaf is allowed.
+  const handleDeleteNode = (id: CondId, source: SelSource = "entry") => {
+    const [t, set] = treeFor(source);
+    const next = removeNode(t, id);
+    if (source === "entry" && !hasAnyLeaf(next)) {
       setFlash("A strategy needs at least one condition");
       return;
     }
-    setTree(next);
+    set(next);
     setDirty(true);
     close();
-    setFlash("Condition deleted");
+    setFlash(source === "exit" ? "Exit condition deleted" : "Condition deleted");
   };
 
-  const handleDuplicateNode = (id: CondId) => {
-    const node = findNode(tree, id);
+  const handleDuplicateNode = (id: CondId, source: SelSource = "entry") => {
+    const [t, set] = treeFor(source);
+    const node = findNode(t, id);
     if (!node || node.kind !== "condition") return;
-    const parent = findParent(tree, id) ?? tree;
+    const parent = findParent(t, id) ?? t;
     const idx = parent.children.findIndex((c) => c.id === id);
     const copy: ConditionLeaf = leafFromCond({
       ...node.cond,
       value: { ...node.cond.value },
       params: node.cond.params ? { ...node.cond.params } : null,
     });
-    setTree(insertChild(tree, parent.id, copy, idx + 1));
+    set(insertChild(t, parent.id, copy, idx + 1));
     setDirty(true);
     close();
-    setFlash("Condition duplicated");
+    setFlash(
+      source === "exit" ? "Exit condition duplicated" : "Condition duplicated",
+    );
   };
 
   // Toggling group logic is shared between the root (clicked via gate glyph
   // when only the root has a gate) and the GroupDrawer. Both collapse to
   // `setGroupLogic` against the in-memory tree.
-  const handleSetGroupLogic = (id: CondId, logic: ConditionLogic) => {
-    setTree((t) => setGroupLogic(t, id, logic));
+  const handleSetGroupLogic = (
+    id: CondId,
+    logic: ConditionLogic,
+    source: SelSource = "entry",
+  ) => {
+    const [, set] = treeFor(source);
+    set((t) => setGroupLogic(t, id, logic));
     setDirty(true);
   };
 
@@ -777,10 +841,11 @@ export function EditorView({
   // we open `<UngroupConfirmModal>` first — the BEFORE/AFTER expressions
   // change semantically, so it's worth the friction. Matching logics ungroup
   // immediately (no semantic shift).
-  const performUngroup = (id: CondId) => {
-    const parent = findParent(tree, id);
+  const performUngroup = (id: CondId, source: SelSource = "entry") => {
+    const [t, set] = treeFor(source);
+    const parent = findParent(t, id);
     if (!parent) return;
-    setTree((t) => ungroupAt(t, id));
+    set((cur) => ungroupAt(cur, id));
     if (selection?.kind === "group" && selection.id === id) {
       setSelection(null);
     }
@@ -788,31 +853,35 @@ export function EditorView({
     setDirty(true);
     setFlash("Group ungrouped");
   };
-  const handleUngroupGroup = (id: CondId) => {
-    if (id === tree.id) return; // root can't be ungrouped
-    const target = findNode(tree, id);
-    const parent = findParent(tree, id);
+  const handleUngroupGroup = (id: CondId, source: SelSource = "entry") => {
+    const [t] = treeFor(source);
+    if (id === t.id) return; // root can't be ungrouped
+    const target = findNode(t, id);
+    const parent = findParent(t, id);
     if (!target || target.kind !== "group" || !parent) return;
     if (target.logic === parent.logic) {
-      performUngroup(id);
+      performUngroup(id, source);
       return;
     }
-    setGroupModal({ kind: "ungroup", groupId: id });
+    setGroupModal({ kind: "ungroup", groupId: id, source });
   };
 
   // Phase E: cascade-delete a group + all descendants. Confirmation modal
   // fires when the group has 2+ children (one-child / empty groups are
   // low-stakes). Save validation also runs — if the deletion would leave
-  // the strategy with zero leaves, we block and flash the standard message.
-  const performDeleteGroup = (id: CondId) => {
-    if (id === tree.id) return; // root can't be deleted
-    const next = removeNode(tree, id);
-    if (!hasAnyLeaf(next)) {
+  // the entry tree with zero leaves, we block and flash the standard
+  // message. The exit tree may be emptied (no signal-based exits) without
+  // blocking the save.
+  const performDeleteGroup = (id: CondId, source: SelSource = "entry") => {
+    const [t, set] = treeFor(source);
+    if (id === t.id) return; // root can't be deleted
+    const next = removeNode(t, id);
+    if (source === "entry" && !hasAnyLeaf(next)) {
       setFlash("A strategy needs at least one condition");
       setGroupModal(null);
       return;
     }
-    setTree(next);
+    set(next);
     if (selection?.kind === "group" && selection.id === id) {
       setSelection(null);
     }
@@ -820,15 +889,16 @@ export function EditorView({
     setDirty(true);
     setFlash("Group deleted");
   };
-  const handleDeleteGroup = (id: CondId) => {
-    if (id === tree.id) return;
-    const target = findNode(tree, id);
+  const handleDeleteGroup = (id: CondId, source: SelSource = "entry") => {
+    const [t] = treeFor(source);
+    if (id === t.id) return;
+    const target = findNode(t, id);
     if (!target || target.kind !== "group") return;
     if (target.children.length >= 2) {
-      setGroupModal({ kind: "delete-group", groupId: id });
+      setGroupModal({ kind: "delete-group", groupId: id, source });
       return;
     }
-    performDeleteGroup(id);
+    performDeleteGroup(id, source);
   };
 
   // Phase E / E2: pressing Delete or Backspace with a group selected opens
@@ -850,15 +920,15 @@ export function EditorView({
         return;
       }
       e.preventDefault();
-      handleDeleteGroup(selection.id);
+      handleDeleteGroup(selection.id, selection.source);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-    // handleDeleteGroup closes over `tree` / `selection` — recreated each
-    // render, but the listener attaches/detaches in the same effect cycle so
-    // it always reads the current values.
+    // handleDeleteGroup closes over `tree`/`exitTree`/`selection` — recreated
+    // each render, but the listener attaches/detaches in the same effect cycle
+    // so it always reads the current values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selection, groupModal, confirmModal, tree]);
+  }, [selection, groupModal, confirmModal, tree, exitTree]);
 
   // Autosave: debounce-persist edits 800ms after the last change. Bypasses
   // the dependent-bots impact modal (`handleSaveDraft`) — that modal is for
@@ -875,11 +945,11 @@ export function EditorView({
       void performSave({ silent: true });
     }, 800);
     return () => clearTimeout(t);
-    // performSave reads tree/name/exit through the render closure; listing
-    // them as deps reschedules the autosave on every keystroke, which is
-    // exactly the debounce we want.
+    // performSave reads tree/exitTree/riskDefaults/name/exit through the
+    // render closure; listing them as deps reschedules the autosave on every
+    // keystroke, which is exactly the debounce we want.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dirty, saveStatus, confirmModal, groupModal, tree, name, exit]);
+  }, [dirty, saveStatus, confirmModal, groupModal, tree, exitTree, riskDefaults, name, exit]);
 
   // beforeunload guard: belt-and-suspenders for the autosave window. If the
   // user refreshes or closes the tab inside the 800ms debounce (or during
@@ -898,14 +968,16 @@ export function EditorView({
 
   const selectedLeaf: ConditionLeaf | null = (() => {
     if (selection?.kind !== "condition") return null;
-    const node = findNode(tree, selection.id);
+    const [t] = treeFor(selection.source);
+    const node = findNode(t, selection.id);
     if (!node || node.kind !== "condition") return null;
     return node;
   })();
 
   const selectedGroup: ConditionGroup | null = (() => {
     if (selection?.kind !== "group") return null;
-    const node = findNode(tree, selection.id);
+    const [t] = treeFor(selection.source);
+    const node = findNode(t, selection.id);
     if (!node || node.kind !== "group") return null;
     return node;
   })();
@@ -940,6 +1012,7 @@ export function EditorView({
         >
           <Canvas
             tree={tree}
+            exitTree={exitTree}
             selection={selection}
             onSelect={onSelect}
             drawerOpen={selection !== null || creating !== null}
@@ -958,13 +1031,17 @@ export function EditorView({
             <ConditionDrawer
               key="create"
               cond={creating.cond}
-              displayName="New condition"
+              displayName={
+                creating.source === "exit" ? "New exit condition" : "New condition"
+              }
               indicatorMeta={indicatorMeta}
               onApply={(nextCond) => {
                 const leaf = leafFromCond(nextCond);
                 const parentId = creating.parentId;
                 const index = creating.index;
-                setTree((t) => insertChild(t, parentId, leaf, index));
+                const source = creating.source;
+                const [, set] = treeFor(source);
+                set((t) => insertChild(t, parentId, leaf, index));
                 setDirty(true);
                 setCreating(null);
                 setFlash(
@@ -989,15 +1066,18 @@ export function EditorView({
                   id: selectedLeaf.id,
                   cond: { ...nextCond, kind: "condition", params: nextCond.params ?? null },
                 };
-                setTree((t) => replaceNode(t, selectedLeaf.id, next));
+                const [, set] = treeFor(selection.source);
+                set((t) => replaceNode(t, selectedLeaf.id, next));
                 setDirty(true);
                 close();
                 setFlash(
                   `Saved · ${formatIndicator(nextCond.indicator, nextCond.params ?? null)}`
                 );
               }}
-              onDelete={() => handleDeleteNode(selectedLeaf.id)}
-              onDuplicate={() => handleDuplicateNode(selectedLeaf.id)}
+              onDelete={() => handleDeleteNode(selectedLeaf.id, selection.source)}
+              onDuplicate={() =>
+                handleDuplicateNode(selectedLeaf.id, selection.source)
+              }
               onClose={close}
             />
           )}
@@ -1005,10 +1085,20 @@ export function EditorView({
             <GroupDrawer
               key={selection.id}
               group={selectedGroup}
-              isRoot={selectedGroup.id === tree.id}
-              onSetLogic={(logic) => handleSetGroupLogic(selectedGroup.id, logic)}
-              onUngroup={() => handleUngroupGroup(selectedGroup.id)}
-              onDelete={() => handleDeleteGroup(selectedGroup.id)}
+              isRoot={
+                selection.source === "exit"
+                  ? selectedGroup.id === exitTree.id
+                  : selectedGroup.id === tree.id
+              }
+              onSetLogic={(logic) =>
+                handleSetGroupLogic(selectedGroup.id, logic, selection.source)
+              }
+              onUngroup={() =>
+                handleUngroupGroup(selectedGroup.id, selection.source)
+              }
+              onDelete={() =>
+                handleDeleteGroup(selectedGroup.id, selection.source)
+              }
               onClose={close}
             />
           )}
@@ -1036,28 +1126,34 @@ export function EditorView({
         />
       )}
       {groupModal?.kind === "ungroup" && (() => {
-        const target = findNode(tree, groupModal.groupId);
+        const [t] = treeFor(groupModal.source);
+        const target = findNode(t, groupModal.groupId);
         if (!target || target.kind !== "group") return null;
-        const before = describeRoot(tree);
-        const after = describeRoot(ungroupAt(tree, groupModal.groupId));
+        const before = describeRoot(t);
+        const after = describeRoot(ungroupAt(t, groupModal.groupId));
         return (
           <UngroupConfirmModal
             before={before}
             after={after}
             onCancel={() => setGroupModal(null)}
-            onConfirm={() => performUngroup(groupModal.groupId)}
+            onConfirm={() =>
+              performUngroup(groupModal.groupId, groupModal.source)
+            }
           />
         );
       })()}
       {groupModal?.kind === "delete-group" && (() => {
-        const target = findNode(tree, groupModal.groupId);
+        const [t] = treeFor(groupModal.source);
+        const target = findNode(t, groupModal.groupId);
         if (!target || target.kind !== "group") return null;
         const childCount = target.children.length;
         return (
           <DeleteGroupConfirmModal
             childCount={childCount}
             onCancel={() => setGroupModal(null)}
-            onConfirm={() => performDeleteGroup(groupModal.groupId)}
+            onConfirm={() =>
+              performDeleteGroup(groupModal.groupId, groupModal.source)
+            }
           />
         );
       })()}
@@ -1605,6 +1701,7 @@ function HistoryPopover({ onRestore }: { onRestore: (label: string) => void }) {
 
 function Canvas({
   tree,
+  exitTree,
   selection,
   onSelect,
   drawerOpen,
@@ -1620,15 +1717,31 @@ function Canvas({
   latestBacktest,
 }: {
   tree: ConditionGroup;
+  // Phase 4b — signal-based exit conditions, edited as a parallel tree
+  // mirrored on the right side of the canvas.
+  exitTree: ConditionGroup;
   selection: Selection;
-  onSelect: (kind: SelKind, id: CondId) => void;
+  onSelect: (kind: SelKind, id: CondId, source?: SelSource) => void;
   drawerOpen: boolean;
   deployed: boolean;
   onDeploy: () => void;
-  onAddCondition: (parentId: CondId, index?: number) => void;
-  onAddGroup: (parentId: CondId, index: number, logic: ConditionLogic) => void;
-  pendingPicker: { parentId: CondId; index: number } | null;
-  consumePendingPicker: (parentId: CondId, index: number) => void;
+  onAddCondition: (
+    parentId: CondId,
+    index?: number,
+    source?: SelSource,
+  ) => void;
+  onAddGroup: (
+    parentId: CondId,
+    index: number,
+    logic: ConditionLogic,
+    source?: SelSource,
+  ) => void;
+  pendingPicker: { parentId: CondId; index: number; source: SelSource } | null;
+  consumePendingPicker: (
+    parentId: CondId,
+    index: number,
+    source?: SelSource,
+  ) => void;
   strategyId: number;
   // Hybrid exits (Option C, Phase 4): the four scalar guardrails the
   // RiskDefaultsNode authors. Sent on every save via `buildUpdateBody`.
@@ -1643,8 +1756,10 @@ function Canvas({
     completed_at: string;
   } | null;
 }) {
-  const isSelected = (kind: SelKind, id: CondId) =>
-    selection?.kind === kind && selection.id === id;
+  const isSelected = (kind: SelKind, id: CondId, source: SelSource) =>
+    selection?.kind === kind &&
+    selection.id === id &&
+    selection.source === source;
   const T = useT();
   const isTouch = useTouchPointer();
   const [pan, setPan] = useState({ x: 40, y: 20 });
@@ -1811,6 +1926,11 @@ function Canvas({
   // layout means deep trees extend leftward into negative X, so the
   // pre-layered "pan = (40, 20)" default would leave deep trees mostly
   // off-screen. resetView now actually fits to content.
+  //
+  // Phase 4b — also fits the mirrored exit tree on the right, which can
+  // extend well past the RiskDefaultsNode column. We replay the same
+  // mirror-axis math the render block uses so the bounds match what's
+  // actually drawn.
   const resetView = () => {
     const el = canvasRef.current;
     if (!el) {
@@ -1820,12 +1940,24 @@ function Canvas({
     }
     const root = layoutTree(tree);
     const bounds = layoutBounds(root);
-    // Right side: include OutputPin column. Mirrors the outputX derivation
-    // in the canvas render block (root.gateX + GATE_W + ROOT_TO_OUTPUT_GAP).
-    const fitMaxX = root.gateX + GATE_W + 402 + 240;
-    const fitMinX = bounds.minX - 24;
-    const fitMinY = bounds.minY - 24;
-    const fitMaxY = Math.max(bounds.maxY, root.addSlotCy + ADD_SLOT_H / 2) + 24;
+    const ROOT_TO_OUTPUT_GAP = 402;
+    const RISK_NODE_W = RiskDefaultsNode.WIDTH;
+    const RISK_TO_EXIT_GAP = 80;
+    const outputX = root.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
+    const EXIT_ROOT_GATE_X = outputX + RISK_NODE_W + RISK_TO_EXIT_GAP;
+    const mirrorAxisX = (EXIT_ROOT_GATE_X + 410 + GATE_W) / 2;
+    const exitRoot = mirrorLayout(layoutTree(exitTree), mirrorAxisX);
+    const exitBounds = layoutBounds(exitRoot);
+    const fitMaxX = Math.max(outputX + RISK_NODE_W + 24, exitBounds.maxX) + 24;
+    const fitMinX = Math.min(bounds.minX, exitBounds.minX) - 24;
+    const fitMinY = Math.min(bounds.minY, exitBounds.minY) - 24;
+    const fitMaxY =
+      Math.max(
+        bounds.maxY,
+        exitBounds.maxY,
+        root.addSlotCy + ADD_SLOT_H / 2,
+        exitRoot.addSlotCy + ADD_SLOT_H / 2,
+      ) + 24;
     const contentW = fitMaxX - fitMinX;
     const contentH = fitMaxY - fitMinY;
     const rect = el.getBoundingClientRect();
@@ -1913,10 +2045,22 @@ function Canvas({
           // `RiskDefaultsNode` — strategy-level scalar guardrail defaults
           // that bots/backtests inherit. The OutputPins' navigation role
           // moved into the bottom-right `StatusStrip` pill so the canvas
-          // right edge isn't double-occupied. The full parallel exit-tree
-          // authoring (mirror of the entry tree) is a follow-up; today only
-          // the scalar defaults pin lives on the right.
+          // right edge isn't double-occupied.
+          //
+          // Phase 4b (2026-05-07): the right side now also hosts a parallel
+          // mirrored exit tree. The entry tree's geometry is unchanged; the
+          // RiskDefaultsNode pin still sits at `outputX` connected to the
+          // entry root pin (same connector as Phase 4). Past the
+          // RiskDefaultsNode (right edge at `outputX + RISK_NODE_W`), the
+          // exit tree's mirrored layout begins — its root gate sits at
+          // `EXIT_ROOT_GATE_X`, leaves flow rightward via `mirrorLayout`'s
+          // X reflection. The two trees share no logical wire (entry
+          // determines entries, exit-tree determines exits, RiskDefaultsNode
+          // governs both); they coexist visually as two condition surfaces
+          // on the same canvas.
           const ROOT_TO_OUTPUT_GAP = 402;
+          const RISK_NODE_W = RiskDefaultsNode.WIDTH;
+          const RISK_TO_EXIT_GAP = 80;
           const rootOriginX = root.showGate ? root.gateX + GATE_W : root.pinX;
           const rootOriginY = root.showGate ? root.gateY : root.pinY;
           const outputX = root.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
@@ -1929,6 +2073,27 @@ function Canvas({
           const riskPinY = root.pinY;
           const riskNodeY = riskPinY - RiskDefaultsNode.PIN_OFFSET_Y;
           const riskPinX = outputX;
+
+          // Mirrored exit-tree layout. Place the exit root gate's left edge
+          // at `EXIT_ROOT_GATE_X` (just past RiskDefaultsNode + a small gap)
+          // and derive `mirrorAxisX` from the original ROOT_GATE_X (=410)
+          // anchor: a mirror about `mirrorAxisX` flips left edge of the root
+          // gate from `ROOT_GATE_X` to `2*mirrorAxisX - ROOT_GATE_X - GATE_W`.
+          // We solve `2*mirrorAxisX - ROOT_GATE_X - GATE_W = EXIT_ROOT_GATE_X`
+          // for axisX. After the mirror, leaves flow rightward, gate sits
+          // on the LEFT, and the per-group "+ Add condition" slots position
+          // themselves on the gate's right side (mirror flips slot.cx too).
+          const EXIT_ROOT_GATE_X = outputX + RISK_NODE_W + RISK_TO_EXIT_GAP;
+          const mirrorAxisX = (EXIT_ROOT_GATE_X + 410 + GATE_W) / 2;
+          const exitRootRaw = layoutTree(exitTree);
+          const exitRoot = mirrorLayout(exitRootRaw, mirrorAxisX);
+          const exitLeaves = walkLeaves(exitRoot);
+          const exitNestedGroups = walkGroups(exitRoot);
+          const exitSlots = collectSlots(exitRoot);
+          const isExitTreeEmpty = exitTree.children.length === 0;
+          const exitGroupMap = new Map<string, GroupLayout>();
+          exitGroupMap.set(exitRoot.id, exitRoot);
+          for (const g of exitNestedGroups) exitGroupMap.set(g.id, g);
 
           // Each non-root group with a visible gate, plus each leaf,
           // contributes one wire to its parent gate. Groups whose own gate
@@ -1946,7 +2111,12 @@ function Canvas({
             to: { x: number; y: number },
             opts: { id: string; dashed: boolean; color?: string; width?: number },
           ) => {
-            const midX = from.x + 80;
+            // Cubic-bezier with both control points at midX. midX is offset
+            // 80px from `from` toward `to` (sign-aware), so mirrored exit
+            // wires get a symmetric curve flowing leftward instead of an
+            // overshoot to the right.
+            const direction = Math.sign(to.x - from.x) || 1;
+            const midX = from.x + 80 * direction;
             wires.push({
               id: opts.id,
               d: `M ${from.x} ${from.y} C ${midX} ${from.y} ${midX} ${to.y} ${to.x} ${to.y}`,
@@ -1955,35 +2125,45 @@ function Canvas({
               width: opts.width,
             });
           };
-          const visit = (n: NodeLayout) => {
-            if (n.kind === "condition") {
-              const parent = groupMap.get(n.parentGateId);
-              if (parent && parent.showGate) {
-                pushWire(
-                  { x: n.pinX, y: n.pinY },
-                  { x: parent.gateX, y: parent.gateY },
-                  { id: `wire-${n.id}`, dashed: true },
-                );
+          const buildVisit = (
+            sourceTag: SelSource,
+            gMap: Map<string, GroupLayout>,
+          ) => {
+            const visit = (n: NodeLayout) => {
+              if (n.kind === "condition") {
+                const parent = gMap.get(n.parentGateId);
+                if (parent && parent.showGate) {
+                  pushWire(
+                    { x: n.pinX, y: n.pinY },
+                    { x: parent.gateX, y: parent.gateY },
+                    { id: `wire-${sourceTag}-${n.id}`, dashed: true },
+                  );
+                }
+                return;
               }
-              return;
-            }
-            if (n.showGate && n.parentGateId) {
-              const parent = groupMap.get(n.parentGateId);
-              if (parent && parent.showGate) {
-                pushWire(
-                  { x: n.gateX + GATE_W, y: n.gateY },
-                  { x: parent.gateX, y: parent.gateY },
-                  { id: `wire-${n.id}`, dashed: false, color: T.primaryLight, width: 2 },
-                );
+              if (n.showGate && n.parentGateId) {
+                const parent = gMap.get(n.parentGateId);
+                if (parent && parent.showGate) {
+                  pushWire(
+                    { x: n.gateX + GATE_W, y: n.gateY },
+                    { x: parent.gateX, y: parent.gateY },
+                    {
+                      id: `wire-${sourceTag}-${n.id}`,
+                      dashed: false,
+                      color: T.primaryLight,
+                      width: 2,
+                    },
+                  );
+                }
               }
-            }
-            for (const c of n.children) visit(c);
+              for (const c of n.children) visit(c);
+            };
+            return visit;
           };
-          for (const c of root.children) visit(c);
-
-          // Root → output-pin fan-out. Each pin gets its own curve from the
-          // root's outgoing pin (rootOriginX/Y) so the entry tree feeds the
-          // backtest / live signals / bot outputs directly.
+          const visitEntry = buildVisit("entry", groupMap);
+          for (const c of root.children) visitEntry(c);
+          const visitExit = buildVisit("exit", exitGroupMap);
+          for (const c of exitRoot.children) visitExit(c);
 
           return (
             <>
@@ -2007,8 +2187,10 @@ function Canvas({
                     T={T}
                   />
                 ))}
-                {/* Single root → RiskDefaultsNode connector. Replaces the
-                    three OutputPin curves the canvas used to fan out. */}
+                {/* Entry root → RiskDefaultsNode connector. The exit tree
+                    is intentionally unwired — risk caps apply to both
+                    entry- and exit-driven trades, but the visual stays
+                    cleaner without a redundant exit-root → risk wire. */}
                 <Connector
                   d={`M ${rootOriginX} ${rootOriginY} C ${outputCurveCtrlX} ${rootOriginY} ${outputCurveCtrlX} ${riskPinY} ${riskPinX} ${riskPinY}`}
                   color={T.primary}
@@ -2017,74 +2199,143 @@ function Canvas({
                 />
               </svg>
 
+              {/* ENTRY / EXIT branch labels. Sit above each root gate so
+                  the two trees aren't mistaken for one continuous structure. */}
+              <BranchLabel x={root.gateX + GATE_W / 2} y={root.y} text="ENTRY" />
+              <BranchLabel
+                x={exitRoot.gateX + GATE_W / 2}
+                y={exitRoot.y}
+                text="EXIT"
+              />
+
+              {/* Entry tree — leaves, groups, gates, slots. */}
               {nestedGroups.map((g) => (
                 <GroupBox
-                  key={`box-${g.id}`}
+                  key={`box-entry-${g.id}`}
                   group={g}
-                  selected={isSelected("group", g.id)}
-                  onSelect={() => onSelect("group", g.id)}
+                  selected={isSelected("group", g.id, "entry")}
+                  onSelect={() => onSelect("group", g.id, "entry")}
                 />
               ))}
-
               {allLeaves.map((leaf) => {
                 const meta = condToMeta(leaf.node.cond);
                 return (
                   <CondNode
-                    key={leaf.id}
+                    key={`leaf-entry-${leaf.id}`}
                     x={leaf.x}
                     y={leaf.y}
                     {...meta}
-                    selected={isSelected("condition", leaf.id)}
-                    onClick={() => onSelect("condition", leaf.id)}
+                    selected={isSelected("condition", leaf.id, "entry")}
+                    onClick={() => onSelect("condition", leaf.id, "entry")}
                   />
                 );
               })}
-
-              {/* Gate glyph buttons. Render after boxes/leaves so they sit
-                  on top. Root gate visible only when ≥2 children; nested
-                  group gates follow the same rule. Clicking selects the
-                  group (Gap 13: gate and box border share one target). */}
               {root.showGate && (
                 <GateButton
                   x={root.gateX}
                   y={root.gateY}
                   logic={root.node.logic}
-                  selected={isSelected("group", root.id)}
-                  onClick={() => onSelect("group", root.id)}
+                  selected={isSelected("group", root.id, "entry")}
+                  onClick={() => onSelect("group", root.id, "entry")}
                 />
               )}
               {nestedGroups.map((g) =>
                 g.showGate ? (
                   <GateButton
-                    key={`gate-${g.id}`}
+                    key={`gate-entry-${g.id}`}
                     x={g.gateX}
                     y={g.gateY}
                     logic={g.node.logic}
-                    selected={isSelected("group", g.id)}
-                    onClick={() => onSelect("group", g.id)}
+                    selected={isSelected("group", g.id, "entry")}
+                    onClick={() => onSelect("group", g.id, "entry")}
                   />
                 ) : null,
               )}
-
-              {/* Phase D inline-add slots. Rendered last in the world layer
-                  so they sit above wires/boxes (slots are interactive; wires
-                  aren't). The picker pops out from the slot itself. */}
               {slots.map((slot) => (
                 <InsertSlot
-                  key={`slot-${slot.parentId}-${slot.index}`}
+                  key={`slot-entry-${slot.parentId}-${slot.index}`}
                   slot={slot}
                   isTreeEmpty={isTreeEmpty && slot.parentId === root.id}
                   autoOpen={
                     pendingPicker !== null &&
+                    pendingPicker.source === "entry" &&
                     pendingPicker.parentId === slot.parentId &&
                     pendingPicker.index === slot.index
                   }
                   onAutoOpenConsumed={() =>
-                    consumePendingPicker(slot.parentId, slot.index)
+                    consumePendingPicker(slot.parentId, slot.index, "entry")
                   }
-                  onAddCondition={() => onAddCondition(slot.parentId, slot.index)}
+                  onAddCondition={() =>
+                    onAddCondition(slot.parentId, slot.index, "entry")
+                  }
                   onAddGroup={(logic) =>
-                    onAddGroup(slot.parentId, slot.index, logic)
+                    onAddGroup(slot.parentId, slot.index, logic, "entry")
+                  }
+                />
+              ))}
+
+              {/* Exit tree — mirrored layout, same render passes. */}
+              {exitNestedGroups.map((g) => (
+                <GroupBox
+                  key={`box-exit-${g.id}`}
+                  group={g}
+                  selected={isSelected("group", g.id, "exit")}
+                  onSelect={() => onSelect("group", g.id, "exit")}
+                />
+              ))}
+              {exitLeaves.map((leaf) => {
+                const meta = condToMeta(leaf.node.cond);
+                return (
+                  <CondNode
+                    key={`leaf-exit-${leaf.id}`}
+                    x={leaf.x}
+                    y={leaf.y}
+                    {...meta}
+                    selected={isSelected("condition", leaf.id, "exit")}
+                    onClick={() => onSelect("condition", leaf.id, "exit")}
+                  />
+                );
+              })}
+              {exitRoot.showGate && (
+                <GateButton
+                  x={exitRoot.gateX}
+                  y={exitRoot.gateY}
+                  logic={exitRoot.node.logic}
+                  selected={isSelected("group", exitRoot.id, "exit")}
+                  onClick={() => onSelect("group", exitRoot.id, "exit")}
+                />
+              )}
+              {exitNestedGroups.map((g) =>
+                g.showGate ? (
+                  <GateButton
+                    key={`gate-exit-${g.id}`}
+                    x={g.gateX}
+                    y={g.gateY}
+                    logic={g.node.logic}
+                    selected={isSelected("group", g.id, "exit")}
+                    onClick={() => onSelect("group", g.id, "exit")}
+                  />
+                ) : null,
+              )}
+              {exitSlots.map((slot) => (
+                <InsertSlot
+                  key={`slot-exit-${slot.parentId}-${slot.index}`}
+                  slot={slot}
+                  isTreeEmpty={isExitTreeEmpty && slot.parentId === exitRoot.id}
+                  autoOpen={
+                    pendingPicker !== null &&
+                    pendingPicker.source === "exit" &&
+                    pendingPicker.parentId === slot.parentId &&
+                    pendingPicker.index === slot.index
+                  }
+                  onAutoOpenConsumed={() =>
+                    consumePendingPicker(slot.parentId, slot.index, "exit")
+                  }
+                  onAddCondition={() =>
+                    onAddCondition(slot.parentId, slot.index, "exit")
+                  }
+                  onAddGroup={(logic) =>
+                    onAddGroup(slot.parentId, slot.index, logic, "exit")
                   }
                 />
               ))}
@@ -2225,6 +2476,39 @@ function ZoomBtn({ onClick, label }: { onClick: () => void; label: string }) {
     >
       {label}
     </button>
+  );
+}
+
+// Small "ENTRY" / "EXIT" branch label rendered above each root gate so
+// the two trees are visually distinguishable. Phase 4b — added when the
+// canvas became dual-tree and the same `AND` glyph appeared on both
+// sides; without the label users couldn't tell which tree gates which
+// trade direction.
+function BranchLabel({ x, y, text }: { x: number; y: number; text: string }) {
+  const T = useT();
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: x,
+        top: y - 26,
+        transform: "translateX(-50%)",
+        fontFamily: T.fontMono,
+        fontSize: 10,
+        letterSpacing: 1.2,
+        color: T.text3,
+        background: T.surface2 + "cc",
+        backdropFilter: "blur(6px)",
+        padding: "3px 8px",
+        borderRadius: 999,
+        border: `1px solid ${T.outlineFaint}`,
+        userSelect: "none",
+        pointerEvents: "none",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {text}
+    </div>
   );
 }
 

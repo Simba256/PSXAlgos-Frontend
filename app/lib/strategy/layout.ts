@@ -391,6 +391,43 @@ export function collectSlots(root: GroupLayout): InsertionSlot[] {
   return slots;
 }
 
+// Reflects every X coordinate of an already-placed layout about a vertical
+// axis at `axisX`. The reflected layout still reads top-to-bottom but flows
+// left-to-right (children right of root) instead of right-to-left, which is
+// what the Phase 4b mirrored exit tree needs — same recursive packing as the
+// entry tree, just with the wire-flow direction reversed.
+//
+// Reflection rules:
+//   • Point coords (pinX, addSlotCx)            → 2*axisX - x
+//   • Left-edge of width-w box (node.x)         → 2*axisX - x - w
+//   • Left-edge of GATE_W box (gateX)           → 2*axisX - x - GATE_W
+//
+// `parentGateId`, `level`, `id`, `node`, and the y/h bands pass through
+// untouched — only horizontal geometry flips. The result is a plain
+// GroupLayout the canvas can render alongside the entry layout.
+export function mirrorLayout(layout: GroupLayout, axisX: number): GroupLayout {
+  const flipPoint = (x: number) => 2 * axisX - x;
+  const flipBoxX = (x: number, w: number) => 2 * axisX - x - w;
+  const visit = (n: NodeLayout): NodeLayout => {
+    if (n.kind === "condition") {
+      return {
+        ...n,
+        x: flipBoxX(n.x, n.w),
+        pinX: flipPoint(n.pinX),
+      };
+    }
+    return {
+      ...n,
+      x: flipBoxX(n.x, n.w),
+      gateX: flipBoxX(n.gateX, GATE_W),
+      pinX: flipPoint(n.pinX),
+      addSlotCx: flipPoint(n.addSlotCx),
+      children: n.children.map(visit),
+    };
+  };
+  return visit(layout) as GroupLayout;
+}
+
 // Total bounding box in canvas coords. Walks every descendant and
 // includes the root's own gate + slot. Used to size the SVG wire layer
 // and ensure the world layer is large enough for the tree at any depth.

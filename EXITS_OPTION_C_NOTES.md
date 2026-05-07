@@ -7,6 +7,8 @@
 
 This doc is the canonical reference for the `psx-ui` side of Option C: how the four scalar exit guardrails (`stop_loss_pct`, `take_profit_pct`, `trailing_stop_pct`, `max_holding_days`) flow between the strategy editor (where defaults are authored), the deploy/backtest forms (where they're inherited or overridden), and the backtest result page (where the run-time snapshot is attributed back to its source).
 
+Phase 4b (2026-05-07) extended the canvas to also author the *signal-based* exit tree (`exit_rules.conditions`) — a parallel mirrored condition tree on the right side of the strategy editor — so users have a first-class authoring surface for exit signals (e.g. "RSI > 75 → exit") in addition to the four scalar guardrails.
+
 ---
 
 ## What ships on `psx-ui`
@@ -27,11 +29,15 @@ This doc is the canonical reference for the `psx-ui` side of Option C: how the f
 
 `app/app/strategies/[id]/editor-view.tsx`:
 
-- `[exit, setExit]` writable state holds `exit_rules.conditions` (the signal-based exit tree — round-trips through the same condition-tree machinery as entries).
+- `[tree, setTree]` holds the entry-rules condition tree; `[exitTree, setExitTree]` holds `exit_rules.conditions` (signal-based exits) as a real authoring tree on the right side of the canvas. Both are seeded via `fromBackend(...)`, both round-trip through the same condition-tree machinery (`@/lib/strategy/tree`), and both are mutated by the same `handleAddCondition` / `handleAddGroup` / `handleSetGroupLogic` / `handleUngroupGroup` / `handleDeleteGroup` / `handleDuplicateNode` / `handleDeleteNode` family — each handler now takes a trailing `source: SelSource` ("entry" | "exit") and routes through `treeFor(source)` to pick the right setter.
+- `[exit]` is retained for any non-conditions / non-default_risk metadata in `exit_rules`. `setExit` isn't called today (no UI mutates that surface) — `buildUpdateBody` spreads `exit` for passthrough fields and re-derives `conditions` from `exitTree` on every save.
 - `[riskDefaults, setRiskDefaults]` holds `exit_rules.default_risk` keyed off `initialStrategy.exit_rules?.default_risk ?? {}`. `handleRiskDefaultsChange(next)` wraps `setRiskDefaults` + `setDirty(true)` so typing in the node lights up the save toolbar.
-- `buildUpdateBody(name, tree, exit, riskDefaults)` writes both branches on every save. `default_risk` is sent as the full object including nulls, so blanking a field cleanly clears the strategy default.
+- `buildUpdateBody(name, tree, exit, exitTree, riskDefaults)` writes the entry tree, exit tree, and risk defaults on every save. `conditions: hasAnyLeaf(exitTree) ? toBackend(exitTree) : null` — an empty exit tree wires `null` rather than a structurally empty group (which the backend would otherwise interpret as "always True → exit on every bar"). `default_risk` is sent as the full object including nulls, so blanking a field cleanly clears the strategy default.
 - The three OutputPins that previously fan'd out from the entry root were removed in Phase 4 along with the `outNY` connector math; the `StatusStrip` now carries that navigation role from outside the graph.
-- Right-side parallel mirror exit-tree authoring (the second `<ConditionTree>` instance) was deferred to a Phase 4b follow-up — the layout module's `ROOT_GATE_X` anchor is single-root by design and a mirrored layout requires either a `mirror` flag in `layoutTree` or a coordinate post-processor. Today the canvas paints a single root → entry tree on the left and the `RiskDefaultsNode` pin on the right; round-trip of `exit_rules.conditions` is preserved in state for when the right-side authoring lands.
+- **Mirrored exit-tree layout (Phase 4b)**: `mirrorLayout(layout, axisX)` (in `@/lib/strategy/layout`) is a coordinate post-processor that flips X coordinates of an already-placed `GroupLayout` about a vertical axis. We compute `EXIT_ROOT_GATE_X = outputX + RiskDefaultsNode.WIDTH + RISK_TO_EXIT_GAP` and derive `mirrorAxisX` so the exit root gate's left edge lands at `EXIT_ROOT_GATE_X`. The mirror flips leaf x, gate x, pin x, and add-slot cx — so the resulting layout reads top-to-bottom but flows left-to-right (root on the left, leaves on the right) instead of right-to-left. The wire bezier in `pushWire` uses `Math.sign(to.x - from.x)` to compute the control-point offset so mirrored wires curve toward their parent gate rather than overshooting outward.
+- **Selection scoped per tree**: `Selection = { kind, id, source: "entry"|"exit" } | null`. `onSelect(kind, id, source)`, `isSelected(kind, id, source)`, and the `selectedLeaf` / `selectedGroup` derivation all consult `selection.source` via `treeFor(...)` to look up nodes from the right tree. The Drawer (`ConditionDrawer` / `GroupDrawer`) is unchanged — it just receives the right node + handlers wired against the right setter.
+- **Two `BranchLabel`s** ("ENTRY" / "EXIT") sit above each root gate so the two `AND` glyphs aren't read as one continuous structure. Pinned nodes/labels are rendered above the SVG wire layer.
+- **Validation asymmetry**: the entry tree must have ≥1 leaf to save (`hasAnyLeaf(tree)` blocks save with the standard flash). The exit tree may be emptied — "no signal-based exits, rely on risk defaults" is a valid configuration. `performDeleteGroup` and `handleDeleteNode` enforce this asymmetry by short-circuiting only when `source === "entry"`.
 - `performSave` snapshots `initialStrategy.exit_rules?.default_risk` BEFORE the PUT (the response carries only a sliced view of old values inside `inheritance_warnings.old_values`, so we keep the full pre-save default for the apply-default-risk call), then opens the `InheritanceWarningModal` when `inheritance_warnings.affected_bots.length > 0`. Autosave (`silent: true`) suppresses the modal so a background save never pops UI under the user mid-keystroke.
 
 ### Bot create wizard
@@ -101,11 +107,13 @@ The non-obvious UX decisions, with research pointers:
 2. **Per-bot picker modal default = `Inherit new`.** The strategy edit was the user's stated intent. The safe default is to let it propagate; snapshot is opt-in. Cancel = "every affected bot keeps inheriting" (same outcome as accepting the default for all bots), with a toast so the user knows what happened.
 3. **`EffectiveRiskPanel` reads from snapshot, never re-resolves.** A backtest result is a frozen artifact. If the strategy default changes after the run, the result is unaffected — re-running is the user's responsibility. Reading from `run_config.effective_risk` keeps attribution stable; re-resolving against the live strategy would silently mutate the result page over time.
 4. **`StatusStrip` outside the graph.** The original OutputPins coupled status display to canvas geometry; adding the right-side risk-defaults pin made that geometry untenable. The strip preserves the at-a-glance feedback users actually use (last backtest %, deploy state) without competing with the new node for canvas real estate.
+5. **Mirrored exit tree, not a separate "exits panel".** The condition-tree authoring affordance — leaves, groups, AND/OR gates, inline `+` slots — is identical to the entry tree. Building a separate panel-style editor would have meant duplicating the picker, drawer, layout machinery, etc., just to get the same UX. The mirror approach reuses every existing component: the only new code is `mirrorLayout` (a 25-line coordinate flip) and source-routed mutation handlers. Two trees on the same canvas also makes the asymmetry visible — a strategy with rich entry conditions and an empty exit tree reads as "uses default exits" at a glance.
+6. **No central wire from exit tree to RiskDefaultsNode.** The risk caps apply to both entry- and exit-driven trades, but visually wiring both roots to the same pin would clutter the canvas without communicating new information. Entry tree → Risk caps stays as the single visible connector (the existing Phase 4 wire); the exit tree stands alone on the right as a parallel signal source.
 
 ---
 
 ## Verification
 
-- `tsc --noEmit` clean across all phases.
+- `tsc --noEmit` clean across all phases (including 4b).
 - `npm run build` succeeds (36 routes — `/api/strategies/[id]/apply-default-risk` registered, no warnings).
-- `psx-ui` has no test runner today (`npm run lint` is just `tsc --noEmit`); component-level tests for `InheritableField` (3 states) and submit-shape integration tests are flagged as a stand-alone follow-up that needs a Jest/Vitest setup first.
+- `psx-ui` has no test runner today (`npm run lint` is just `tsc --noEmit`); component-level tests for `InheritableField` (3 states), `mirrorLayout` (coordinate-flip correctness), and submit-shape integration tests are flagged as a stand-alone follow-up that needs a Jest/Vitest setup first.
