@@ -2141,17 +2141,33 @@ function Canvas({
               width: opts.width,
             });
           };
+          // Wire endpoints are side-of-gate aware. In the entry tree gates
+          // sit to the RIGHT of their children: child outputs leave from the
+          // child's right edge and enter the parent gate's LEFT edge. The
+          // exit tree is mirrored, so the geometry is flipped — gates sit to
+          // the LEFT of their children, child outputs leave from the child's
+          // LEFT edge (already true for leaves since `mirrorLayout` reflected
+          // `pinX`, but NOT true for nested-group gates whose `gateX + GATE_W`
+          // is now the side facing the children, not the parent), and parent
+          // gates accept input on their RIGHT edge. Without this flip, wires
+          // on the exit side terminate at the far side of each gate glyph and
+          // slice across it. `mirrored` toggles the convention.
           const buildVisit = (
             sourceTag: SelSource,
             gMap: Map<string, GroupLayout>,
+            mirrored: boolean,
           ) => {
+            const groupOutputX = (g: GroupLayout) =>
+              mirrored ? g.gateX : g.gateX + GATE_W;
+            const groupInputX = (g: GroupLayout) =>
+              mirrored ? g.gateX + GATE_W : g.gateX;
             const visit = (n: NodeLayout) => {
               if (n.kind === "condition") {
                 const parent = gMap.get(n.parentGateId);
                 if (parent && parent.showGate) {
                   pushWire(
                     { x: n.pinX, y: n.pinY },
-                    { x: parent.gateX, y: parent.gateY },
+                    { x: groupInputX(parent), y: parent.gateY },
                     { id: `wire-${sourceTag}-${n.id}`, dashed: true },
                   );
                 }
@@ -2161,8 +2177,8 @@ function Canvas({
                 const parent = gMap.get(n.parentGateId);
                 if (parent && parent.showGate) {
                   pushWire(
-                    { x: n.gateX + GATE_W, y: n.gateY },
-                    { x: parent.gateX, y: parent.gateY },
+                    { x: groupOutputX(n), y: n.gateY },
+                    { x: groupInputX(parent), y: parent.gateY },
                     {
                       id: `wire-${sourceTag}-${n.id}`,
                       dashed: false,
@@ -2176,9 +2192,9 @@ function Canvas({
             };
             return visit;
           };
-          const visitEntry = buildVisit("entry", groupMap);
+          const visitEntry = buildVisit("entry", groupMap, false);
           for (const c of root.children) visitEntry(c);
-          const visitExit = buildVisit("exit", exitGroupMap);
+          const visitExit = buildVisit("exit", exitGroupMap, true);
           for (const c of exitRoot.children) visitExit(c);
 
           return (

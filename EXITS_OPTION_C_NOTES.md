@@ -11,6 +11,8 @@ Phase 4b (2026-05-07) extended the canvas to also author the *signal-based* exit
 
 Phase 4b alignment fix (2026-05-08) shipped after the initial Phase 4b: each tree packs its own children top-down so the two root gateYs differed (entry ≈154, exit ≈184 for a 2-leaf vs 1-leaf-plus-OR-group strategy), and Risk Defaults sat as a one-sided junction with a connector from the entry side only. The fix Y-aligns both root gates on a shared `unifiedGateY` (smaller tree shifted down via the new `shiftLayoutY` helper), centers Risk Defaults on that Y, and adds a second connector from a new right-side pin on `RiskDefaultsNode` → exit root. The three spine elements — entry gate, Risk Defaults, exit gate — now read as one horizontal bar.
 
+Phase 4b wire-side fix (2026-05-08): on the mirrored exit tree, intra-tree wires were terminating at the wrong side of every gate glyph and slicing across them — leaves connected to the gate's far (left) edge instead of the near (right) edge, and nested-group gates emitted from their right edge instead of their left. Root cause: `buildVisit` reused the entry-tree convention (`parent.gateX` for input, `n.gateX + GATE_W` for output) for both trees, but mirroring flips which side of each gate faces children vs. parent. Fix: `buildVisit` now takes a `mirrored` flag; `groupOutputX` and `groupInputX` helpers pick the correct edge per tree. Leaves are unaffected because `mirrorLayout` already reflected `pinX` to the leaf's left edge, which is the side that faces its parent gate in the mirrored layout.
+
 ---
 
 ## What ships on `psx-ui`
