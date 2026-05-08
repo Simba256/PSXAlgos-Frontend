@@ -130,20 +130,53 @@ function subtreeHeight(node: ConditionNode): number {
   return sum + ADD_SLOT_GAP + ADD_SLOT_H;
 }
 
-// Column X for a given level. Level 0 (root) sits at ROOT_GATE_X minus
-// the leaf-column-to-gate offset; deeper levels are progressively
-// further left.
-function columnLeftX(level: number): number {
-  // Leaves at level L should have their LEFT edge at this X. Their
-  // right edge sits at columnLeftX(L) + NODE_W. The parent gate at
-  // level L-1 has its LEFT edge at columnLeftX(L) + COLUMN_PITCH +
-  // (NODE_W - GATE_W) — i.e., ROOT_GATE_X for level 1, which is what
-  // we want.
-  // Solve so that gate at level 0 lands at ROOT_GATE_X:
-  //   gateLeftX(0) = columnLeftX(0) + NODE_W - GATE_W = ROOT_GATE_X
-  //   columnLeftX(0) = ROOT_GATE_X - NODE_W + GATE_W
-  // For level L: shift left by L * COLUMN_PITCH.
-  return ROOT_GATE_X - NODE_W + GATE_W - level * COLUMN_PITCH;
+// Column X for a given depth-from-leaves. col = 0 means the node sits in
+// the leaf column (rightmost in entry tree, the column the canvas reads
+// as "inputs"); higher col means the node sits further toward the root,
+// one COLUMN_PITCH per step.
+//
+// Why depth-from-leaves and not depth-from-root: with depth-from-root, a
+// nested-group sibling pushes its descendants further from the root than
+// flat siblings, producing a jagged input edge — three RSI leaves at one
+// column and two more (under an OR group) at a further column, with the
+// OR gate marooned in between. Depth-from-leaves places every leaf at the
+// SAME column regardless of nesting; gates fan inward by their own
+// subtree depth. The canvas now has a single straight leaf edge.
+//
+// Anchored to ROOT_GATE_X: when col == rootCol (the root group's own
+// depth), gateLeftX = colX + NODE_W - GATE_W = ROOT_GATE_X, so the root
+// gate stays pinned exactly where it used to. For a depth-1 tree (just
+// leaves under root), this is identical to the old `columnLeftX(level)`
+// math — leaves at level 1 = leaves at col 0 = same X.
+function columnLeftX(col: number, rootCol: number): number {
+  return ROOT_GATE_X - NODE_W + GATE_W - (rootCol - col) * COLUMN_PITCH;
+}
+
+// Walks the tree and writes each node's column index (depth-from-leaves)
+// into `out`. Leaves are 0; an empty group reserves 1 (its gate sits one
+// column inward from the would-be leaves); a populated group is one more
+// than its deepest child's column. Returns the node's own column so
+// `layoutTree` can derive `rootCol` for `columnLeftX`.
+function buildColumnMap(
+  node: ConditionNode,
+  out: Map<string, number>,
+): number {
+  if (node.kind === "condition") {
+    out.set(node.id, 0);
+    return 0;
+  }
+  if (node.children.length === 0) {
+    out.set(node.id, 1);
+    return 1;
+  }
+  let maxChildCol = 0;
+  for (const c of node.children) {
+    const childCol = buildColumnMap(c, out);
+    if (childCol > maxChildCol) maxChildCol = childCol;
+  }
+  const col = maxChildCol + 1;
+  out.set(node.id, col);
+  return col;
 }
 
 function place(
@@ -151,8 +184,11 @@ function place(
   startY: number,
   parentGateId: string | null,
   level: number,
+  colMap: Map<string, number>,
+  rootCol: number,
 ): NodeLayout {
-  const colX = columnLeftX(level);
+  const col = colMap.get(node.id) ?? 0;
+  const colX = columnLeftX(col, rootCol);
 
   if (node.kind === "condition") {
     return {
@@ -232,7 +268,9 @@ function place(
   let cy = startY;
   const placedChildren: NodeLayout[] = [];
   for (const child of node.children) {
-    placedChildren.push(place(child, cy, childParentGate, level + 1));
+    placedChildren.push(
+      place(child, cy, childParentGate, level + 1, colMap, rootCol),
+    );
     cy += subtreeHeight(child) + GAP;
   }
 
@@ -326,7 +364,9 @@ function place(
 }
 
 export function layoutTree(root: ConditionGroup): GroupLayout {
-  return place(root, ROOT_CHILD_Y, null, 0) as GroupLayout;
+  const colMap = new Map<string, number>();
+  const rootCol = buildColumnMap(root, colMap);
+  return place(root, ROOT_CHILD_Y, null, 0, colMap, rootCol) as GroupLayout;
 }
 
 // Walks a placed layout and yields every leaf in DFS order. Used by
