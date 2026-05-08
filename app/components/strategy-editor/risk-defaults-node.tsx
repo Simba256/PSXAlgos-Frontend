@@ -77,29 +77,51 @@ export function RiskDefaultsNode({
         width: NODE_W,
         background: T.surfaceLow,
         borderRadius: 10,
-        padding: "12px 14px 14px",
-        boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 4px 14px -8px rgba(0,0,0,0.5)`,
+        padding: "10px 14px 14px",
+        // Primary-tinted ring + drop shadow so the central node reads as
+        // THE strategy anchor between entry (left) and exit (right) trees,
+        // not just one of three peer cards on the canvas.
+        boxShadow: `0 0 0 1px ${T.primary}55, 0 0 0 4px ${T.primary}10, 0 6px 18px -10px rgba(0,0,0,0.55)`,
       }}
     >
-      {/* Two pins so Risk Defaults reads as a junction, not a dead-end:
+      {/* Two pins so the strategy hub bridges entry and exit trees:
           left pin connects from the entry root gate, right pin connects to
           the mirrored exit root gate. Both share NODE_PIN_OFFSET_Y so the
           spine wire is a clean horizontal pass-through. */}
       <Pin x={-4} y={NODE_PIN_OFFSET_Y} color={T.primary} />
       <Pin x={NODE_W - 4} y={NODE_PIN_OFFSET_Y} color={T.primary} />
+      {/* Hub eyebrow — names the card's role on the canvas. The trees on
+          either side feed into / fan out of this anchor. */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          fontFamily: T.fontMono,
+          fontSize: 9,
+          letterSpacing: 1.4,
+          textTransform: "uppercase",
+          color: T.primary,
+          marginBottom: 8,
+        }}
+      >
+        <span>← Entry</span>
+        <span style={{ fontWeight: 600 }}>Strategy</span>
+        <span>Exit →</span>
+      </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span
           style={{
-            width: 22,
-            height: 22,
-            borderRadius: 6,
+            width: 26,
+            height: 26,
+            borderRadius: 7,
             background: T.primary + "22",
             color: T.primary,
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
             fontFamily: T.fontHead,
-            fontSize: 13,
+            fontSize: 15,
           }}
         >
           ⚖

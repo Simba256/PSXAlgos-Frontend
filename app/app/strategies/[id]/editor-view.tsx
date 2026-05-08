@@ -2223,14 +2223,11 @@ function Canvas({
                 />
               </svg>
 
-              {/* ENTRY / EXIT branch labels. Sit above each root gate so
-                  the two trees aren't mistaken for one continuous structure. */}
-              <BranchLabel x={root.gateX + GATE_W / 2} y={root.y} text="ENTRY" />
-              <BranchLabel
-                x={exitRoot.gateX + GATE_W / 2}
-                y={exitRoot.y}
-                text="EXIT"
-              />
+              {/* The central RiskDefaultsNode now carries the
+                  ← Entry / Strategy / Exit → header inline, so the
+                  free-floating pills above each root gate are dropped —
+                  the hub's directional cues do the same job without
+                  pulling attention away from the spine. */}
 
               {/* Entry tree — leaves, groups, gates, slots. */}
               {nestedGroups.map((g) => (
@@ -2500,39 +2497,6 @@ function ZoomBtn({ onClick, label }: { onClick: () => void; label: string }) {
     >
       {label}
     </button>
-  );
-}
-
-// Small "ENTRY" / "EXIT" branch label rendered above each root gate so
-// the two trees are visually distinguishable. Phase 4b — added when the
-// canvas became dual-tree and the same `AND` glyph appeared on both
-// sides; without the label users couldn't tell which tree gates which
-// trade direction.
-function BranchLabel({ x, y, text }: { x: number; y: number; text: string }) {
-  const T = useT();
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: x,
-        top: y - 26,
-        transform: "translateX(-50%)",
-        fontFamily: T.fontMono,
-        fontSize: 10,
-        letterSpacing: 1.2,
-        color: T.text3,
-        background: T.surface2 + "cc",
-        backdropFilter: "blur(6px)",
-        padding: "3px 8px",
-        borderRadius: 999,
-        border: `1px solid ${T.outlineFaint}`,
-        userSelect: "none",
-        pointerEvents: "none",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {text}
-    </div>
   );
 }
 
