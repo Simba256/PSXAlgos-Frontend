@@ -1941,7 +1941,11 @@ function Canvas({
     }
     const ROOT_TO_OUTPUT_GAP = 402;
     const RISK_NODE_W = RiskDefaultsNode.WIDTH;
-    const RISK_TO_EXIT_GAP = 80;
+    // Symmetric with ROOT_TO_OUTPUT_GAP so the spine reads as a centered hub:
+    // entry root → Risk Defaults left pin spans 402px, Risk Defaults right pin
+    // → exit root spans the same 402px. Earlier value (80) made the right
+    // side hug the hub while the left side floated out — visually unbalanced.
+    const RISK_TO_EXIT_GAP = ROOT_TO_OUTPUT_GAP;
     const rootRaw = layoutTree(tree);
     const exitRawForMirror = layoutTree(exitTree);
     const outputX = rootRaw.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
@@ -2048,7 +2052,8 @@ function Canvas({
           // entry- and exit-driven trades) rather than a one-sided dead-end.
           const ROOT_TO_OUTPUT_GAP = 402;
           const RISK_NODE_W = RiskDefaultsNode.WIDTH;
-          const RISK_TO_EXIT_GAP = 80;
+          // Symmetric with ROOT_TO_OUTPUT_GAP — see resetView for rationale.
+          const RISK_TO_EXIT_GAP = ROOT_TO_OUTPUT_GAP;
           const rootRaw = layoutTree(tree);
           const exitRawForMirror = layoutTree(exitTree);
           const outputX = rootRaw.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
