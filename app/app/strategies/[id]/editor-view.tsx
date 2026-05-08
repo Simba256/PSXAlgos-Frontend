@@ -1939,13 +1939,16 @@ function Canvas({
       setZoom(1);
       return;
     }
-    const ROOT_TO_OUTPUT_GAP = 402;
+    // Spine gap on each side of the Risk Defaults hub. Same value on both
+    // sides so the hub sits at the geometric center; small enough that the
+    // hub reads as "tied to" both trees rather than floating between them
+    // (402px+402px on a 1500px canvas left a visible dead zone in the
+    // middle). The bezier control-point offset (80px in pushWire) gives the
+    // wire a gentle sweep at this gap.
+    const SPINE_GAP = 160;
+    const ROOT_TO_OUTPUT_GAP = SPINE_GAP;
     const RISK_NODE_W = RiskDefaultsNode.WIDTH;
-    // Symmetric with ROOT_TO_OUTPUT_GAP so the spine reads as a centered hub:
-    // entry root → Risk Defaults left pin spans 402px, Risk Defaults right pin
-    // → exit root spans the same 402px. Earlier value (80) made the right
-    // side hug the hub while the left side floated out — visually unbalanced.
-    const RISK_TO_EXIT_GAP = ROOT_TO_OUTPUT_GAP;
+    const RISK_TO_EXIT_GAP = SPINE_GAP;
     const rootRaw = layoutTree(tree);
     const exitRawForMirror = layoutTree(exitTree);
     const outputX = rootRaw.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
@@ -2050,10 +2053,11 @@ function Canvas({
           // horizontal spine. Risk Defaults now also gets a wire on its
           // right pin → exit root, so it reads as a junction (governs both
           // entry- and exit-driven trades) rather than a one-sided dead-end.
-          const ROOT_TO_OUTPUT_GAP = 402;
+          // Spine gap — see resetView for rationale.
+          const SPINE_GAP = 160;
+          const ROOT_TO_OUTPUT_GAP = SPINE_GAP;
           const RISK_NODE_W = RiskDefaultsNode.WIDTH;
-          // Symmetric with ROOT_TO_OUTPUT_GAP — see resetView for rationale.
-          const RISK_TO_EXIT_GAP = ROOT_TO_OUTPUT_GAP;
+          const RISK_TO_EXIT_GAP = SPINE_GAP;
           const rootRaw = layoutTree(tree);
           const exitRawForMirror = layoutTree(exitTree);
           const outputX = rootRaw.gateX + GATE_W + ROOT_TO_OUTPUT_GAP;
