@@ -138,13 +138,20 @@ export interface StockFilters {
   min_market_cap?: number | null;
 }
 
+// Mirrors backend UniverseScope (strategy.py). Required on BotCreate since
+// 2026-05-11 — the silent fallthrough where both universe fields were null
+// is no longer allowed.
+export type UniverseScope = "all_active" | "by_sector" | "by_ticker";
+
 export interface BotCreateBody {
   strategy_id: number;
   name: string;
   allocated_capital: number;
   max_positions?: number;
 
-  // Universe (B044). One or both; explicit symbols override filters.
+  // Universe (2026-05-11). Scope is required; filters/symbols populate
+  // conditionally based on scope (see UniverseAndRiskFields).
+  universe_scope: UniverseScope;
   stock_filters?: StockFilters | null;
   stock_symbols?: string[] | null;
 

@@ -66,13 +66,39 @@ export async function apiFetch<T>(
         // ignore — body unreadable
       }
     }
-    const detail =
-      typeof body === "object" && body && "detail" in body
-        ? String((body as { detail: unknown }).detail)
-        : res.statusText
-    throw new ApiError(res.status, `${res.status} ${detail}`, body)
+    throw new ApiError(res.status, `${res.status} ${formatBackendDetail(body, res.statusText)}`, body)
   }
 
   if (res.status === 204) return undefined as T
   return (await res.json()) as T
+}
+
+// FastAPI returns 422 validation errors as `{detail: [{type, loc, msg, ...}]}`.
+// A naive `String(detail)` produces `[object Object]`, which is what users
+// have been seeing in toasts. This helper unwraps the array into a
+// human-readable summary so the UI can show "universe_scope: Field required"
+// instead of "[object Object]". HTTPException errors (401/403/400) usually
+// have `detail` as a plain string — those pass through unchanged.
+function formatBackendDetail(body: unknown, fallback: string): string {
+  if (typeof body !== "object" || body === null) return fallback
+  const rec = body as Record<string, unknown>
+  // {error: "..."} — Next proxy routes
+  if (typeof rec.error === "string" && rec.error.length > 0) return rec.error
+  const detail = rec.detail
+  if (typeof detail === "string") return detail
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d) => {
+        if (typeof d !== "object" || d === null) return null
+        const item = d as Record<string, unknown>
+        const loc = Array.isArray(item.loc)
+          ? item.loc.filter((p) => p !== "body").join(".")
+          : ""
+        const msg = typeof item.msg === "string" ? item.msg : "invalid"
+        return loc ? `${loc}: ${msg}` : msg
+      })
+      .filter((m): m is string => Boolean(m))
+    if (msgs.length > 0) return msgs.join("; ")
+  }
+  return fallback
 }

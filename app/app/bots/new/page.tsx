@@ -14,7 +14,7 @@ import {
   validateUniverseSelection,
   type UniverseAndRiskValue,
 } from "@/components/universe-and-risk-fields";
-import type { BotResponse } from "@/lib/api/bots";
+import type { BotCreateBody, BotResponse } from "@/lib/api/bots";
 import type { DefaultRisk, StrategyResponse } from "@/lib/api/strategies";
 import { getAllStocks, type StockResponse } from "@/lib/api/stocks";
 
@@ -31,6 +31,40 @@ interface StrategyPreview {
 }
 
 const DEFAULT_NAME = `Bot ${new Date().toISOString().slice(0, 10)}`;
+
+// Unwraps the Next proxy / FastAPI error envelope into a single readable
+// sentence. FastAPI 422s arrive as `{detail: [{loc, msg}, ...]}` — without
+// this helper they stringify to "[object Object]" in the toast.
+function formatLaunchError(err: unknown, status: number): string {
+  if (err && typeof err === "object") {
+    const e = err as { error?: unknown; detail?: unknown };
+    if (typeof e.error === "string" && e.error.length > 0 && !e.error.includes("[object Object]")) {
+      return e.error;
+    }
+    const detail = e.detail;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object") {
+      const d = detail as { detail?: unknown };
+      const inner = d.detail;
+      if (typeof inner === "string") return inner;
+      if (Array.isArray(inner)) {
+        const msgs = inner
+          .map((it) => {
+            if (!it || typeof it !== "object") return null;
+            const item = it as { loc?: unknown; msg?: unknown };
+            const loc = Array.isArray(item.loc)
+              ? item.loc.filter((p) => p !== "body").join(".")
+              : "";
+            const msg = typeof item.msg === "string" ? item.msg : "invalid";
+            return loc ? `${loc}: ${msg}` : msg;
+          })
+          .filter((m): m is string => Boolean(m));
+        if (msgs.length > 0) return msgs.join("; ");
+      }
+    }
+  }
+  return `Create failed (${status})`;
+}
 
 export default function BotWizardPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -145,24 +179,27 @@ export default function BotWizardPage() {
       setSubmitErr(universeErr);
       return;
     }
+    // Narrowed by the validator above — assert for the typed body.
+    if (universeAndRisk.universe_scope === null) return;
+    const body = {
+      strategy_id: strategyId,
+      name: name.trim(),
+      allocated_capital: allocatedCapital,
+      max_positions: maxPositions,
+      universe_scope: universeAndRisk.universe_scope,
+      stock_filters: universeAndRisk.stock_filters,
+      stock_symbols: universeAndRisk.stock_symbols,
+      stop_loss_pct: universeAndRisk.stop_loss_pct ?? null,
+      take_profit_pct: universeAndRisk.take_profit_pct ?? null,
+      trailing_stop_pct: universeAndRisk.trailing_stop_pct ?? null,
+      max_holding_days: universeAndRisk.max_holding_days ?? null,
+    } satisfies BotCreateBody;
     let bot: BotResponse;
     try {
       const res = await fetch("/api/bots", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          strategy_id: strategyId,
-          name: name.trim(),
-          allocated_capital: allocatedCapital,
-          max_positions: maxPositions,
-          universe_scope: universeAndRisk.universe_scope,
-          stock_filters: universeAndRisk.stock_filters,
-          stock_symbols: universeAndRisk.stock_symbols,
-          stop_loss_pct: universeAndRisk.stop_loss_pct ?? null,
-          take_profit_pct: universeAndRisk.take_profit_pct ?? null,
-          trailing_stop_pct: universeAndRisk.trailing_stop_pct ?? null,
-          max_holding_days: universeAndRisk.max_holding_days ?? null,
-        }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -170,7 +207,8 @@ export default function BotWizardPage() {
           setSubmitErr("Creating bots requires the Pro+ plan. Upgrade to continue.");
           return;
         }
-        setSubmitErr(typeof err?.error === "string" ? err.error : `Create failed (${res.status})`);
+        const msg = formatLaunchError(err, res.status);
+        setSubmitErr(msg);
         return;
       }
       bot = (await res.json()) as BotResponse;
