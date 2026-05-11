@@ -652,9 +652,24 @@ export function EditorView({
     // Opening for first time — load /stocks lazily so the picker has data.
     if (stocks.length === 0) {
       void getAllStocks()
-        .then((all) => setStocks(all))
-        .catch(() => {
-          /* picker will degrade to free-typed symbol entry */
+        .then((all) => {
+          if (all.length === 0) {
+            // The proxy returned an empty list — surface it so the
+            // user sees a real error instead of "no sectors loaded".
+            // Most likely cause: backend /stocks down, or a stale
+            // browser bundle from before /api/stocks existed.
+            console.error("[deploy] /api/stocks returned 0 stocks");
+            setFlash("Couldn't load the PSX universe — try a hard refresh (Ctrl-Shift-R).");
+          }
+          setStocks(all);
+        })
+        .catch((err) => {
+          console.error("[deploy] getAllStocks failed:", err);
+          setFlash(
+            err instanceof Error
+              ? `Couldn't load PSX universe: ${err.message}. Try a hard refresh.`
+              : "Couldn't load PSX universe. Try a hard refresh (Ctrl-Shift-R)."
+          );
         });
     }
     setDeployModal({ value: EMPTY_UNIVERSE_AND_RISK, busy: false });
