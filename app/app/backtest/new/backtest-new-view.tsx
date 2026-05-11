@@ -261,7 +261,7 @@ export function BacktestNewView({
   // accidental "all stocks" bug where forgetting to pick a sector silently
   // backtested against every active stock on PSX.
   const [universeScope, setUniverseScope] = useState<
-    "all_active" | "by_sector" | "by_ticker" | null
+    "all_active" | "by_sector" | "by_ticker" | "by_sector_and_ticker" | null
   >(null);
   const [selectedSectors, setSelectedSectors] = useState<string[]>([]);
   const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
@@ -356,7 +356,9 @@ export function BacktestNewView({
     if (universeScope === null) return 0;
     const active = stocks.filter((s) => s.is_active);
     if (universeScope === "all_active") return active.length;
-    if (universeScope === "by_sector") {
+
+    // Helper: count active stocks in selectedSectors.
+    const sectorCount = (): number => {
       if (selectedSectors.length === 0) return 0;
       const sectorSet = new Set(selectedSectors);
       let count = 0;
@@ -364,17 +366,36 @@ export function BacktestNewView({
         if (s.sector_name && sectorSet.has(s.sector_name)) count += 1;
       }
       return count;
+    };
+
+    // Helper: count any stock matching selectedTickers (delisted allowed).
+    const tickerCount = (): number => {
+      if (selectedTickers.length === 0) return 0;
+      const tickerSet = new Set(selectedTickers.map((s) => s.toUpperCase()));
+      let count = 0;
+      for (const s of stocks) {
+        if (tickerSet.has(s.symbol.toUpperCase())) count += 1;
+      }
+      return count;
+    };
+
+    if (universeScope === "by_sector") return sectorCount();
+    if (universeScope === "by_ticker") return tickerCount();
+
+    // by_sector_and_ticker — union of the two branches, deduped by symbol.
+    if (universeScope === "by_sector_and_ticker") {
+      const sectorSet = new Set(selectedSectors);
+      const tickerSet = new Set(selectedTickers.map((s) => s.toUpperCase()));
+      const union = new Set<string>();
+      for (const s of active) {
+        if (s.sector_name && sectorSet.has(s.sector_name)) union.add(s.symbol);
+      }
+      for (const s of stocks) {
+        if (tickerSet.has(s.symbol.toUpperCase())) union.add(s.symbol);
+      }
+      return union.size;
     }
-    // by_ticker — explicit tickers may include delisted names; count
-    // any matching row, not just active ones (mirrors the resolver's
-    // delisted-opt-in branch).
-    if (selectedTickers.length === 0) return 0;
-    const tickerSet = new Set(selectedTickers.map((s) => s.toUpperCase()));
-    let count = 0;
-    for (const s of stocks) {
-      if (tickerSet.has(s.symbol.toUpperCase())) count += 1;
-    }
-    return count;
+    return 0;
   }, [stocks, universeScope, selectedSectors, selectedTickers]);
 
   const tradingDays = useMemo(
@@ -438,6 +459,16 @@ export function BacktestNewView({
       setFlash("Add at least one ticker for the 'by ticker' scope.");
       return;
     }
+    if (universeScope === "by_sector_and_ticker") {
+      if (selectedSectors.length === 0) {
+        setFlash("Pick at least one sector for the composite scope.");
+        return;
+      }
+      if (selectedTickers.length === 0) {
+        setFlash("Add at least one ticker for the composite scope.");
+        return;
+      }
+    }
 
     // Build the universe payload to match the chosen scope. Fields
     // forbidden by the scope are sent as null so a leftover entry from
@@ -456,6 +487,12 @@ export function BacktestNewView({
       };
     } else if (universeScope === "all_active") {
       payloadFilters = numericFiltersActive ? { ...numericFilters } : null;
+    } else if (universeScope === "by_sector_and_ticker") {
+      // Composite: sectors + numeric filters on one side, explicit
+      // tickers on the other. Backend's resolve_universe_by_scope
+      // applies the numeric filters to the sector branch only.
+      payloadFilters = { sectors: selectedSectors, ...numericFilters };
+      payloadSymbols = selectedTickers;
     } else {
       // by_ticker — explicit allowlist, no numeric thresholds.
       payloadSymbols = selectedTickers;
@@ -627,7 +664,9 @@ export function BacktestNewView({
                     setUniverseScope(next);
                     // Drop fields the new scope doesn't allow so a stale
                     // sector / ticker / numeric value can't sneak through
-                    // on submit.
+                    // on submit. by_sector_and_ticker (2026-05-12) keeps
+                    // both sectors and tickers so the user can flip in/out
+                    // of the composite mode without losing their picks.
                     if (next === "all_active") {
                       setSelectedSectors([]);
                       setSelectedTickers([]);
@@ -637,6 +676,8 @@ export function BacktestNewView({
                       setSelectedSectors([]);
                       setNumericFilters(EMPTY_FILTERS);
                     }
+                    // by_sector_and_ticker: keep both sectors and tickers;
+                    // numeric filters stay too (applied to sector branch).
                   }}
                   sectors={selectedSectors}
                   onSectors={setSelectedSectors}
@@ -1653,8 +1694,8 @@ function UniverseSection({
   totalActive,
   disabled,
 }: {
-  scope: "all_active" | "by_sector" | "by_ticker" | null;
-  onScope: (next: "all_active" | "by_sector" | "by_ticker") => void;
+  scope: "all_active" | "by_sector" | "by_ticker" | "by_sector_and_ticker" | null;
+  onScope: (next: "all_active" | "by_sector" | "by_ticker" | "by_sector_and_ticker") => void;
   sectors: string[];
   onSectors: (next: string[]) => void;
   tickers: string[];
@@ -1696,7 +1737,7 @@ function UniverseSection({
           />
         </UniverseSubsection>
 
-        {scope === "by_sector" && (
+        {(scope === "by_sector" || scope === "by_sector_and_ticker") && (
           <UniverseSubsection
             kicker="sectors"
             info="Active stocks in the picked sectors join the universe."
@@ -1712,10 +1753,14 @@ function UniverseSection({
           </UniverseSubsection>
         )}
 
-        {scope === "by_ticker" && (
+        {(scope === "by_ticker" || scope === "by_sector_and_ticker") && (
           <UniverseSubsection
             kicker="tickers"
-            info="Add the exact tickers this run targets. Explicit tickers bypass the active-stock gate so backtests can include delisted names."
+            info={
+              scope === "by_sector_and_ticker"
+                ? "Add extra tickers on top of the sectors above. Explicit tickers bypass the numeric filters and the active-stock gate (delisted names allowed)."
+                : "Add the exact tickers this run targets. Explicit tickers bypass the active-stock gate so backtests can include delisted names."
+            }
           >
             <SymbolPickerInline
               available={availableSymbols}
@@ -1731,7 +1776,9 @@ function UniverseSection({
           </UniverseSubsection>
         )}
 
-        {(scope === "all_active" || scope === "by_sector") && (
+        {(scope === "all_active" ||
+          scope === "by_sector" ||
+          scope === "by_sector_and_ticker") && (
           <Disclosure
             label="numeric filters"
             summary={filterSummary}
@@ -1795,14 +1842,14 @@ function ScopePicker({
   totalActive,
   disabled,
 }: {
-  scope: "all_active" | "by_sector" | "by_ticker" | null;
-  onChange: (next: "all_active" | "by_sector" | "by_ticker") => void;
+  scope: "all_active" | "by_sector" | "by_ticker" | "by_sector_and_ticker" | null;
+  onChange: (next: "all_active" | "by_sector" | "by_ticker" | "by_sector_and_ticker") => void;
   totalActive: number;
   disabled: boolean;
 }) {
   const T = useT();
   const options: Array<{
-    value: "all_active" | "by_sector" | "by_ticker";
+    value: "all_active" | "by_sector" | "by_ticker" | "by_sector_and_ticker";
     label: string;
     hint: string;
   }> = [
@@ -1820,6 +1867,11 @@ function ScopePicker({
       value: "by_ticker",
       label: "By ticker",
       hint: "Only the exact tickers you list. Backtests may include delisted names.",
+    },
+    {
+      value: "by_sector_and_ticker",
+      label: "By sector + extra tickers",
+      hint: "Combine sectors with additional explicit tickers. Numeric filters trim the sector side; explicit tickers come through unfiltered.",
     },
   ];
   return (

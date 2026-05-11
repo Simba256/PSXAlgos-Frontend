@@ -30,7 +30,15 @@ export interface StockFilters {
 }
 
 // Mirrors backend UniverseScope (strategy.py).
-export type UniverseScope = "all_active" | "by_sector" | "by_ticker";
+// ``by_sector_and_ticker`` was added 2026-05-12 for "sectors + extra
+// tickers" composition; numeric filters apply to the sector branch
+// only at the engine layer (explicit tickers bypass them, same as
+// the BY_TICKER allowlist contract).
+export type UniverseScope =
+  | "all_active"
+  | "by_sector"
+  | "by_ticker"
+  | "by_sector_and_ticker";
 
 export interface UniverseAndRiskValue {
   // Universe scope — REQUIRED before submission. ``null`` here means
@@ -42,6 +50,10 @@ export interface UniverseAndRiskValue {
   //     fields in stock_filters may apply; stock_symbols MUST stay null.
   //   * "by_ticker"  — stock_symbols is required; stock_filters MUST
   //     stay null (explicit allowlist is not gated by numeric thresholds).
+  //   * "by_sector_and_ticker" — both stock_filters.sectors AND
+  //     stock_symbols required. Numeric filters allowed (apply to the
+  //     sector branch only at the engine layer). Mutually exclusive
+  //     with all_active.
   universe_scope: UniverseScope | null;
 
   stock_filters: StockFilters | null;
@@ -85,6 +97,15 @@ export function validateUniverseSelection(
       return "Add at least one ticker.";
     }
   }
+  if (value.universe_scope === "by_sector_and_ticker") {
+    const sectors = value.stock_filters?.sectors ?? [];
+    const symbols = value.stock_symbols ?? [];
+    if (sectors.length === 0 && symbols.length === 0) {
+      return "Pick at least one sector and add at least one ticker.";
+    }
+    if (sectors.length === 0) return "Pick at least one sector.";
+    if (symbols.length === 0) return "Add at least one ticker.";
+  }
   return null;
 }
 
@@ -98,8 +119,11 @@ export function inferUniverseScope(
   filters: StockFilters | null | undefined,
   symbols: string[] | null | undefined,
 ): UniverseScope | null {
-  if (symbols && symbols.length > 0) return "by_ticker";
-  if (filters?.sectors && filters.sectors.length > 0) return "by_sector";
+  const hasSymbols = !!(symbols && symbols.length > 0);
+  const hasSectors = !!(filters?.sectors && filters.sectors.length > 0);
+  if (hasSymbols && hasSectors) return "by_sector_and_ticker";
+  if (hasSymbols) return "by_ticker";
+  if (hasSectors) return "by_sector";
   if (
     filters &&
     (filters.min_price != null ||
@@ -188,20 +212,27 @@ export function UniverseAndRiskFields({
   // so the backend never sees a stale "by_sector" sectors list left
   // over after the user flips to "by_ticker". This also keeps the
   // validateUniverseSelection error wording in sync with the radio.
+  //
+  // by_sector_and_ticker (2026-05-12): keeps BOTH sectors and symbols
+  // so users can flip in/out of composite without losing their pickers.
   function setScope(next: UniverseScope) {
+    const sectorsAllowed = next === "by_sector" || next === "by_sector_and_ticker";
+    const symbolsAllowed = next === "by_ticker" || next === "by_sector_and_ticker";
+
+    let nextFilters = value.stock_filters;
+    if (!sectorsAllowed && nextFilters?.sectors) {
+      nextFilters = stripSectors(nextFilters);
+    }
+    // by_ticker is the only scope that forbids numeric filters too.
+    if (next === "by_ticker") {
+      nextFilters = null;
+    }
+
     onChange({
       ...value,
       universe_scope: next,
-      // by_ticker forbids stock_filters entirely
-      stock_filters: next === "by_ticker" ? null : value.stock_filters,
-      // both all_active and by_sector forbid stock_symbols
-      stock_symbols: next === "by_ticker" ? value.stock_symbols : null,
-      // Drop any leftover sectors when leaving by_sector
-      ...(next !== "by_sector" && value.stock_filters?.sectors
-        ? {
-            stock_filters: stripSectors(value.stock_filters),
-          }
-        : {}),
+      stock_filters: nextFilters,
+      stock_symbols: symbolsAllowed ? value.stock_symbols : null,
     });
   }
 
@@ -219,7 +250,7 @@ export function UniverseAndRiskFields({
             )}
           </Section>
 
-          {scope === "by_sector" && (
+          {(scope === "by_sector" || scope === "by_sector_and_ticker") && (
             <Section
               kicker="universe · sectors"
               info="Search and pick one or more sectors. Active stocks in those sectors join the universe."
@@ -238,10 +269,14 @@ export function UniverseAndRiskFields({
             </Section>
           )}
 
-          {scope === "by_ticker" && (
+          {(scope === "by_ticker" || scope === "by_sector_and_ticker") && (
             <Section
               kicker="universe · tickers"
-              info="Add the exact symbols this run should target. Explicit tickers bypass the active-stock gate so backtests can include delisted names."
+              info={
+                scope === "by_sector_and_ticker"
+                  ? "Add extra tickers on top of the sectors above. Explicit tickers bypass the numeric filters and the active-stock gate (delisted names allowed)."
+                  : "Add the exact symbols this run should target. Explicit tickers bypass the active-stock gate so backtests can include delisted names."
+              }
             >
               <SymbolPicker
                 available={availableSymbols}
@@ -253,7 +288,9 @@ export function UniverseAndRiskFields({
             </Section>
           )}
 
-          {(scope === "all_active" || scope === "by_sector") && (
+          {(scope === "all_active" ||
+            scope === "by_sector" ||
+            scope === "by_sector_and_ticker") && (
             <Section
               kicker="universe · numeric filters"
               info="Optional numeric guardrails. Leave blank to skip."
@@ -418,6 +455,11 @@ function ScopeRadio({
       value: "by_ticker",
       label: "By ticker",
       hint: "Only the exact symbols you list. Lets you include delisted names in backtests.",
+    },
+    {
+      value: "by_sector_and_ticker",
+      label: "By sector + extra tickers",
+      hint: "Combine sectors with additional explicit tickers. Numeric filters trim the sector side; explicit tickers come through unfiltered.",
     },
   ];
   return (

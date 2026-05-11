@@ -140,8 +140,13 @@ export interface StockFilters {
 
 // Mirrors backend UniverseScope (strategy.py). Required on BotCreate since
 // 2026-05-11 — the silent fallthrough where both universe fields were null
-// is no longer allowed.
-export type UniverseScope = "all_active" | "by_sector" | "by_ticker";
+// is no longer allowed. ``by_sector_and_ticker`` added 2026-05-12 for
+// "sectors + extra tickers" composition.
+export type UniverseScope =
+  | "all_active"
+  | "by_sector"
+  | "by_ticker"
+  | "by_sector_and_ticker";
 
 export interface BotCreateBody {
   strategy_id: number;
