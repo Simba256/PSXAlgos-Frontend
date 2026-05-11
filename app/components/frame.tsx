@@ -26,6 +26,7 @@ const NAV_ITEMS: MarketingItem[] = [
   { kind: "link", href: "/signals", label: "Signals" },
   { kind: "link", href: "/bots", label: "Bots" },
   { kind: "link", href: "/portfolio", label: "Portfolio" },
+  { kind: "link", href: "/leaderboard", label: "Leaderboard" },
 ];
 
 function useBodyScrollLock(locked: boolean) {
