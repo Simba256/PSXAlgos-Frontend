@@ -93,7 +93,54 @@ export function StrategiesView({
   const [sortKey, setSortKey] = useState<SortKey>("updated");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [importMsg, setImportMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [archiveTarget, setArchiveTarget] = useState<Strategy | null>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [restoreBusyId, setRestoreBusyId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Status patch via PUT /api/strategies/{id}. Backend allows transitions
+  // to ARCHIVED unconditionally (no actionable-rule check at routers/strategies.py:649),
+  // and DRAFT is the safe "back to authoring" state when restoring.
+  async function patchStatus(s: Strategy, next: Status): Promise<void> {
+    const res = await fetch(`/api/strategies/${s.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: next === "DEPLOYED" ? "ACTIVE" : next }),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `Request failed (${res.status})`);
+    }
+  }
+
+  async function performArchive(s: Strategy) {
+    if (archiveBusy) return;
+    setArchiveBusy(true);
+    try {
+      await patchStatus(s, "ARCHIVED");
+      setRows((prev) => prev.map((r) => (r.id === s.id ? { ...r, status: "ARCHIVED" } : r)));
+      setImportMsg({ kind: "ok", text: `archived "${s.name}"` });
+      setArchiveTarget(null);
+    } catch (err) {
+      setImportMsg({ kind: "err", text: err instanceof Error ? err.message : "archive failed" });
+    } finally {
+      setArchiveBusy(false);
+    }
+  }
+
+  async function performRestore(s: Strategy) {
+    if (restoreBusyId) return;
+    setRestoreBusyId(s.id);
+    try {
+      await patchStatus(s, "DRAFT");
+      setRows((prev) => prev.map((r) => (r.id === s.id ? { ...r, status: "DRAFT" } : r)));
+      setImportMsg({ kind: "ok", text: `restored "${s.name}"` });
+    } catch (err) {
+      setImportMsg({ kind: "err", text: err instanceof Error ? err.message : "restore failed" });
+    } finally {
+      setRestoreBusyId(null);
+    }
+  }
 
   useEffect(() => {
     if (!importMsg) return;
@@ -149,7 +196,18 @@ export function StrategiesView({
         }}
         onImport={onImportClick}
         importMsg={importMsg}
+        onArchive={(s) => setArchiveTarget(s)}
+        onRestore={performRestore}
+        restoreBusyId={restoreBusyId}
       />
+      {archiveTarget && (
+        <ArchiveConfirmModal
+          strategy={archiveTarget}
+          busy={archiveBusy}
+          onCancel={() => setArchiveTarget(null)}
+          onConfirm={() => performArchive(archiveTarget)}
+        />
+      )}
     </AppFrame>
   );
 }
@@ -163,6 +221,9 @@ function ListBody({
   onSort,
   onImport,
   importMsg,
+  onArchive,
+  onRestore,
+  restoreBusyId,
 }: {
   rows: Strategy[];
   status: StatusFilter;
@@ -172,6 +233,9 @@ function ListBody({
   onSort: (k: SortKey, d: SortDir) => void;
   onImport: () => void;
   importMsg: { kind: "ok" | "err"; text: string } | null;
+  onArchive: (s: Strategy) => void;
+  onRestore: (s: Strategy) => void;
+  restoreBusyId: string | null;
 }) {
   const T = useT();
   const source = rows;
@@ -311,6 +375,9 @@ function ListBody({
           sortDir={sortDir}
           onSort={onSort}
           sorted={sorted}
+          onArchive={onArchive}
+          onRestore={onRestore}
+          restoreBusyId={restoreBusyId}
         />
       )}
     </div>
@@ -325,6 +392,9 @@ function FilteredList({
   sortDir,
   onSort,
   sorted,
+  onArchive,
+  onRestore,
+  restoreBusyId,
 }: {
   filters: { key: StatusFilter; label: string; count: number }[];
   status: StatusFilter;
@@ -333,6 +403,9 @@ function FilteredList({
   sortDir: SortDir;
   onSort: (k: SortKey, d: SortDir) => void;
   sorted: Strategy[];
+  onArchive: (s: Strategy) => void;
+  onRestore: (s: Strategy) => void;
+  restoreBusyId: string | null;
 }) {
   const T = useT();
   const { bp, isMobile } = useBreakpoint();
@@ -397,7 +470,12 @@ function FilteredList({
                 label={filters.find((f) => f.key === status)?.label ?? "this filter"}
               />
             ) : (
-              <StrategyTable rows={sorted} />
+              <StrategyTable
+                rows={sorted}
+                onArchive={onArchive}
+                onRestore={onRestore}
+                restoreBusyId={restoreBusyId}
+              />
             )}
           </div>
         </div>
@@ -624,7 +702,17 @@ function coerceStrategy(raw: unknown, idx: number): Strategy {
   };
 }
 
-function StrategyTable({ rows }: { rows: Strategy[] }) {
+function StrategyTable({
+  rows,
+  onArchive,
+  onRestore,
+  restoreBusyId,
+}: {
+  rows: Strategy[];
+  onArchive: (s: Strategy) => void;
+  onRestore: (s: Strategy) => void;
+  restoreBusyId: string | null;
+}) {
   const T = useT();
   const cols: Col[] = [
     { label: "name", width: "1.5fr", mono: false, primary: true },
@@ -635,6 +723,9 @@ function StrategyTable({ rows }: { rows: Strategy[] }) {
     { label: "outputs", width: "120px", mobileFullWidth: true },
     { label: "today", align: "right", width: "80px" },
     { label: "updated", align: "right", width: "90px" },
+    // Empty-label column auto-flags as mobileFullWidth (see Col docs);
+    // on desktop renders an Archive / Restore action per row.
+    { label: "", align: "right", width: "90px" },
   ];
   const glyphs: Record<OutputKind, [string, string, string]> = {
     bt: ["⎈", T.primary, "Backtest"],
@@ -650,6 +741,7 @@ function StrategyTable({ rows }: { rows: Strategy[] }) {
     s.outputs,
     s.signals,
     s.updated,
+    s,
   ]);
   return (
     <TerminalTable
@@ -757,9 +849,115 @@ function StrategyTable({ rows }: { rows: Strategy[] }) {
           );
         }
         if (ci === 7) return <span style={{ color: T.text3 }}>{cell as string}</span>;
+        if (ci === 8) {
+          const s = cell as Strategy;
+          const isArchived = s.status === "ARCHIVED";
+          const busy = isArchived && restoreBusyId === s.id;
+          return (
+            <Btn
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                if (isArchived) onRestore(s);
+                else onArchive(s);
+              }}
+            >
+              {busy ? "…" : isArchived ? "Restore" : "Archive"}
+            </Btn>
+          );
+        }
         return cell as ReactNode;
       }}
     />
+  );
+}
+
+function ArchiveConfirmModal({
+  strategy,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  strategy: Strategy;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const T = useT();
+  const liveBots = strategy.botsCount > 0;
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.55)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+        padding: 24,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: T.surface,
+          border: `1px solid ${T.outline}`,
+          borderRadius: 8,
+          maxWidth: 460,
+          width: "100%",
+          padding: 24,
+          fontFamily: T.fontSans,
+        }}
+      >
+        <h2
+          style={{
+            margin: 0,
+            fontFamily: T.fontHead,
+            fontSize: 18,
+            fontWeight: 600,
+            color: T.text,
+          }}
+        >
+          Archive this strategy?
+        </h2>
+        <p style={{ marginTop: 12, color: T.text2, fontSize: 13, lineHeight: 1.5 }}>
+          <span style={{ color: T.text }}>&ldquo;{strategy.name}&rdquo;</span> will
+          move to the Archived bucket. Backtests are preserved and you can restore
+          it any time. The strategy stops appearing in scans and bot picker lists.
+        </p>
+        {liveBots && (
+          <div
+            style={{
+              marginTop: 14,
+              padding: "10px 12px",
+              border: `1px solid ${T.warning}`,
+              borderRadius: 6,
+              background: `${T.warning}11`,
+              color: T.warning,
+              fontSize: 12.5,
+              lineHeight: 1.45,
+            }}
+          >
+            {strategy.botsCount} live{" "}
+            {strategy.botsCount === 1 ? "bot is" : "bots are"} bound to this
+            strategy. Once archived, the trading engine will skip them on the next
+            cycle — they&rsquo;ll stop trading until you restore the strategy or
+            rebind them.
+          </div>
+        )}
+        <div style={{ marginTop: 20, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <Btn variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Btn>
+          <Btn variant="danger" size="sm" onClick={onConfirm} disabled={busy}>
+            {busy ? "Archiving…" : "Archive"}
+          </Btn>
+        </div>
+      </div>
+    </div>
   );
 }
 
