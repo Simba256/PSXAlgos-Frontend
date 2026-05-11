@@ -11,6 +11,7 @@ import { useBreakpoint, PAD, pick } from "@/components/responsive";
 import {
   EMPTY_UNIVERSE_AND_RISK,
   UniverseAndRiskFields,
+  validateUniverseSelection,
   type UniverseAndRiskValue,
 } from "@/components/universe-and-risk-fields";
 import type { BotResponse } from "@/lib/api/bots";
@@ -136,6 +137,14 @@ export default function BotWizardPage() {
       setSubmitErr("Allocated capital must be greater than zero.");
       return;
     }
+    // Universe scope guard — surfaces inline rather than letting the
+    // backend bounce a 422. The same validator runs on the editor and
+    // backtest forms so the wording stays consistent.
+    const universeErr = validateUniverseSelection(universeAndRisk);
+    if (universeErr) {
+      setSubmitErr(universeErr);
+      return;
+    }
     let bot: BotResponse;
     try {
       const res = await fetch("/api/bots", {
@@ -146,6 +155,7 @@ export default function BotWizardPage() {
           name: name.trim(),
           allocated_capital: allocatedCapital,
           max_positions: maxPositions,
+          universe_scope: universeAndRisk.universe_scope,
           stock_filters: universeAndRisk.stock_filters,
           stock_symbols: universeAndRisk.stock_symbols,
           stop_loss_pct: universeAndRisk.stop_loss_pct ?? null,

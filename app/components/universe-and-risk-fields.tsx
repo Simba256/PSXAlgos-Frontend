@@ -2,11 +2,15 @@
 
 // Shared universe + risk picker for bot creation, backtest creation, and
 // strategy deploy. Mirrors `BacktestRequest` / `BotCreate` / `DeployRequest`
-// on the backend (psxDataPortal/backend/app/schemas/strategy.py:440 +
-// .../bot.py:48 + .../signal.py).
+// on the backend (psxDataPortal/backend/app/schemas/strategy.py + bot.py
+// + signal.py).
 //
-// `value` and `onChange` cover the union of fields. `showRisk` toggles the
-// guardrail block off for the deploy modal (where only universe matters).
+// 2026-05-11 — universe selection is now scope-first. The user picks one of
+// three top-level scopes before touching sectors / tickers; the sub-inputs
+// render conditionally. ``stock_filters=null`` + ``stock_symbols=null``
+// without a scope is no longer a valid submission state — the backend
+// rejects it with 422. The radio defaults to NOTHING SELECTED so the user
+// has to make an explicit choice (no more silent "all stocks" by accident).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -15,7 +19,7 @@ import { Kicker } from "./atoms";
 import { InheritableField } from "./inheritable-field";
 import type { DefaultRisk } from "@/lib/api/strategies";
 
-// Mirrors backend StockFilters (strategy.py:321). All fields optional;
+// Mirrors backend StockFilters (strategy.py). All fields optional;
 // missing or null means "no constraint on this dimension".
 export interface StockFilters {
   sectors?: string[] | null;
@@ -25,12 +29,21 @@ export interface StockFilters {
   min_market_cap?: number | null;
 }
 
+// Mirrors backend UniverseScope (strategy.py).
+export type UniverseScope = "all_active" | "by_sector" | "by_ticker";
+
 export interface UniverseAndRiskValue {
-  // Universe — sectors and explicit symbols are MERGED via UNION on the
-  // backend (see app/services/universe.py, B048):
-  //     universe = ((sectors ∩ is_active) ∪ explicit) ∩ numeric_filters
-  // Numeric filters apply uniformly to both branches. Explicit symbols
-  // bypass `is_active` so backtests can include delisted names.
+  // Universe scope — REQUIRED before submission. ``null`` here means
+  // "user hasn't made a choice yet" and the parent form must block
+  // submission. Three valid values:
+  //   * "all_active" — every active stock; numeric stock_filters may
+  //     still apply; sectors and stock_symbols MUST stay null.
+  //   * "by_sector"  — stock_filters.sectors is required; numeric
+  //     fields in stock_filters may apply; stock_symbols MUST stay null.
+  //   * "by_ticker"  — stock_symbols is required; stock_filters MUST
+  //     stay null (explicit allowlist is not gated by numeric thresholds).
+  universe_scope: UniverseScope | null;
+
   stock_filters: StockFilters | null;
   stock_symbols: string[] | null;
 
@@ -44,9 +57,62 @@ export interface UniverseAndRiskValue {
 }
 
 export const EMPTY_UNIVERSE_AND_RISK: UniverseAndRiskValue = {
+  universe_scope: null,
   stock_filters: null,
   stock_symbols: null,
 };
+
+/** Returns a human-readable validation error for the current universe
+ *  state, or ``null`` when the state is valid for submission. Centralised
+ *  here so all three parent forms (bot new, backtest new, deploy modal)
+ *  show the same inline error wording.
+ */
+export function validateUniverseSelection(
+  value: UniverseAndRiskValue,
+): string | null {
+  if (value.universe_scope === null) {
+    return "Pick a universe scope before continuing.";
+  }
+  if (value.universe_scope === "by_sector") {
+    const sectors = value.stock_filters?.sectors ?? [];
+    if (sectors.length === 0) {
+      return "Pick at least one sector.";
+    }
+  }
+  if (value.universe_scope === "by_ticker") {
+    const symbols = value.stock_symbols ?? [];
+    if (symbols.length === 0) {
+      return "Add at least one ticker.";
+    }
+  }
+  return null;
+}
+
+/** Derive a scope from a saved universe payload — used when an
+ *  existing bot / deployed strategy loads into the editor and we need to
+ *  show the right radio pre-selected. ``null`` is returned only for
+ *  legacy rows that pre-date this UI (caller should treat as "needs
+ *  reconfiguration" and force the user to pick a scope).
+ */
+export function inferUniverseScope(
+  filters: StockFilters | null | undefined,
+  symbols: string[] | null | undefined,
+): UniverseScope | null {
+  if (symbols && symbols.length > 0) return "by_ticker";
+  if (filters?.sectors && filters.sectors.length > 0) return "by_sector";
+  if (
+    filters &&
+    (filters.min_price != null ||
+      filters.max_price != null ||
+      filters.min_volume != null ||
+      filters.min_market_cap != null)
+  ) {
+    // Numeric thresholds but no sectors / no symbols — that's the
+    // shape ``all_active`` allows.
+    return "all_active";
+  }
+  return null;
+}
 
 export interface SymbolOption {
   symbol: string;
@@ -82,9 +148,10 @@ export function UniverseAndRiskFields({
 }) {
   const filters = value.stock_filters ?? {};
   const symbols = value.stock_symbols ?? [];
+  const scope = value.universe_scope;
 
   // Patch helpers preserve null when a section becomes empty so the backend
-  // stores NULL instead of `{}` / `[]` (matches deploy + B044 semantics).
+  // stores NULL instead of `{}` / `[]`.
   function patchFilters(next: Partial<StockFilters>) {
     const merged: StockFilters = { ...filters, ...next };
     const isEmpty =
@@ -117,86 +184,115 @@ export function UniverseAndRiskFields({
     patchSymbols(symbols.filter((s) => s !== sym));
   }
 
+  // Scope switch: clear the fields that don't apply to the new scope
+  // so the backend never sees a stale "by_sector" sectors list left
+  // over after the user flips to "by_ticker". This also keeps the
+  // validateUniverseSelection error wording in sync with the radio.
+  function setScope(next: UniverseScope) {
+    onChange({
+      ...value,
+      universe_scope: next,
+      // by_ticker forbids stock_filters entirely
+      stock_filters: next === "by_ticker" ? null : value.stock_filters,
+      // both all_active and by_sector forbid stock_symbols
+      stock_symbols: next === "by_ticker" ? value.stock_symbols : null,
+      // Drop any leftover sectors when leaving by_sector
+      ...(next !== "by_sector" && value.stock_filters?.sectors
+        ? {
+            stock_filters: stripSectors(value.stock_filters),
+          }
+        : {}),
+    });
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
       {showUniverse && (
         <>
           <Section
-            kicker="universe · sectors"
-            info="Pick one or more sectors. Active stocks in those sectors join the universe."
+            kicker="universe · scope"
+            info="Pick the universe this run should target. Required — no implicit default."
           >
-            <SectorChips
-              available={availableSectors}
-              selected={filters.sectors ?? []}
-              onToggle={toggleSector}
-              disabled={disabled}
-            />
-          </Section>
-
-          <Section
-            kicker="universe · explicit symbols"
-            info="Optional. Tickers added here are merged with the sector list — they don't replace it. Use this to add specific stocks (including delisted names for backtests) on top of a sector pick."
-          >
-            <SymbolPicker
-              available={availableSymbols}
-              selected={symbols}
-              onAdd={addSymbol}
-              onRemove={removeSymbol}
-              disabled={disabled}
-            />
-            {symbols.length === 0 && filters.sectors && filters.sectors.length > 0 && (
-              <FaintNote>sectors only — no explicit tickers added</FaintNote>
-            )}
-            {symbols.length > 0 && filters.sectors && filters.sectors.length > 0 && (
-              <FaintNote>
-                universe = sectors ∪ explicit tickers (numeric filters apply to both)
-              </FaintNote>
+            <ScopeRadio scope={scope} onChange={setScope} disabled={disabled} />
+            {scope === null && (
+              <FaintNote>nothing selected — submission blocked until you pick a scope</FaintNote>
             )}
           </Section>
 
-          <Section
-            kicker="universe · filters"
-            info="Optional numeric guardrails. Apply to both sector matches and explicit tickers. Leave blank to skip."
-          >
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-                gap: 14,
-                maxWidth: 640,
-              }}
+          {scope === "by_sector" && (
+            <Section
+              kicker="universe · sectors"
+              info="Pick one or more sectors. Active stocks in those sectors join the universe."
             >
-              <NumberInput
-                label="min price (PKR)"
-                value={filters.min_price ?? null}
-                onChange={(v) => patchFilters({ min_price: v })}
+              <SectorChips
+                available={availableSectors}
+                selected={filters.sectors ?? []}
+                onToggle={toggleSector}
                 disabled={disabled}
-                min={0}
               />
-              <NumberInput
-                label="max price (PKR)"
-                value={filters.max_price ?? null}
-                onChange={(v) => patchFilters({ max_price: v })}
+            </Section>
+          )}
+
+          {scope === "by_ticker" && (
+            <Section
+              kicker="universe · tickers"
+              info="Add the exact symbols this run should target. Explicit tickers bypass the active-stock gate so backtests can include delisted names."
+            >
+              <SymbolPicker
+                available={availableSymbols}
+                selected={symbols}
+                onAdd={addSymbol}
+                onRemove={removeSymbol}
                 disabled={disabled}
-                min={0}
               />
-              <NumberInput
-                label="min daily volume"
-                value={filters.min_volume ?? null}
-                onChange={(v) => patchFilters({ min_volume: v })}
-                disabled={disabled}
-                min={0}
-                integer
-              />
-              <NumberInput
-                label="min market cap"
-                value={filters.min_market_cap ?? null}
-                onChange={(v) => patchFilters({ min_market_cap: v })}
-                disabled={disabled}
-                min={0}
-              />
-            </div>
-          </Section>
+            </Section>
+          )}
+
+          {(scope === "all_active" || scope === "by_sector") && (
+            <Section
+              kicker="universe · numeric filters"
+              info="Optional numeric guardrails. Leave blank to skip."
+            >
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                  gap: 14,
+                  maxWidth: 640,
+                }}
+              >
+                <NumberInput
+                  label="min price (PKR)"
+                  value={filters.min_price ?? null}
+                  onChange={(v) => patchFilters({ min_price: v })}
+                  disabled={disabled}
+                  min={0}
+                />
+                <NumberInput
+                  label="max price (PKR)"
+                  value={filters.max_price ?? null}
+                  onChange={(v) => patchFilters({ max_price: v })}
+                  disabled={disabled}
+                  min={0}
+                />
+                <NumberInput
+                  label="min daily volume"
+                  value={filters.min_volume ?? null}
+                  onChange={(v) => patchFilters({ min_volume: v })}
+                  disabled={disabled}
+                  min={0}
+                  integer
+                />
+                <NumberInput
+                  label="min market cap"
+                  value={filters.min_market_cap ?? null}
+                  onChange={(v) => patchFilters({ min_market_cap: v })}
+                  disabled={disabled}
+                  min={0}
+                />
+              </div>
+            </Section>
+          )}
         </>
       )}
 
@@ -269,6 +365,117 @@ export function UniverseAndRiskFields({
           </div>
         </Section>
       )}
+    </div>
+  );
+}
+
+/** Drop the sectors entry from a filters object, returning null if the
+ *  resulting object has no other fields set (matches the parent
+ *  ``patchFilters`` collapse-to-null rule).
+ */
+function stripSectors(filters: StockFilters): StockFilters | null {
+  const next: StockFilters = { ...filters };
+  delete next.sectors;
+  const allEmpty =
+    next.min_price == null &&
+    next.max_price == null &&
+    next.min_volume == null &&
+    next.min_market_cap == null;
+  return allEmpty ? null : next;
+}
+
+function ScopeRadio({
+  scope,
+  onChange,
+  disabled,
+}: {
+  scope: UniverseScope | null;
+  onChange: (next: UniverseScope) => void;
+  disabled: boolean;
+}) {
+  const T = useT();
+  const options: Array<{
+    value: UniverseScope;
+    label: string;
+    hint: string;
+  }> = [
+    {
+      value: "all_active",
+      label: "All active stocks",
+      hint: "Every PSX symbol that's active today. Numeric filters still apply.",
+    },
+    {
+      value: "by_sector",
+      label: "By sector",
+      hint: "Active stocks in the sectors you pick.",
+    },
+    {
+      value: "by_ticker",
+      label: "By ticker",
+      hint: "Only the exact symbols you list. Lets you include delisted names in backtests.",
+    },
+  ];
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Universe scope"
+      style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 540 }}
+    >
+      {options.map((opt) => {
+        const active = scope === opt.value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            disabled={disabled}
+            onClick={() => onChange(opt.value)}
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 12,
+              padding: "12px 14px",
+              background: active ? T.surface3 : T.surface,
+              color: T.text,
+              border: "none",
+              boxShadow: `0 0 0 1px ${active ? T.outlineVariant : T.outlineFaint}`,
+              borderRadius: 8,
+              cursor: disabled ? "not-allowed" : "pointer",
+              opacity: disabled ? 0.6 : 1,
+              fontFamily: "inherit",
+              textAlign: "left",
+              transition: "background 120ms ease, box-shadow 120ms ease",
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                marginTop: 3,
+                width: 14,
+                height: 14,
+                borderRadius: 999,
+                border: `2px solid ${active ? T.text : T.outlineFaint}`,
+                background: active ? T.text : "transparent",
+                flexShrink: 0,
+              }}
+            />
+            <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <span style={{ fontSize: 13.5, color: T.text }}>{opt.label}</span>
+              <span
+                style={{
+                  fontFamily: T.fontMono,
+                  fontSize: 11,
+                  color: T.text3,
+                  lineHeight: 1.4,
+                }}
+              >
+                {opt.hint}
+              </span>
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }

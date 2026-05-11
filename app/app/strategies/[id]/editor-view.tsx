@@ -20,6 +20,7 @@ import {
 import {
   EMPTY_UNIVERSE_AND_RISK,
   UniverseAndRiskFields,
+  validateUniverseSelection,
   type UniverseAndRiskValue,
 } from "@/components/universe-and-risk-fields";
 import { RiskDefaultsNode } from "@/components/strategy-editor/risk-defaults-node";
@@ -662,7 +663,13 @@ export function EditorView({
   const performDeploy = async (value: UniverseAndRiskValue) => {
     setDeployModal((m) => (m ? { ...m, busy: true } : m));
     try {
-      const body: Record<string, unknown> = {};
+      // 2026-05-11: universe_scope is required at the schema layer.
+      // The modal blocks Confirm until the user picks one (see
+      // DeployModal below), so by the time we land here we can rely
+      // on scope being present.
+      const body: Record<string, unknown> = {
+        universe_scope: value.universe_scope,
+      };
       if (value.stock_filters) body.stock_filters = value.stock_filters;
       if (value.stock_symbols) body.stock_symbols = value.stock_symbols;
       const res = await fetch(
@@ -691,18 +698,16 @@ export function EditorView({
       setSavedAt(Date.now());
       setDeployModal(null);
       const summary = (() => {
+        if (value.universe_scope === "all_active") return "all active stocks";
         const sectors = value.stock_filters?.sectors ?? [];
         const symbols = value.stock_symbols ?? [];
-        const parts: string[] = [];
         if (sectors.length > 0) {
-          parts.push(sectors.length === 1 ? sectors[0] : `${sectors.length} sectors`);
+          return sectors.length === 1 ? sectors[0] : `${sectors.length} sectors`;
         }
         if (symbols.length > 0) {
-          parts.push(`${symbols.length} ticker${symbols.length === 1 ? "" : "s"}`);
+          return `${symbols.length} ticker${symbols.length === 1 ? "" : "s"}`;
         }
-        if (parts.length === 0) return "no universe — scanner will stay quiet until re-deploy";
-        // Sectors and tickers are merged via UNION on the backend (B048).
-        return parts.join(" + ");
+        return "universe captured";
       })();
       setFlash(`Strategy deployed · ${summary}`);
     } catch (err) {
@@ -4061,9 +4066,10 @@ function DeployUniverseModal({
         .sort((a, b) => a.symbol.localeCompare(b.symbol)),
     [stocks],
   );
-  const sectors = value.stock_filters?.sectors ?? [];
-  const symbols = value.stock_symbols ?? [];
-  const hasUniverse = sectors.length > 0 || symbols.length > 0;
+  // 2026-05-11: validate scope ↔ payload inline so Confirm stays
+  // disabled (with an inline reason) until the user makes a valid
+  // pick. Mirrors the backend's DeployRequest validator.
+  const universeErr = validateUniverseSelection(value);
 
   return (
     <Modal onClose={busy ? () => undefined : onCancel} label="Deploy strategy" width={720}>
@@ -4081,8 +4087,8 @@ function DeployUniverseModal({
             Deploy strategy
           </div>
           <p style={{ margin: 0, fontSize: 13, color: T.text2, lineHeight: 1.55 }}>
-            Pick the universe the signal scanner should watch. Without one,
-            the strategy will stay deployed but no signals will fire.
+            Pick the universe the signal scanner should watch. Required —
+            the deploy button stays disabled until you make a choice.
           </p>
         </div>
 
@@ -4105,7 +4111,7 @@ function DeployUniverseModal({
             borderTop: `1px solid ${T.outlineFaint}`,
           }}
         >
-          {!hasUniverse && (
+          {universeErr && (
             <span
               style={{
                 fontFamily: T.fontMono,
@@ -4114,7 +4120,7 @@ function DeployUniverseModal({
                 marginRight: "auto",
               }}
             >
-              no universe — scanner will stay quiet
+              {universeErr}
             </span>
           )}
           <Btn variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
@@ -4124,7 +4130,7 @@ function DeployUniverseModal({
             variant="deploy"
             size="sm"
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || universeErr !== null}
             icon={Icon.spark}
           >
             {busy ? "Deploying…" : "Deploy"}

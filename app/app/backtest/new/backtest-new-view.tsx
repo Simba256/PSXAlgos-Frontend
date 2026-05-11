@@ -255,6 +255,14 @@ export function BacktestNewView({
   const [endDate, setEndDate] = useState<string>(initialEnd ?? defaultRange.end);
   const [initialCapital, setInitialCapital] = useState<number>(1_000_000);
 
+  // Universe scope (2026-05-11): required pick before submission. ``null``
+  // means "user hasn't decided yet" — the run button stays disabled and the
+  // sector/ticker inputs stay hidden until they pick one. Closes the
+  // accidental "all stocks" bug where forgetting to pick a sector silently
+  // backtested against every active stock on PSX.
+  const [universeScope, setUniverseScope] = useState<
+    "all_active" | "by_sector" | "by_ticker" | null
+  >(null);
   const [selectedSectors, setSelectedSectors] = useState<string[]>([]);
   const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
   const [numericFilters, setNumericFilters] = useState<NumericFilters>(EMPTY_FILTERS);
@@ -343,23 +351,31 @@ export function BacktestNewView({
   // a sub-line instead. With both sectors and tickers empty we surface the
   // resolver's "all active" default so the user sees the real run scope.
   const universeSize = useMemo(() => {
+    // 2026-05-11: scope is the first switch. ``null`` ⇒ user hasn't
+    // picked yet, return 0 so the rail's Run button stays disabled.
+    if (universeScope === null) return 0;
     const active = stocks.filter((s) => s.is_active);
-    const noSectors = selectedSectors.length === 0;
-    const noTickers = selectedTickers.length === 0;
-    if (noSectors && noTickers) return active.length;
-    const sectorSet = new Set(selectedSectors);
+    if (universeScope === "all_active") return active.length;
+    if (universeScope === "by_sector") {
+      if (selectedSectors.length === 0) return 0;
+      const sectorSet = new Set(selectedSectors);
+      let count = 0;
+      for (const s of active) {
+        if (s.sector_name && sectorSet.has(s.sector_name)) count += 1;
+      }
+      return count;
+    }
+    // by_ticker — explicit tickers may include delisted names; count
+    // any matching row, not just active ones (mirrors the resolver's
+    // delisted-opt-in branch).
+    if (selectedTickers.length === 0) return 0;
     const tickerSet = new Set(selectedTickers.map((s) => s.toUpperCase()));
-    const union = new Set<string>();
-    for (const s of active) {
-      if (s.sector_name && sectorSet.has(s.sector_name)) union.add(s.symbol);
-    }
-    // Explicit tickers may include delisted names — count any matching row,
-    // not just active ones (mirrors the resolver's delisted-opt-in branch).
+    let count = 0;
     for (const s of stocks) {
-      if (tickerSet.has(s.symbol.toUpperCase())) union.add(s.symbol);
+      if (tickerSet.has(s.symbol.toUpperCase())) count += 1;
     }
-    return union.size;
-  }, [stocks, selectedSectors, selectedTickers]);
+    return count;
+  }, [stocks, universeScope, selectedSectors, selectedTickers]);
 
   const tradingDays = useMemo(
     () => tradingDaysBetween(startDate, endDate),
@@ -406,28 +422,44 @@ export function BacktestNewView({
       setFlash("Initial capital must be greater than zero.");
       return;
     }
-    // No mode-specific validation under union semantics — every combination
-    // (sectors only, tickers only, both, neither) is a legitimate input.
-    // Empty + empty + no filters falls back to "all active" on the backend.
+    // Universe-scope guard (2026-05-11). The backend validator rejects
+    // any inconsistent (scope, filters, symbols) combination with 422,
+    // so we mirror the same rules client-side to surface the error
+    // inline rather than as a network bounce.
+    if (universeScope === null) {
+      setFlash("Pick a universe scope before running.");
+      return;
+    }
+    if (universeScope === "by_sector" && selectedSectors.length === 0) {
+      setFlash("Pick at least one sector for the 'by sector' scope.");
+      return;
+    }
+    if (universeScope === "by_ticker" && selectedTickers.length === 0) {
+      setFlash("Add at least one ticker for the 'by ticker' scope.");
+      return;
+    }
 
-    // Always send both fields. Mirrors BacktestRequest in
-    // psxDataPortal/backend/app/schemas/strategy.py — the backend's
-    // resolve_universe() merges them via UNION, then applies numeric
-    // filters uniformly to the result.
-    const payloadFilters = (() => {
-      const merged = {
-        sectors: selectedSectors.length > 0 ? selectedSectors : null,
+    // Build the universe payload to match the chosen scope. Fields
+    // forbidden by the scope are sent as null so a leftover entry from
+    // a previous scope choice can't sneak through.
+    const numericFiltersActive =
+      numericFilters.min_price != null ||
+      numericFilters.max_price != null ||
+      numericFilters.min_volume != null ||
+      numericFilters.min_market_cap != null;
+    let payloadFilters: Record<string, unknown> | null = null;
+    let payloadSymbols: string[] | null = null;
+    if (universeScope === "by_sector") {
+      payloadFilters = {
+        sectors: selectedSectors,
         ...numericFilters,
       };
-      const empty =
-        (!merged.sectors || merged.sectors.length === 0) &&
-        merged.min_price == null &&
-        merged.max_price == null &&
-        merged.min_volume == null &&
-        merged.min_market_cap == null;
-      return empty ? null : merged;
-    })();
-    const payloadSymbols = selectedTickers.length > 0 ? selectedTickers : null;
+    } else if (universeScope === "all_active") {
+      payloadFilters = numericFiltersActive ? { ...numericFilters } : null;
+    } else {
+      // by_ticker — explicit allowlist, no numeric thresholds.
+      payloadSymbols = selectedTickers;
+    }
 
     setRunning(true);
     try {
@@ -438,6 +470,7 @@ export function BacktestNewView({
           start_date: startDate,
           end_date: endDate,
           initial_capital: initialCapital,
+          universe_scope: universeScope,
           stock_filters: payloadFilters,
           stock_symbols: payloadSymbols,
           stop_loss_pct: riskCaps.stop_loss_pct,
@@ -589,6 +622,22 @@ export function BacktestNewView({
                 />
 
                 <UniverseSection
+                  scope={universeScope}
+                  onScope={(next) => {
+                    setUniverseScope(next);
+                    // Drop fields the new scope doesn't allow so a stale
+                    // sector / ticker / numeric value can't sneak through
+                    // on submit.
+                    if (next === "all_active") {
+                      setSelectedSectors([]);
+                      setSelectedTickers([]);
+                    } else if (next === "by_sector") {
+                      setSelectedTickers([]);
+                    } else if (next === "by_ticker") {
+                      setSelectedSectors([]);
+                      setNumericFilters(EMPTY_FILTERS);
+                    }
+                  }}
                   sectors={selectedSectors}
                   onSectors={setSelectedSectors}
                   tickers={selectedTickers}
@@ -617,7 +666,7 @@ export function BacktestNewView({
                       size="md"
                       icon={Icon.spark}
                       onClick={handleRun}
-                      disabled={running || !strategyId}
+                      disabled={running || !strategyId || universeScope === null}
                       style={{ width: "100%", justifyContent: "center" }}
                     >
                       {running ? "Running…" : "Run backtest"}
@@ -1591,6 +1640,8 @@ function CapitalSection({
 /* ────────── Universe section ────────── */
 
 function UniverseSection({
+  scope,
+  onScope,
   sectors,
   onSectors,
   tickers,
@@ -1602,6 +1653,8 @@ function UniverseSection({
   totalActive,
   disabled,
 }: {
+  scope: "all_active" | "by_sector" | "by_ticker" | null;
+  onScope: (next: "all_active" | "by_sector" | "by_ticker") => void;
   sectors: string[];
   onSectors: (next: string[]) => void;
   tickers: string[];
@@ -1624,122 +1677,225 @@ function UniverseSection({
     filterCount === 0
       ? "no filters"
       : `${filterCount} filter${filterCount === 1 ? "" : "s"} applied`;
-  const noUniverse = sectors.length === 0 && tickers.length === 0;
 
   return (
     <Section
       label="universe"
-      hint="Which stocks the strategy scans on each trading day. Sectors + tickers + filters compose under union semantics — pick any combination."
+      hint="Pick the universe this run targets. Required — there's no implicit default, so the run button stays disabled until you choose."
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-        {noUniverse && (
-          <div
-            style={{
-              fontFamily: T.fontSans,
-              fontSize: 12.5,
-              color: T.text3,
-              lineHeight: 1.5,
-              maxWidth: 560,
-            }}
+        <UniverseSubsection
+          kicker="scope"
+          info="One choice required. 'All active' uses every active PSX symbol; 'By sector' restricts to the sectors you pick; 'By ticker' restricts to the exact tickers you list."
+        >
+          <ScopePicker
+            scope={scope}
+            onChange={onScope}
+            totalActive={totalActive}
+            disabled={disabled}
+          />
+        </UniverseSubsection>
+
+        {scope === "by_sector" && (
+          <UniverseSubsection
+            kicker="sectors"
+            info="Active stocks in the picked sectors join the universe."
           >
-            Nothing picked → every active PSX ticker ({totalActive.toLocaleString("en-PK")})
-            will be scanned. Add sectors, tickers, or numeric filters below to narrow it down.
-          </div>
+            <MultiSelectPopover
+              label="sectors"
+              placeholder="pick sectors…"
+              options={availableSectors.map((s) => ({ value: s }))}
+              selected={sectors}
+              onChange={onSectors}
+              disabled={disabled}
+            />
+          </UniverseSubsection>
         )}
 
-        <UniverseSubsection
-          kicker="sectors"
-          info="Active stocks in the picked sectors join the universe."
-        >
-          <MultiSelectPopover
-            label="sectors"
-            placeholder="pick sectors…"
-            options={availableSectors.map((s) => ({ value: s }))}
-            selected={sectors}
-            onChange={onSectors}
-            disabled={disabled}
-          />
-        </UniverseSubsection>
+        {scope === "by_ticker" && (
+          <UniverseSubsection
+            kicker="tickers"
+            info="Add the exact tickers this run targets. Explicit tickers bypass the active-stock gate so backtests can include delisted names."
+          >
+            <SymbolPickerInline
+              available={availableSymbols}
+              selected={tickers}
+              onAdd={(sym) => {
+                const norm = sym.trim().toUpperCase();
+                if (!norm || tickers.includes(norm)) return;
+                onTickers([...tickers, norm]);
+              }}
+              onRemove={(sym) => onTickers(tickers.filter((t) => t !== sym))}
+              disabled={disabled}
+            />
+          </UniverseSubsection>
+        )}
 
-        <UniverseSubsection
-          kicker="explicit tickers"
-          info="Add specific tickers — merged with the sector list (UNION). Delisted names are allowed for backtests."
-        >
-          <SymbolPickerInline
-            available={availableSymbols}
-            selected={tickers}
-            onAdd={(sym) => {
-              const norm = sym.trim().toUpperCase();
-              if (!norm || tickers.includes(norm)) return;
-              onTickers([...tickers, norm]);
-            }}
-            onRemove={(sym) => onTickers(tickers.filter((t) => t !== sym))}
-            disabled={disabled}
-          />
-          {sectors.length > 0 && tickers.length > 0 && (
+        {(scope === "all_active" || scope === "by_sector") && (
+          <Disclosure
+            label="numeric filters"
+            summary={filterSummary}
+            open={filtersOpen}
+            onToggle={() => setFiltersOpen((v) => !v)}
+            tone="muted"
+          >
             <div
               style={{
-                marginTop: 10,
-                fontFamily: T.fontMono,
-                fontSize: 11,
-                color: T.text3,
-                letterSpacing: 0.3,
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                gap: 14,
+                maxWidth: 640,
               }}
             >
-              universe = {sectors.length} sector{sectors.length === 1 ? "" : "s"}{" "}
-              ∪ {tickers.length} ticker{tickers.length === 1 ? "" : "s"} (numeric filters apply to both)
+              <NumberInput
+                label="min price (PKR)"
+                value={filters.min_price}
+                onChange={(v) => onFilters({ ...filters, min_price: v })}
+                disabled={disabled}
+                min={0}
+              />
+              <NumberInput
+                label="max price (PKR)"
+                value={filters.max_price}
+                onChange={(v) => onFilters({ ...filters, max_price: v })}
+                disabled={disabled}
+                min={0}
+              />
+              <NumberInput
+                label="min daily volume"
+                value={filters.min_volume}
+                onChange={(v) => onFilters({ ...filters, min_volume: v })}
+                disabled={disabled}
+                min={0}
+                integer
+              />
+              <NumberInput
+                label="min market cap"
+                value={filters.min_market_cap}
+                onChange={(v) => onFilters({ ...filters, min_market_cap: v })}
+                disabled={disabled}
+                min={0}
+              />
             </div>
-          )}
-        </UniverseSubsection>
-
-        <Disclosure
-          label="numeric filters"
-          summary={filterSummary}
-          open={filtersOpen}
-          onToggle={() => setFiltersOpen((v) => !v)}
-          tone="muted"
-        >
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-              gap: 14,
-              maxWidth: 640,
-            }}
-          >
-            <NumberInput
-              label="min price (PKR)"
-              value={filters.min_price}
-              onChange={(v) => onFilters({ ...filters, min_price: v })}
-              disabled={disabled}
-              min={0}
-            />
-            <NumberInput
-              label="max price (PKR)"
-              value={filters.max_price}
-              onChange={(v) => onFilters({ ...filters, max_price: v })}
-              disabled={disabled}
-              min={0}
-            />
-            <NumberInput
-              label="min daily volume"
-              value={filters.min_volume}
-              onChange={(v) => onFilters({ ...filters, min_volume: v })}
-              disabled={disabled}
-              min={0}
-              integer
-            />
-            <NumberInput
-              label="min market cap"
-              value={filters.min_market_cap}
-              onChange={(v) => onFilters({ ...filters, min_market_cap: v })}
-              disabled={disabled}
-              min={0}
-            />
-          </div>
-        </Disclosure>
+          </Disclosure>
+        )}
       </div>
     </Section>
+  );
+}
+
+/** Scope picker — three radio cards. Nothing selected by default; the
+ *  parent form blocks submission until the user picks. Closes the
+ *  audit-discoverable "silently backtested against all 500 stocks"
+ *  bug by requiring an explicit choice.
+ */
+function ScopePicker({
+  scope,
+  onChange,
+  totalActive,
+  disabled,
+}: {
+  scope: "all_active" | "by_sector" | "by_ticker" | null;
+  onChange: (next: "all_active" | "by_sector" | "by_ticker") => void;
+  totalActive: number;
+  disabled: boolean;
+}) {
+  const T = useT();
+  const options: Array<{
+    value: "all_active" | "by_sector" | "by_ticker";
+    label: string;
+    hint: string;
+  }> = [
+    {
+      value: "all_active",
+      label: "All active stocks",
+      hint: `Every PSX symbol that's active today (${totalActive.toLocaleString("en-PK")}). Numeric filters still apply.`,
+    },
+    {
+      value: "by_sector",
+      label: "By sector",
+      hint: "Active stocks in the sectors you pick.",
+    },
+    {
+      value: "by_ticker",
+      label: "By ticker",
+      hint: "Only the exact tickers you list. Backtests may include delisted names.",
+    },
+  ];
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Universe scope"
+      style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 540 }}
+    >
+      {options.map((opt) => {
+        const active = scope === opt.value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            disabled={disabled}
+            onClick={() => onChange(opt.value)}
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 12,
+              padding: "12px 14px",
+              background: active ? T.surface3 : T.surface,
+              color: T.text,
+              border: "none",
+              boxShadow: `0 0 0 1px ${active ? T.outlineVariant : T.outlineFaint}`,
+              borderRadius: 8,
+              cursor: disabled ? "not-allowed" : "pointer",
+              opacity: disabled ? 0.6 : 1,
+              fontFamily: "inherit",
+              textAlign: "left",
+              transition: "background 120ms ease, box-shadow 120ms ease",
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                marginTop: 3,
+                width: 14,
+                height: 14,
+                borderRadius: 999,
+                border: `2px solid ${active ? T.text : T.outlineFaint}`,
+                background: active ? T.text : "transparent",
+                flexShrink: 0,
+              }}
+            />
+            <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <span style={{ fontSize: 13.5, color: T.text }}>{opt.label}</span>
+              <span
+                style={{
+                  fontFamily: T.fontMono,
+                  fontSize: 11,
+                  color: T.text3,
+                  lineHeight: 1.4,
+                }}
+              >
+                {opt.hint}
+              </span>
+            </span>
+          </button>
+        );
+      })}
+      {scope === null && (
+        <div
+          style={{
+            fontFamily: T.fontMono,
+            fontSize: 11,
+            color: T.text3,
+            marginTop: 4,
+          }}
+        >
+          nothing picked — run blocked until you choose
+        </div>
+      )}
+    </div>
   );
 }
 
