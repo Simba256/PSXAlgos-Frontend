@@ -4,8 +4,14 @@
 // /stocks is a public endpoint (no auth). The list is small (~500 PSX
 // tickers) and cached server-side with a 5-minute TTL — cheap to fetch
 // in full once on page load and filter client-side.
-
-import { apiFetch } from "./client";
+//
+// 2026-05-12 — Routes through the same-origin Next proxy at /api/stocks
+// (app/api/stocks/route.ts) because callers like the deploy modal in
+// editor-view.tsx are client components, and the browser cannot hit the
+// Railway backend directly (CORS allowlist doesn't include the Vercel
+// host). The proxy works from both server and client contexts; in the
+// browser it's a same-origin fetch, on the server Next resolves the
+// relative URL against the request's origin.
 
 export interface StockResponse {
   id: number;
@@ -25,14 +31,37 @@ export interface StockListResponse {
   total_pages: number;
 }
 
+// In the browser, use the same-origin Next proxy (/api/stocks) so CORS
+// doesn't block the request. On the server, skip the proxy entirely and
+// call the backend directly — avoids a wasted Vercel→Vercel hop.
+function stocksUrl(query: string): string {
+  if (typeof window !== "undefined") return `/api/stocks${query}`;
+  const base = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "");
+  if (!base) {
+    throw new Error(
+      "NEXT_PUBLIC_API_BASE_URL is not set — cannot reach the backend",
+    );
+  }
+  return `${base}/stocks${query}`;
+}
+
 export async function getStocksPage(
   page: number,
   pageSize: number,
 ): Promise<StockListResponse> {
-  return apiFetch<StockListResponse>(
-    `/stocks?page=${page}&page_size=${pageSize}&active_only=true`,
-    { next: { revalidate: 300 } },
+  const url = stocksUrl(
+    `?page=${page}&page_size=${pageSize}&active_only=true`,
   );
+  const res = await fetch(url, {
+    headers: { Accept: "application/json" },
+    // Match the proxy's revalidate window so the page cache and Next's
+    // fetch cache stay aligned.
+    next: { revalidate: 300 },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to load stocks (${res.status})`);
+  }
+  return (await res.json()) as StockListResponse;
 }
 
 // Fetch every active stock by walking pages in parallel after the first.
