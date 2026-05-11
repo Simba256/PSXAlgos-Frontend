@@ -88,9 +88,6 @@ export function StrategiesView({
 }: {
   initialStrategies: Strategy[];
 }) {
-  // Empty preview toggle is a design tool; real "no strategies" still falls
-  // through to EmptyState when initialStrategies is [].
-  const [empty, setEmpty] = useState(false);
   const [rows, setRows] = useState<Strategy[]>(initialStrategies);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("updated");
@@ -141,8 +138,6 @@ export function StrategiesView({
         onChange={onImportFile}
       />
       <ListBody
-        empty={empty}
-        toggleEmpty={() => setEmpty((e) => !e)}
         rows={rows}
         status={status}
         setStatus={setStatus}
@@ -160,8 +155,6 @@ export function StrategiesView({
 }
 
 function ListBody({
-  empty,
-  toggleEmpty,
   rows,
   status,
   setStatus,
@@ -171,8 +164,6 @@ function ListBody({
   onImport,
   importMsg,
 }: {
-  empty: boolean;
-  toggleEmpty: () => void;
   rows: Strategy[];
   status: StatusFilter;
   setStatus: (s: StatusFilter) => void;
@@ -183,7 +174,8 @@ function ListBody({
   importMsg: { kind: "ok" | "err"; text: string } | null;
 }) {
   const T = useT();
-  const source = empty ? [] : rows;
+  const source = rows;
+  const isEmpty = rows.length === 0;
 
   const counts = useMemo(() => {
     const c = { all: source.length, deployed: 0, draft: 0, paused: 0, archived: 0 };
@@ -252,7 +244,7 @@ function ListBody({
           <>
             Strategies{" "}
             <span style={{ fontStyle: "italic", color: T.primaryLight, fontWeight: 400 }}>·</span>{" "}
-            {empty ? (
+            {isEmpty ? (
               <span style={{ color: T.text3, fontWeight: 400, fontSize: "0.7em" }}>
                 you haven&apos;t built one yet
               </span>
@@ -262,7 +254,7 @@ function ListBody({
           </>
         }
         meta={
-          empty ? (
+          isEmpty ? (
             <>
               <span>0 deployed</span>
               <span>0 signals today</span>
@@ -296,9 +288,6 @@ function ListBody({
                 {importMsg.text}
               </span>
             )}
-            <Btn variant="ghost" size="sm" onClick={toggleEmpty}>
-              {empty ? "Show populated" : "Show empty"}
-            </Btn>
             <Btn variant="ghost" size="sm" onClick={onImport}>
               Import JSON
             </Btn>
@@ -311,9 +300,7 @@ function ListBody({
         }
       />
 
-      {empty ? (
-        <EmptyState onImport={onImport} />
-      ) : rows.length === 0 ? (
+      {isEmpty ? (
         <EmptyState onImport={onImport} />
       ) : (
         <FilteredList
