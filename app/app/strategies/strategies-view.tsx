@@ -43,6 +43,8 @@ export interface Strategy {
   pinned?: boolean;
 }
 
+const ARCHIVE_SKIP_KEY = "psx:strategies:skipArchiveConfirm";
+
 const SORT_OPTIONS: { key: SortKey; label: string; defaultDir: SortDir }[] = [
   { key: "updated", label: "updated", defaultDir: "asc" }, // smallest minutes-ago = most recent
   { key: "name", label: "name", defaultDir: "asc" },
@@ -96,7 +98,19 @@ export function StrategiesView({
   const [archiveTarget, setArchiveTarget] = useState<Strategy | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [restoreBusyId, setRestoreBusyId] = useState<string | null>(null);
+  // Whether the user has opted out of the archive-confirm modal. Read from
+  // localStorage once on mount; the modal still appears unconditionally when
+  // live bots are bound (the bot-warning panel is load-bearing).
+  const [skipArchiveConfirm, setSkipArchiveConfirm] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    try {
+      setSkipArchiveConfirm(localStorage.getItem(ARCHIVE_SKIP_KEY) === "1");
+    } catch {
+      // Private mode / storage disabled — keep default (show modal).
+    }
+  }, []);
 
   // Status patch via PUT /api/strategies/{id}. Backend allows transitions
   // to ARCHIVED unconditionally (no actionable-rule check at routers/strategies.py:649),
@@ -196,7 +210,16 @@ export function StrategiesView({
         }}
         onImport={onImportClick}
         importMsg={importMsg}
-        onArchive={(s) => setArchiveTarget(s)}
+        onArchive={(s) => {
+          // Bypass the modal only when the user has opted out AND no live
+          // bots are bound. The bot-warning panel must never be silently
+          // suppressed — that's the whole reason the modal exists.
+          if (skipArchiveConfirm && s.botsCount === 0) {
+            void performArchive(s);
+            return;
+          }
+          setArchiveTarget(s);
+        }}
         onRestore={performRestore}
         restoreBusyId={restoreBusyId}
       />
@@ -204,6 +227,16 @@ export function StrategiesView({
         <ArchiveConfirmModal
           strategy={archiveTarget}
           busy={archiveBusy}
+          skipConfirm={skipArchiveConfirm}
+          onSkipConfirmChange={(v) => {
+            setSkipArchiveConfirm(v);
+            try {
+              if (v) localStorage.setItem(ARCHIVE_SKIP_KEY, "1");
+              else localStorage.removeItem(ARCHIVE_SKIP_KEY);
+            } catch {
+              // Storage disabled — preference still applies in-session.
+            }
+          }}
           onCancel={() => setArchiveTarget(null)}
           onConfirm={() => performArchive(archiveTarget)}
         />
@@ -241,8 +274,17 @@ function ListBody({
   const source = rows;
   const isEmpty = rows.length === 0;
 
+  // "Active" rows = everything except ARCHIVED. The "all" pill and all
+  // summary aggregates (counts, signals today, bots bound, last-scan) work
+  // off this so archived strategies stay out of the live dashboard view —
+  // they're only reachable via the explicit "archived" filter.
+  const liveRows = useMemo(
+    () => source.filter((r) => r.status !== "ARCHIVED"),
+    [source]
+  );
+
   const counts = useMemo(() => {
-    const c = { all: source.length, deployed: 0, draft: 0, paused: 0, archived: 0 };
+    const c = { all: liveRows.length, deployed: 0, draft: 0, paused: 0, archived: 0 };
     for (const r of source) {
       if (r.status === "DEPLOYED") c.deployed++;
       else if (r.status === "DRAFT") c.draft++;
@@ -250,27 +292,27 @@ function ListBody({
       else if (r.status === "ARCHIVED") c.archived++;
     }
     return c;
-  }, [source]);
+  }, [source, liveRows]);
 
   const signalsToday = useMemo(
-    () => source.reduce((acc, r) => acc + r.signals, 0),
-    [source]
+    () => liveRows.reduce((acc, r) => acc + r.signals, 0),
+    [liveRows]
   );
   // Sum per-row botsCount (the real backend aggregate). Previously this
   // counted strategies that had any bot, not the actual number of bots —
   // and even that was structurally broken because outputs never included
   // "bot". Now it matches what the user sees in the bots dashboard.
   const botsBound = useMemo(
-    () => source.reduce((acc, r) => acc + (r.botsCount ?? 0), 0),
-    [source]
+    () => liveRows.reduce((acc, r) => acc + (r.botsCount ?? 0), 0),
+    [liveRows]
   );
 
-  // Most recent scan across all strategies. Number.MAX_SAFE_INTEGER means
-  // no strategy has ever been scanned. Anything else gets formatted as
-  // "Xm/Xh/Xd ago" matching the per-row "updated" column.
+  // Most recent scan across active strategies. Number.MAX_SAFE_INTEGER means
+  // no strategy has ever been scanned. Archived strategies are skipped — they
+  // don't scan, so their lastScanMin would just stale the readout.
   const lastScanLabel = useMemo(() => {
-    if (source.length === 0) return "no scans yet";
-    const min = Math.min(...source.map((r) => r.lastScanMin));
+    if (liveRows.length === 0) return "no scans yet";
+    const min = Math.min(...liveRows.map((r) => r.lastScanMin));
     if (min === Number.MAX_SAFE_INTEGER) return "no scans yet";
     if (min < 1) return "last scan just now";
     if (min < 60) return `last scan ${min}m ago`;
@@ -278,13 +320,15 @@ function ListBody({
     if (h < 24) return `last scan ${h}h ago`;
     const d = Math.floor(h / 24);
     return `last scan ${d}d ago`;
-  }, [source]);
+  }, [liveRows]);
 
   const filtered = useMemo(() => {
-    if (status === "all") return source;
+    // "all" excludes archived — those are only reachable via the explicit
+    // "archived" pill so cleaning the dashboard actually cleans it.
+    if (status === "all") return liveRows;
     const match: Status = status.toUpperCase() as Status;
     return source.filter((r) => r.status === match);
-  }, [source, status]);
+  }, [source, liveRows, status]);
 
   const sorted = useMemo(() => {
     const copy = [...filtered];
@@ -468,6 +512,12 @@ function FilteredList({
               <FilteredEmpty
                 onReset={() => setStatus("all")}
                 label={filters.find((f) => f.key === status)?.label ?? "this filter"}
+                archivedCount={
+                  status === "all"
+                    ? filters.find((f) => f.key === "archived")?.count ?? 0
+                    : 0
+                }
+                onShowArchived={() => setStatus("archived")}
               />
             ) : (
               <StrategyTable
@@ -647,8 +697,22 @@ function SortControl({
   );
 }
 
-function FilteredEmpty({ onReset, label }: { onReset: () => void; label: string }) {
+function FilteredEmpty({
+  onReset,
+  label,
+  archivedCount,
+  onShowArchived,
+}: {
+  onReset: () => void;
+  label: string;
+  // When > 0, the user is on the "all" pill and every strategy they own is
+  // archived. Show a nudge to the archived pill instead of a useless
+  // "clear filter" CTA (which would just re-select "all").
+  archivedCount?: number;
+  onShowArchived?: () => void;
+}) {
   const T = useT();
+  const allArchived = (archivedCount ?? 0) > 0;
   return (
     <div
       style={{
@@ -660,11 +724,26 @@ function FilteredEmpty({ onReset, label }: { onReset: () => void; label: string 
       }}
     >
       <div style={{ marginBottom: 10 }}>
-        no strategies match <span style={{ color: T.text2 }}>{label}</span>
+        {allArchived ? (
+          <>
+            all {archivedCount} of your strategies are{" "}
+            <span style={{ color: T.text2 }}>archived</span>
+          </>
+        ) : (
+          <>
+            no strategies match <span style={{ color: T.text2 }}>{label}</span>
+          </>
+        )}
       </div>
-      <Btn variant="ghost" size="sm" onClick={onReset}>
-        clear filter
-      </Btn>
+      {allArchived && onShowArchived ? (
+        <Btn variant="ghost" size="sm" onClick={onShowArchived}>
+          view archived
+        </Btn>
+      ) : (
+        <Btn variant="ghost" size="sm" onClick={onReset}>
+          clear filter
+        </Btn>
+      )}
     </div>
   );
 }
@@ -876,11 +955,15 @@ function StrategyTable({
 function ArchiveConfirmModal({
   strategy,
   busy,
+  skipConfirm,
+  onSkipConfirmChange,
   onCancel,
   onConfirm,
 }: {
   strategy: Strategy;
   busy: boolean;
+  skipConfirm: boolean;
+  onSkipConfirmChange: (v: boolean) => void;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -948,13 +1031,50 @@ function ArchiveConfirmModal({
             rebind them.
           </div>
         )}
-        <div style={{ marginTop: 20, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-          <Btn variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Btn>
-          <Btn variant="danger" size="sm" onClick={onConfirm} disabled={busy}>
-            {busy ? "Archiving…" : "Archive"}
-          </Btn>
+        <div
+          style={{
+            marginTop: 20,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          {liveBots ? (
+            <span style={{ fontSize: 11, color: T.text3 }}>
+              Bot warning shown because live bots are bound.
+            </span>
+          ) : (
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 12,
+                color: T.text2,
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={skipConfirm}
+                onChange={(e) => onSkipConfirmChange(e.target.checked)}
+                disabled={busy}
+                style={{ accentColor: T.primary, cursor: busy ? "not-allowed" : "pointer" }}
+              />
+              Don&rsquo;t show this again
+            </label>
+          )}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
+              Cancel
+            </Btn>
+            <Btn variant="danger" size="sm" onClick={onConfirm} disabled={busy}>
+              {busy ? "Archiving…" : "Archive"}
+            </Btn>
+          </div>
         </div>
       </div>
     </div>
