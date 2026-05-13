@@ -33,6 +33,17 @@ export interface BotResponse {
   total_return_pct?: Decimal | null;
   open_positions_count?: number | null;
   total_trades?: number | null;
+
+  // B2 risk controls (migration 056). null = control disabled.
+  // pause_reason is set by the engine when an auto-pause fires
+  // (max-DD breach, stale universe, strategy deleted). Cleared by
+  // POST /bots/{id}/start.
+  daily_loss_limit_pct?: Decimal | null;
+  max_drawdown_pause_pct?: Decimal | null;
+  stale_data_max_age_days?: number | null;
+  stale_universe_halt_pct?: Decimal | null;
+  max_per_sector_pct?: Decimal | null;
+  pause_reason?: string | null;
 }
 
 export interface BotDetailResponse extends BotResponse {
@@ -165,11 +176,27 @@ export interface BotCreateBody {
   take_profit_pct?: number | null;
   trailing_stop_pct?: number | null;
   max_holding_days?: number | null;
+
+  // B2 risk controls. All optional; null = control off. Range checks
+  // enforced server-side at 422. Local form validation lives in the
+  // RiskControlsSection component.
+  daily_loss_limit_pct?: number | null;     // 0.5–50
+  max_drawdown_pause_pct?: number | null;   // 1–60
+  stale_data_max_age_days?: number | null;  // 1–30
+  stale_universe_halt_pct?: number | null;  // 10–100
+  max_per_sector_pct?: number | null;       // 5–100
 }
 
 export interface BotUpdateBody {
   name?: string;
   max_positions?: number;
+
+  // B2 risk controls (same range constraints as BotCreateBody).
+  daily_loss_limit_pct?: number | null;
+  max_drawdown_pause_pct?: number | null;
+  stale_data_max_age_days?: number | null;
+  stale_universe_halt_pct?: number | null;
+  max_per_sector_pct?: number | null;
 }
 
 export interface BotActionResponse {

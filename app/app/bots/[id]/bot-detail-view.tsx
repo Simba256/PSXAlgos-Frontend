@@ -195,6 +195,37 @@ export function BotDetailView({
             }),
           }}
         >
+          {bot.status === "PAUSED" && bot.pause_reason && (
+            <div
+              role="status"
+              style={{
+                marginBottom: 24,
+                padding: "12px 16px",
+                background: `${T.warning}14`,
+                border: `1px solid ${T.warning}55`,
+                borderLeft: `3px solid ${T.warning}`,
+                borderRadius: 4,
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
+              <span
+                style={{
+                  color: T.warning,
+                  fontSize: 11.5,
+                  letterSpacing: 0.4,
+                  textTransform: "uppercase",
+                  fontWeight: 600,
+                }}
+              >
+                Auto-paused
+              </span>
+              <span style={{ color: T.text, fontSize: 13, lineHeight: 1.5 }}>
+                {bot.pause_reason}
+              </span>
+            </div>
+          )}
           <div
             style={{
               display: "grid",

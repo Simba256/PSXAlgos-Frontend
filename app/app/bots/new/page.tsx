@@ -14,6 +14,11 @@ import {
   validateUniverseSelection,
   type UniverseAndRiskValue,
 } from "@/components/universe-and-risk-fields";
+import {
+  EMPTY_RISK_CONTROLS,
+  RiskControlsSection,
+  type RiskControlsValue,
+} from "@/components/risk-controls-section";
 import type { BotCreateBody, BotResponse } from "@/lib/api/bots";
 import type { DefaultRisk, StrategyResponse } from "@/lib/api/strategies";
 import { getAllStocks, type StockResponse } from "@/lib/api/stocks";
@@ -83,6 +88,11 @@ export default function BotWizardPage() {
   const [maxPositions, setMaxPositions] = useState<number>(5);
   const [universeAndRisk, setUniverseAndRisk] = useState<UniverseAndRiskValue>(
     EMPTY_UNIVERSE_AND_RISK,
+  );
+  // B2 — bot-level risk controls. Opt-in; blank fields = control off.
+  // Threaded through to the BotCreate request body in onLaunch.
+  const [riskControls, setRiskControls] = useState<RiskControlsValue>(
+    EMPTY_RISK_CONTROLS,
   );
 
   // PSX stock universe — fetched once on mount, used for sector + symbol pickers.
@@ -193,6 +203,13 @@ export default function BotWizardPage() {
       take_profit_pct: universeAndRisk.take_profit_pct ?? null,
       trailing_stop_pct: universeAndRisk.trailing_stop_pct ?? null,
       max_holding_days: universeAndRisk.max_holding_days ?? null,
+      // B2 risk controls — null is the "off" sentinel; backend
+      // stores NULL and skips that control's enforcement.
+      daily_loss_limit_pct: riskControls.daily_loss_limit_pct,
+      max_drawdown_pause_pct: riskControls.max_drawdown_pause_pct,
+      stale_data_max_age_days: riskControls.stale_data_max_age_days,
+      stale_universe_halt_pct: riskControls.stale_universe_halt_pct,
+      max_per_sector_pct: riskControls.max_per_sector_pct,
     } satisfies BotCreateBody;
     let bot: BotResponse;
     try {
@@ -382,14 +399,17 @@ export default function BotWizardPage() {
               />
             )}
             {step === 3 && (
-              <UniverseAndRiskFields
-                value={universeAndRisk}
-                onChange={setUniverseAndRisk}
-                availableSectors={availableSectors}
-                availableSymbols={availableSymbols}
-                showUniverse={false}
-                strategyDefaults={strategy?.defaultRisk ?? null}
-              />
+              <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+                <UniverseAndRiskFields
+                  value={universeAndRisk}
+                  onChange={setUniverseAndRisk}
+                  availableSectors={availableSectors}
+                  availableSymbols={availableSymbols}
+                  showUniverse={false}
+                  strategyDefaults={strategy?.defaultRisk ?? null}
+                />
+                <RiskControlsSection value={riskControls} onChange={setRiskControls} />
+              </div>
             )}
           </div>
           <Preview
