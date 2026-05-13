@@ -8,6 +8,8 @@ import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
 import type {
   BotDetailResponse,
+  BotResponse,
+  BotUpdateBody,
   PositionResponse,
   PerformanceResponse,
 } from "@/lib/api/bots";
@@ -24,6 +26,10 @@ import {
   useFlash,
   type Col,
 } from "@/components/atoms";
+import {
+  RiskControlsSection,
+  type RiskControlsValue,
+} from "@/components/risk-controls-section";
 import { EquityCurve } from "@/components/charts";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
@@ -78,6 +84,7 @@ export function BotDetailView({
   const router = useRouter();
   const [bot, setBot] = useState<BotDetailResponse>(initialBot);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const { flash, setFlash } = useFlash();
 
   const running = bot.status === "ACTIVE";
@@ -106,7 +113,13 @@ export function BotDetailView({
   };
 
   const handleSettings = () => {
-    setFlash("Settings panel coming soon · adjust caps, window, and kill-switch");
+    setSettingsOpen(true);
+  };
+
+  const handleSettingsSaved = (updated: BotResponse) => {
+    setBot((prev) => ({ ...prev, ...updated } as BotDetailResponse));
+    setFlash("Settings saved · controls active on next scan");
+    router.refresh();
   };
 
   const statusColor = running ? T.gain : stopped ? T.text3 : T.warning;
@@ -376,6 +389,13 @@ export function BotDetailView({
         </div>
       </div>
       {logsOpen && <LogsModal botName={bot.name} onClose={() => setLogsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsModal
+          bot={bot}
+          onClose={() => setSettingsOpen(false)}
+          onSaved={handleSettingsSaved}
+        />
+      )}
       {flash && <FlashToast message={flash} />}
     </AppFrame>
   );
@@ -431,6 +451,199 @@ function LogsModal({ botName, onClose }: { botName: string; onClose: () => void 
             Close
           </Btn>
         </div>
+    </Modal>
+  );
+}
+
+// Settings modal — round-trips the B2 bot-level risk controls. Backend
+// PUT /bots/{id} treats `null` on these fields as "leave unchanged" (see
+// services/trading_bot.py:207-220). Clearing a previously-set control
+// isn't supported yet, so the modal surfaces a soft warning and silently
+// skips blanked fields rather than sending null and pretending it cleared.
+function SettingsModal({
+  bot,
+  onClose,
+  onSaved,
+}: {
+  bot: BotDetailResponse;
+  onClose: () => void;
+  onSaved: (updated: BotResponse) => void;
+}) {
+  const T = useT();
+
+  // Decimal columns arrive as strings or numbers (PG numeric → JSON). Coerce
+  // through Number(); reject NaN/Infinity to a clean `null` so the inputs
+  // start blank rather than rendering "NaN".
+  const toNum = (v: string | number | null | undefined): number | null => {
+    if (v === null || v === undefined) return null;
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const initial: RiskControlsValue = {
+    daily_loss_limit_pct: toNum(bot.daily_loss_limit_pct),
+    max_drawdown_pause_pct: toNum(bot.max_drawdown_pause_pct),
+    stale_data_max_age_days: bot.stale_data_max_age_days ?? null,
+    stale_universe_halt_pct: toNum(bot.stale_universe_halt_pct),
+    max_per_sector_pct: toNum(bot.max_per_sector_pct),
+  };
+
+  const [values, setValues] = useState<RiskControlsValue>(initial);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Compute the PUT payload by diffing against `initial`. Only send fields
+  // that changed AND are non-null — a null delta from "set" → "blank" can't
+  // be expressed today (backend treats null as no-op), so we drop those
+  // here and warn separately below.
+  const KEYS: Array<keyof RiskControlsValue> = [
+    "daily_loss_limit_pct",
+    "max_drawdown_pause_pct",
+    "stale_data_max_age_days",
+    "stale_universe_halt_pct",
+    "max_per_sector_pct",
+  ];
+  const diff = (): BotUpdateBody => {
+    const out: BotUpdateBody = {};
+    for (const k of KEYS) {
+      const next = values[k];
+      const prev = initial[k];
+      if (next !== prev && next !== null) {
+        // narrow to the field-specific number type
+        (out as Record<string, number>)[k] = next;
+      }
+    }
+    return out;
+  };
+
+  const changedCount = Object.keys(diff()).length;
+  const clearedFields = KEYS.filter((k) => values[k] === null && initial[k] !== null);
+
+  async function onSave() {
+    setErr(null);
+    if (changedCount === 0) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/bots/${bot.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(diff()),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const detail = (body as { error?: unknown; detail?: unknown });
+        let msg = `Save failed (${res.status})`;
+        if (typeof detail.error === "string" && detail.error.length > 0) {
+          msg = detail.error;
+        } else if (typeof detail.detail === "string") {
+          msg = detail.detail;
+        }
+        throw new Error(msg);
+      }
+      const updated = (await res.json()) as BotResponse;
+      onSaved(updated);
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal onClose={onClose} width={560} label="Bot settings">
+      <div style={{ padding: "22px 26px 14px", borderBottom: `1px solid ${T.outlineFaint}` }}>
+        <Kicker color={T.primaryLight}>bot settings</Kicker>
+        <h2
+          style={{
+            fontFamily: T.fontHead,
+            fontSize: 22,
+            fontWeight: 500,
+            margin: "10px 0 4px",
+            letterSpacing: -0.5,
+          }}
+        >
+          {bot.name}
+        </h2>
+        <div style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
+          risk controls · take effect on next scan
+        </div>
+      </div>
+
+      <div style={{ padding: "20px 26px" }}>
+        <RiskControlsSection value={values} onChange={setValues} />
+      </div>
+
+      {clearedFields.length > 0 && (
+        <div
+          role="note"
+          style={{
+            margin: "0 26px 16px",
+            padding: "10px 12px",
+            background: `${T.warning}10`,
+            border: `1px solid ${T.warning}44`,
+            borderRadius: 4,
+            fontSize: 11.5,
+            color: T.text2,
+            lineHeight: 1.5,
+          }}
+        >
+          Clearing a previously-set control isn&apos;t supported yet — recreate the
+          bot to remove it. Blank fields here will keep their current value on save.
+        </div>
+      )}
+
+      {err && (
+        <div
+          role="alert"
+          style={{
+            margin: "0 26px 16px",
+            padding: "10px 12px",
+            background: `${T.loss}14`,
+            border: `1px solid ${T.loss}44`,
+            borderRadius: 4,
+            fontSize: 12,
+            color: T.loss,
+          }}
+        >
+          {err}
+        </div>
+      )}
+
+      <div
+        style={{
+          padding: 16,
+          borderTop: `1px solid ${T.outlineFaint}`,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          justifyContent: "space-between",
+        }}
+      >
+        <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
+          {changedCount === 0
+            ? "no changes"
+            : `${changedCount} change${changedCount === 1 ? "" : "s"} pending`}
+        </span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn variant="outline" size="sm" onClick={onClose} disabled={saving}>
+            Cancel
+          </Btn>
+          <Btn
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              if (!saving) void onSave();
+            }}
+            disabled={saving || changedCount === 0}
+          >
+            {saving ? "Saving…" : "Save changes"}
+          </Btn>
+        </div>
+      </div>
     </Modal>
   );
 }
