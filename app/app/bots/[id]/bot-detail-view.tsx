@@ -42,6 +42,15 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Decimal columns arrive as strings or numbers (PG numeric → JSON). Coerce
+// through Number(); reject NaN/Infinity to a clean `null` so missing/optional
+// risk-control fields can render as "not set" rather than "NaN".
+function toNum(v: string | number | null | undefined): number | null {
+  if (v === null || v === undefined) return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function compactPkr(n: number): string {
   if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
@@ -358,12 +367,7 @@ export function BotDetailView({
             <div>
               <Ribbon kicker="safety rails" color={T.warning} />
               <div style={{ marginTop: 10 }}>
-                <DotRow label="Max drawdown" value="−15% → pause" color={T.loss} />
-                <DotRow label="Daily loss cap" value="−3% → halt today" color={T.loss} />
-                <DotRow label="Max position size" value="2% of equity" />
-                <DotRow label="Max concurrent" value="5 open" />
-                <DotRow label="Trading window" value="10:00 – 15:15 PKT" />
-                <DotRow label="Kill-switch" value="Active" color={T.gain} bold />
+                <SafetyRails bot={bot} />
               </div>
 
               <div style={{ marginTop: 32 }}>
@@ -398,6 +402,56 @@ export function BotDetailView({
       )}
       {flash && <FlashToast message={flash} />}
     </AppFrame>
+  );
+}
+
+// Safety-rails panel — pulls live values from the bot record. Nullable risk
+// controls render as a dim "not set" so the display tracks what's actually
+// configured rather than fabricating defaults.
+function SafetyRails({ bot }: { bot: BotDetailResponse }) {
+  const T = useT();
+  const notSet = <span style={{ color: T.text3 }}>not set</span>;
+  const fmtPct = (v: string | number | null | undefined, suffix: string, sign: "neg" | "pos") => {
+    const n = toNum(v);
+    if (n === null) return notSet;
+    const prefix = sign === "neg" ? "−" : "";
+    return `${prefix}${n}% ${suffix}`;
+  };
+
+  const maxDrawdown = fmtPct(bot.max_drawdown_pause_pct, "→ pause", "neg");
+  const maxDrawdownColor = toNum(bot.max_drawdown_pause_pct) === null ? undefined : T.loss;
+
+  const dailyLoss = fmtPct(bot.daily_loss_limit_pct, "→ halt today", "neg");
+  const dailyLossColor = toNum(bot.daily_loss_limit_pct) === null ? undefined : T.loss;
+
+  const maxSector = fmtPct(bot.max_per_sector_pct, "of equity", "pos");
+
+  const staleDays = bot.stale_data_max_age_days;
+  const staleData =
+    staleDays === null || staleDays === undefined
+      ? notSet
+      : `> ${staleDays} day${staleDays === 1 ? "" : "s"} → halt`;
+
+  const paused = bot.status === "PAUSED";
+  const killSwitchValue = paused
+    ? bot.pause_reason
+      ? `Paused — ${bot.pause_reason}`
+      : "Paused"
+    : bot.status === "STOPPED"
+      ? "Stopped"
+      : "Active";
+  const killSwitchColor = paused ? T.warning : bot.status === "STOPPED" ? T.text3 : T.gain;
+
+  return (
+    <>
+      <DotRow label="Max drawdown" value={maxDrawdown} color={maxDrawdownColor} />
+      <DotRow label="Daily loss cap" value={dailyLoss} color={dailyLossColor} />
+      <DotRow label="Max per sector" value={maxSector} />
+      <DotRow label="Stale data halt" value={staleData} />
+      <DotRow label="Max concurrent" value={`${bot.max_positions} open`} />
+      <DotRow label="Trading window" value="10:00 – 15:15 PKT" />
+      <DotRow label="Kill-switch" value={killSwitchValue} color={killSwitchColor} bold />
+    </>
   );
 }
 
@@ -470,15 +524,6 @@ function SettingsModal({
   onSaved: (updated: BotResponse) => void;
 }) {
   const T = useT();
-
-  // Decimal columns arrive as strings or numbers (PG numeric → JSON). Coerce
-  // through Number(); reject NaN/Infinity to a clean `null` so the inputs
-  // start blank rather than rendering "NaN".
-  const toNum = (v: string | number | null | undefined): number | null => {
-    if (v === null || v === undefined) return null;
-    const n = typeof v === "number" ? v : Number(v);
-    return Number.isFinite(n) ? n : null;
-  };
 
   const initial: RiskControlsValue = {
     daily_loss_limit_pct: toNum(bot.daily_loss_limit_pct),
