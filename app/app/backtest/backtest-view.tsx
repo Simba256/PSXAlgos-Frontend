@@ -248,15 +248,22 @@ export function BacktestView({
   const sharpe = num(result?.sharpe_ratio);
   const maxDd = num(result?.max_drawdown);
   const winRate = num(result?.win_rate);
-  // Profit factor is null on the backend when there are no losing trades
-  // (gross_loss == 0 → division undefined). Distinguish that from a real
-  // 0.00 so the tile reads "∞" instead of misleading "0.00".
+  // Profit factor is null on the backend when gross_loss == 0
+  // (division undefined). Backend can't return +∞ — Numeric column,
+  // Pydantic Decimal field, and JSON encoder all reject Infinity — so
+  // the response carries null and we disambiguate here using the
+  // winning/losing counts that the response already exposes:
+  //   - winning_trades > 0, losing_trades == 0  → flawless run, render "∞"
+  //   - otherwise (no trades, or all-breakeven) → render "—"
+  // Pre-W19 this used (total_trades > 0) which incorrectly rendered
+  // "∞" for the rare all-breakeven case.
   const profitFactorRaw = result?.profit_factor;
   const profitFactor = num(profitFactorRaw);
-  const profitFactorUndefined =
+  const profitFactorInfinite =
     result != null &&
     (profitFactorRaw === null || profitFactorRaw === undefined) &&
-    (result.total_trades ?? 0) > 0;
+    (result.winning_trades ?? 0) > 0 &&
+    (result.losing_trades ?? 0) === 0;
   const avgHold = num(result?.avg_holding_days);
   const equityValues = result?.equity_curve?.map((p) => num(p.equity)) ?? [];
   const monthlyReturns = useMemo(
@@ -390,11 +397,13 @@ export function BacktestView({
               value={
                 !result
                   ? "—"
-                  : profitFactorUndefined
+                  : profitFactorInfinite
                     ? "∞"
-                    : profitFactor.toFixed(2)
+                    : profitFactorRaw === null || profitFactorRaw === undefined
+                      ? "—"
+                      : profitFactor.toFixed(2)
               }
-              sub={profitFactorUndefined ? "no losing trades" : "gross win ÷ loss"}
+              sub={profitFactorInfinite ? "no losing trades" : "gross win ÷ loss"}
             />
             <Lede
               label="Avg hold"
