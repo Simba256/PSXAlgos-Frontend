@@ -63,6 +63,60 @@ const OPERATOR_CHIPS: ReadonlyArray<{ display: string; insert: string; aria: str
   { display: ".", insert: ".", aria: "Dot" },
 ];
 
+// SB10 — volatility presets. Composes existing indicators (`atr_percent`,
+// `bb_percent_b`, `atr`, `sma_50`, `bb_upper`, `bb_lower`, `bb_middle`,
+// `close_price`) into ready-to-use expressions. Two are bare identifiers
+// (the backend TA service already publishes them); two are genuine
+// arithmetic compositions with no equivalent indicator.
+export interface PresetChip {
+  /** Stable id, used as React key and for analytics if added later. */
+  id: "atr-percent" | "distance-atr" | "bb-percent-b" | "bb-bandwidth";
+  /** Chip + autocomplete label. Keep short — fits a 44 px chip. */
+  label: string;
+  /** Single-line tooltip and autocomplete `hint` text. */
+  description: string;
+  /** Text inserted at the caret on commit (chip tap OR autocomplete pick).
+   *  This is the persisted `valueSource` after the SB1 parser canonicalizes it. */
+  expression: string;
+  /** Used to rank autocomplete matches: typing any of these prefixes surfaces
+   *  the preset. Lowercased. Must NOT collide with indicator wire names.
+   *  Note: keys containing operator chars (e.g. `%`) cannot match mid-typing
+   *  because `tokenAtCaret` only includes `[a-z0-9_]` — typing the alphanumeric
+   *  prefix alone (e.g. `atr`) is enough to surface the preset. */
+  matchKeys: readonly string[];
+}
+
+export const PRESET_CHIPS: readonly PresetChip[] = [
+  {
+    id: "atr-percent",
+    label: "ATR %",
+    description: "Volatility as a percent of price (ATR ÷ close × 100). Typical range 2–5.",
+    expression: "atr_percent",
+    matchKeys: ["atr%", "atr_percent", "atrp", "volatility"],
+  },
+  {
+    id: "distance-atr",
+    label: "Distance (ATR)",
+    description: "Distance from SMA-50 in ATR units: (close − sma_50) ÷ atr. Negative = below MA, positive = above.",
+    expression: "(close_price - sma_50) / atr",
+    matchKeys: ["distance", "dist", "atr_dist", "vol_adj"],
+  },
+  {
+    id: "bb-percent-b",
+    label: "Bollinger %B",
+    description: "Price position inside the 20-bar Bollinger band: 0 = lower band, 0.5 = middle, 1 = upper.",
+    expression: "bb_percent_b",
+    matchKeys: ["%b", "percent_b", "bbpb", "bb_position"],
+  },
+  {
+    id: "bb-bandwidth",
+    label: "BB Bandwidth",
+    description: "Bollinger bandwidth as a fraction of the midline: (bb_upper − bb_lower) ÷ bb_middle. Volatility regime.",
+    expression: "(bb_upper - bb_lower) / bb_middle",
+    matchKeys: ["bandwidth", "bbw", "bb_width", "vol_regime"],
+  },
+] as const;
+
 function useTouchPointer(): boolean {
   const [touch, setTouch] = useState(false);
   useEffect(() => {
@@ -180,6 +234,17 @@ export function ExpressionInput({
             insertText: `${fn}(`,
             label: `${fn}( … )`,
             hint: "math fn",
+          });
+        }
+      }
+      // SB10 — surface volatility presets as operand-like suggestions. Empty
+      // token shows all four; otherwise prefix-match against `matchKeys`.
+      for (const preset of PRESET_CHIPS) {
+        if (!q || preset.matchKeys.some((k) => k.startsWith(q))) {
+          indMatches.push({
+            insertText: preset.expression,
+            label: preset.label,
+            hint: "preset",
           });
         }
       }
@@ -311,6 +376,7 @@ export function ExpressionInput({
 
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
+      <PresetChipStrip onInsert={insertAtCaret} />
       {showChips && (
         <OperatorChipStrip onInsert={insertAtCaret} />
       )}
@@ -499,6 +565,57 @@ function OperatorChipStrip({ onInsert }: { onInsert: (text: string) => void }) {
           }}
         >
           {chip.display}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── PresetChipStrip ─────────────────────────────────────────────────────
+
+// SB10 — volatility preset catalog. Renders above the input on all viewports
+// (desktop + mobile) because these are the discovery vehicle for the whole
+// arithmetic surface. Wider chips than OperatorChipStrip — auto-fit content
+// — so the human-readable label ("ATR %", "BB Bandwidth") fits.
+function PresetChipStrip({ onInsert }: { onInsert: (text: string) => void }) {
+  const T = useT();
+  return (
+    <div
+      role="toolbar"
+      aria-label="Indicator presets"
+      style={{
+        display: "flex",
+        gap: 6,
+        overflowX: "auto",
+        paddingBottom: 8,
+        marginBottom: 6,
+        WebkitOverflowScrolling: "touch",
+      }}
+    >
+      {PRESET_CHIPS.map((preset) => (
+        <button
+          key={preset.id}
+          type="button"
+          title={preset.description}
+          aria-label={`Insert ${preset.label} preset: ${preset.description}`}
+          onClick={() => onInsert(preset.expression)}
+          style={{
+            minHeight: 44,
+            padding: "0 12px",
+            flexShrink: 0,
+            border: "none",
+            borderRadius: 8,
+            cursor: "pointer",
+            fontFamily: T.fontMono,
+            fontSize: 13,
+            fontVariantNumeric: "tabular-nums",
+            whiteSpace: "nowrap",
+            background: T.surface,
+            color: T.text2,
+            boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+          }}
+        >
+          {preset.label}
         </button>
       ))}
     </div>
