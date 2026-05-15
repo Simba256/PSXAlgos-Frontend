@@ -14,6 +14,7 @@ import { useT } from "@/components/theme";
 import {
   expressionToSource,
   KNOWN_INDICATORS,
+  MATH_FN_NAMES,
   tryParseExpression,
   type TryParseResult,
 } from "@/lib/strategy/expression";
@@ -169,6 +170,19 @@ export function ExpressionInput({
 
     const indMatches: Suggestion[] = [];
     if (!q || /^[a-z]/.test(q)) {
+      // SB8 — math helper snippets. Surface before indicators so the
+      // function-call form is one keystroke away (`abs` → `abs(`). The
+      // user still completes the args themselves; the snippet just lands
+      // the open paren and a hint at the arity.
+      for (const fn of MATH_FN_NAMES) {
+        if (!q || fn.startsWith(q)) {
+          indMatches.push({
+            insertText: `${fn}(`,
+            label: `${fn}( … )`,
+            hint: "math fn",
+          });
+        }
+      }
       // Filter the indicator list by prefix on the current token. Falls back
       // to contains-match if no prefix hits, so a user typing "20" inside an
       // empty token still gets sma_20 etc.

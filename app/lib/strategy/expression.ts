@@ -22,8 +22,10 @@ import type {
   CmpOp,
   ConstantNode,
   ExprNode,
+  FunctionCallNode,
   IndicatorRefNode,
   BinaryOpNode,
+  MathFnName,
   UnaryOpNode,
   ParenNode,
 } from "../api/strategies";
@@ -35,6 +37,30 @@ export const MAX_EXPR_DEPTH = 16;
 // keeps `Indicator` as a string in the API types (see the comment there) but
 // the parser needs the closed set so unknown identifiers fail with a precise
 // column pointer instead of bubbling up as a vague backend 422.
+// SB8 — math helper whitelist. Mirror of backend `_MATH_FN_NAMES` in
+// `expression_parser.py` / `expression_validator.py`. The parser takes the
+// function-call branch when an identifier in this set is immediately
+// followed by `(`; otherwise the identifier falls through to the
+// indicator-ref branch.
+export const MATH_FN_NAMES: ReadonlySet<MathFnName> = new Set([
+  "abs",
+  "max",
+  "min",
+  "round",
+  "log",
+]);
+
+// Arity bounds keyed by math-fn name. `maxArgs: null` means variadic
+// (>= `minArgs`). Mirror of `_MATH_FN_ARITY` in
+// `backend/app/services/strategy/expression_validator.py`.
+const MATH_FN_ARITY: Readonly<Record<MathFnName, { minArgs: number; maxArgs: number | null }>> = {
+  abs: { minArgs: 1, maxArgs: 1 },
+  round: { minArgs: 1, maxArgs: 2 },
+  log: { minArgs: 1, maxArgs: 2 },
+  max: { minArgs: 2, maxArgs: null },
+  min: { minArgs: 2, maxArgs: null },
+};
+
 export const KNOWN_INDICATORS: ReadonlySet<string> = new Set([
   "close_price",
   "open_price",
@@ -270,7 +296,7 @@ class Parser {
       return node;
     }
     if (t.kind === "IDENT") {
-      return this.parseIndicatorRef();
+      return this.parseIdentPrimary();
     }
     if (t.kind === "LPAREN") {
       this.advance();
@@ -295,9 +321,17 @@ class Parser {
     throw new ParseError(`unexpected token '${t.text}'`, this.source, t.column);
   }
 
-  private parseIndicatorRef(): ExprNode {
+  private parseIdentPrimary(): ExprNode {
     const tok = this.advance();
     const name = tok.text;
+    // SB8 — function call branch. Math fns take precedence over indicator
+    // names; an identifier in MATH_FN_NAMES followed by `(` is a call.
+    if (
+      MATH_FN_NAMES.has(name as MathFnName) &&
+      this.peek().kind === "LPAREN"
+    ) {
+      return this.parseFunctionCallTail(name as MathFnName, tok.column);
+    }
     if (!KNOWN_INDICATORS.has(name)) {
       throw new ParseError(`unknown indicator '${name}'`, this.source, tok.column);
     }
@@ -322,6 +356,31 @@ class Parser {
       params = period !== null ? { period } : {};
     }
     const node: IndicatorRefNode = { type: "indicator", indicator: name, params };
+    return node;
+  }
+
+  // SB8 — parse the `(args)` tail of a math-fn call. `nameCol` is kept for
+  // future arity-mismatch diagnostics that want to point at the function
+  // name rather than the closing paren. Arity itself is a validator concern.
+  private parseFunctionCallTail(name: MathFnName, _nameCol: number): ExprNode {
+    this.expect("LPAREN", "expected '('");
+    const args: ExprNode[] = [];
+    if (this.peek().kind === "RPAREN") {
+      // Empty arg list is a syntax error — none of the SB8 helpers are
+      // zero-arg. Caret lands on the closing paren.
+      throw new ParseError(
+        `function '${name}' requires at least one argument`,
+        this.source,
+        this.peek().column,
+      );
+    }
+    args.push(this.parseExpr(0));
+    while (this.peek().kind === "COMMA") {
+      this.advance();
+      args.push(this.parseExpr(0));
+    }
+    this.expect("RPAREN", "expected ')'");
+    const node: FunctionCallNode = { type: "function_call", name, args };
     return node;
   }
 }
@@ -387,6 +446,12 @@ function render(node: ExprNode, parentPrec: number): string {
   if (node.type === "indicator") {
     return node.indicator;
   }
+  if (node.type === "function_call") {
+    // Args render with parentPrec=0 so each gets its own paren context —
+    // `max(a + b, c * d)` round-trips without spurious parens around args.
+    const renderedArgs = node.args.map((a) => render(a, 0)).join(", ");
+    return `${node.name}(${renderedArgs})`;
+  }
   if (node.type === "paren") {
     return `(${render(node.operand, 0)})`;
   }
@@ -413,6 +478,10 @@ function walkDepth(node: ExprNode, depth = 1): number {
   if (node.type === "constant" || node.type === "indicator") return depth;
   if (node.type === "paren" || node.type === "unary_op") {
     return walkDepth(node.operand, depth + 1);
+  }
+  if (node.type === "function_call") {
+    if (node.args.length === 0) return depth;
+    return Math.max(...node.args.map((a) => walkDepth(a, depth + 1)));
   }
   // binary_op
   return Math.max(walkDepth(node.left, depth + 1), walkDepth(node.right, depth + 1));
@@ -444,6 +513,47 @@ function walkAndCheck(node: ExprNode, pathParts: string[]): void {
   }
   if (node.type === "unary_op") {
     walkAndCheck(node.operand, [...pathParts, "operand"]);
+    return;
+  }
+  if (node.type === "function_call") {
+    // Whitelist — defensive, the type union narrows `node.name` already.
+    if (!MATH_FN_NAMES.has(node.name)) {
+      throw new ValidationError(
+        `unknown math function '${node.name}'`,
+        "unknown_math_fn",
+        path,
+      );
+    }
+    const { minArgs, maxArgs } = MATH_FN_ARITY[node.name];
+    const n = node.args.length;
+    if (n < minArgs || (maxArgs !== null && n > maxArgs)) {
+      let arityDesc: string;
+      if (maxArgs === null) arityDesc = `>= ${minArgs}`;
+      else if (minArgs === maxArgs) arityDesc = `exactly ${minArgs}`;
+      else arityDesc = `${minArgs}-${maxArgs}`;
+      throw new ValidationError(
+        `${node.name}() takes ${arityDesc} arguments, got ${n}`,
+        "math_fn_arity",
+        path,
+      );
+    }
+    // round(x, n) — when `n` is a literal it must be a non-negative integer.
+    // Dynamic `n` is accepted; the backend evaluator rechecks at runtime.
+    if (node.name === "round" && node.args.length === 2) {
+      const second = node.args[1];
+      if (second.type === "constant") {
+        if (second.value < 0 || second.value !== Math.trunc(second.value)) {
+          throw new ValidationError(
+            `round() decimals argument must be a non-negative integer, got ${second.value}`,
+            "round_decimals_invalid",
+            path + "/args/1",
+          );
+        }
+      }
+    }
+    node.args.forEach((arg, i) => {
+      walkAndCheck(arg, [...pathParts, "args", String(i)]);
+    });
     return;
   }
   // binary_op
@@ -482,5 +592,6 @@ export function hasIndicatorRef(node: ExprNode): boolean {
   if (node.type === "indicator") return true;
   if (node.type === "constant") return false;
   if (node.type === "paren" || node.type === "unary_op") return hasIndicatorRef(node.operand);
+  if (node.type === "function_call") return node.args.some((a) => hasIndicatorRef(a));
   return hasIndicatorRef(node.left) || hasIndicatorRef(node.right);
 }

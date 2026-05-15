@@ -75,12 +75,24 @@ export interface ParenNode {
   operand: ExprNode;
 }
 
+// SB8 — closed-set math helpers. Plain identifier (no `math.` namespace),
+// strict NaN propagation matches Pine Script `math.*` semantics. Arity:
+// `abs` exactly 1 ; `round` / `log` 1–2 ; `max` / `min` >= 2.
+export type MathFnName = "abs" | "max" | "min" | "round" | "log";
+
+export interface FunctionCallNode {
+  type: "function_call";
+  name: MathFnName;
+  args: ExprNode[];
+}
+
 export type ExprNode =
   | ConstantNode
   | IndicatorRefNode
   | BinaryOpNode
   | UnaryOpNode
-  | ParenNode;
+  | ParenNode
+  | FunctionCallNode;
 
 // Public alias — kept so existing callers can keep importing `ConditionValue`
 // (the editor uses it widely). The backend exports the same alias for the
