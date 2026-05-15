@@ -133,29 +133,29 @@ function presetToEntryRules(key: PresetKey): EntryRules {
   switch (key) {
     case "mean_reversion":
       conditions = [
-        { kind: "condition", indicator: "rsi", operator: "<", value: { type: "constant", value: 30 } },
+        { kind: "condition", indicator: "rsi", operator: "<", value: { type: "constant", value: 30 }, value_source: "30" },
       ];
       break;
     case "momentum_breakout":
       // Backend doesn't have a "20-day high" indicator — closest stand-in is
       // close > sma_20. Editor lets users tighten this once they're in.
       conditions = [
-        { kind: "condition", indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "sma_20" } },
+        { kind: "condition", indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "sma_20" }, value_source: "sma_20" },
       ];
       break;
     case "golden_cross":
       conditions = [
-        { kind: "condition", indicator: "sma_50", operator: "crosses_above", value: { type: "indicator", indicator: "sma_200" } },
+        { kind: "condition", indicator: "sma_50", operator: "crosses_above", value: { type: "indicator", indicator: "sma_200" }, value_source: "sma_200" },
       ];
       break;
     case "bollinger_squeeze":
       conditions = [
-        { kind: "condition", indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "bb_upper" } },
+        { kind: "condition", indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "bb_upper" }, value_source: "bb_upper" },
       ];
       break;
     case "macd_cross":
       conditions = [
-        { kind: "condition", indicator: "macd", operator: "crosses_above", value: { type: "indicator", indicator: "macd_signal" } },
+        { kind: "condition", indicator: "macd", operator: "crosses_above", value: { type: "indicator", indicator: "macd_signal" }, value_source: "macd_signal" },
       ];
       break;
     case "blank":

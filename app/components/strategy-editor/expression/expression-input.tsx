@@ -1,0 +1,492 @@
+"use client";
+
+// SB1 expression input — a single-line free-form editor that replaces the
+// legacy "Constant vs Indicator" segmented control on the condition drawer
+// RHS. Parses on every keystroke (debounced 150 ms) via the client-side
+// Pratt port at `lib/strategy/expression.ts`; the backend re-validates on
+// save. Mobile shows an arithmetic operator chip strip above the input so
+// users can insert `+ − × ÷ ( )` without fighting the soft keyboard.
+//
+// See `docs/design_call_dossiers/SB1_frontend_expression_editor_2026-05-15.md`.
+
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useT } from "@/components/theme";
+import {
+  expressionToSource,
+  KNOWN_INDICATORS,
+  tryParseExpression,
+  type TryParseResult,
+} from "@/lib/strategy/expression";
+
+export interface ExpressionInputProps {
+  /** Controlled source-text value (user-authored). */
+  value: string;
+  onChange: (next: string) => void;
+  /** Debounced parse result — fires on every keystroke after a 150ms idle. */
+  onParse?: (result: TryParseResult) => void;
+  /** Indicator wire names from /strategies/meta/indicators. */
+  indicators: readonly string[];
+  /** Map of wire name → human-readable label (e.g. "sma_50" → "SMA (50)"). */
+  formatIndicatorLabel: (wire: string) => string;
+  ariaLabel?: string;
+  /** Show the mobile-only operator chip strip. Defaults to "auto" — detect via media query. */
+  showOperatorChips?: "auto" | "always" | "never";
+  /** Optional placeholder when the field is empty. */
+  placeholder?: string;
+  /** When true, the input renders with a subtle "invalid" outline regardless of
+      the debounced parse result. Used by the drawer to flash a save-attempted
+      error before the next keystroke clears it. */
+  forceInvalid?: boolean;
+}
+
+interface Suggestion {
+  /** Text inserted into the input when the user commits. */
+  insertText: string;
+  /** Label shown in the dropdown row. */
+  label: string;
+  /** Right-aligned dim text — kind ("operator" / "indicator") + wire name. */
+  hint?: string;
+}
+
+// Operator chips that are always offered. Comparison operators are
+// intentionally NOT here — SB1 ships arithmetic-only and the outer
+// SingleCondition.operator owns the boolean comparison.
+const OPERATOR_CHIPS: ReadonlyArray<{ display: string; insert: string; aria: string }> = [
+  { display: "+", insert: " + ", aria: "Plus" },
+  { display: "−", insert: " - ", aria: "Minus" },
+  { display: "×", insert: " * ", aria: "Times" },
+  { display: "÷", insert: " / ", aria: "Divide" },
+  { display: "%", insert: " % ", aria: "Modulo" },
+  { display: "(", insert: "(", aria: "Open parenthesis" },
+  { display: ")", insert: ")", aria: "Close parenthesis" },
+  { display: ".", insert: ".", aria: "Dot" },
+];
+
+function useTouchPointer(): boolean {
+  const [touch, setTouch] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(hover: none) and (pointer: coarse)");
+    setTouch(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setTouch(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return touch;
+}
+
+// Returns [start, end] byte offsets of the identifier (or numeric) token the
+// caret sits inside. Empty token (whitespace / start of string / after an
+// operator) returns [caret, caret] so the suggestion insert overwrites
+// nothing. Operator chars belong to no token.
+function tokenAtCaret(source: string, caret: number): { start: number; end: number; text: string } {
+  const isIdent = (c: string) => /[a-z0-9_]/.test(c);
+  let start = caret;
+  while (start > 0 && isIdent(source[start - 1])) start -= 1;
+  let end = caret;
+  while (end < source.length && isIdent(source[end])) end += 1;
+  return { start, end, text: source.slice(start, end) };
+}
+
+// Returns true when the position immediately to the left of `caret` is an
+// operand boundary (digit, identifier char, or closing paren). The editor
+// uses this to bias the autocomplete: after an operand we prefer operator
+// suggestions; otherwise we prefer indicator/number suggestions. Heuristic
+// — typing past a wrong bias always works.
+function precededByOperand(source: string, caret: number): boolean {
+  let i = caret - 1;
+  while (i >= 0 && (source[i] === " " || source[i] === "\t")) i -= 1;
+  if (i < 0) return false;
+  const c = source[i];
+  return /[a-z0-9_)]/.test(c);
+}
+
+export function ExpressionInput({
+  value,
+  onChange,
+  onParse,
+  indicators,
+  formatIndicatorLabel,
+  ariaLabel = "Expression",
+  showOperatorChips = "auto",
+  placeholder = "e.g. 50  •  sma_20  •  sma_20 + 5",
+  forceInvalid = false,
+}: ExpressionInputProps) {
+  const T = useT();
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [caret, setCaret] = useState(value.length);
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const [parseResult, setParseResult] = useState<TryParseResult | null>(() =>
+    value.trim() ? tryParseExpression(value) : null,
+  );
+  const inputId = useId();
+  const errorId = useId();
+  const listboxId = useId();
+  const isTouch = useTouchPointer();
+  const showChips =
+    showOperatorChips === "always" || (showOperatorChips === "auto" && isTouch);
+
+  // Debounced parse — 150ms idle window. Fires `onParse` with the same result
+  // pushed into local state so the inline error renders.
+  useEffect(() => {
+    if (!value.trim()) {
+      setParseResult(null);
+      onParse?.({ ok: false, message: "expression is empty", column: 0, reason: "empty", path: "" });
+      return;
+    }
+    const handle = setTimeout(() => {
+      const result = tryParseExpression(value);
+      setParseResult(result);
+      onParse?.(result);
+    }, 150);
+    return () => clearTimeout(handle);
+    // `onParse` is intentionally not in the deps — parents that re-create
+    // the callback on each render would otherwise re-trigger the debounce.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  // Close dropdown on outside click.
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: MouseEvent) {
+      if (!wrapRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  // Suggestions for the current caret position. Identifier suggestions come
+  // from the indicator list; operator suggestions are the fixed arithmetic
+  // set. Position-aware: after an operand we lead with operators.
+  const suggestions: Suggestion[] = useMemo(() => {
+    const tok = tokenAtCaret(value, caret);
+    const q = tok.text.toLowerCase();
+    const operandLeads = precededByOperand(value, tok.start);
+
+    const indMatches: Suggestion[] = [];
+    if (!q || /^[a-z]/.test(q)) {
+      // Filter the indicator list by prefix on the current token. Falls back
+      // to contains-match if no prefix hits, so a user typing "20" inside an
+      // empty token still gets sma_20 etc.
+      const starts: Suggestion[] = [];
+      const contains: Suggestion[] = [];
+      for (const ind of indicators) {
+        if (!KNOWN_INDICATORS.has(ind)) continue;
+        if (!q) {
+          starts.push({
+            insertText: ind,
+            label: formatIndicatorLabel(ind),
+            hint: ind,
+          });
+          continue;
+        }
+        if (ind.startsWith(q)) {
+          starts.push({ insertText: ind, label: formatIndicatorLabel(ind), hint: ind });
+        } else if (ind.includes(q)) {
+          contains.push({ insertText: ind, label: formatIndicatorLabel(ind), hint: ind });
+        }
+      }
+      indMatches.push(...starts, ...contains);
+    }
+
+    const opMatches: Suggestion[] = [];
+    if (operandLeads || !q) {
+      for (const chip of OPERATOR_CHIPS) {
+        // Skip "." for the suggestion menu — it's a numeric-literal helper,
+        // only useful on mobile chip strip. Same for ").
+        if (chip.display === "." || chip.display === ")") continue;
+        opMatches.push({
+          insertText: chip.insert,
+          label: chip.display,
+          hint: "operator",
+        });
+      }
+    }
+
+    const cap = 8;
+    if (operandLeads) {
+      return [...opMatches, ...indMatches].slice(0, cap);
+    }
+    return [...indMatches, ...opMatches].slice(0, cap);
+  }, [value, caret, indicators, formatIndicatorLabel]);
+
+  function commit(opt: Suggestion) {
+    const tok = tokenAtCaret(value, caret);
+    const before = value.slice(0, tok.start);
+    const after = value.slice(tok.end);
+    const next = before + opt.insertText + after;
+    const nextCaret = (before + opt.insertText).length;
+    onChange(next);
+    setOpen(false);
+    setHighlight(0);
+    // Restore caret + focus on the next paint, after the controlled value lands.
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      try {
+        el.setSelectionRange(nextCaret, nextCaret);
+      } catch {
+        // Some browsers throw on non-text inputs; we always render type=text.
+      }
+      setCaret(nextCaret);
+    });
+  }
+
+  function insertAtCaret(text: string) {
+    const el = inputRef.current;
+    const start = el?.selectionStart ?? caret;
+    const end = el?.selectionEnd ?? caret;
+    const next = value.slice(0, start) + text + value.slice(end);
+    const nextCaret = start + text.length;
+    onChange(next);
+    requestAnimationFrame(() => {
+      const n = inputRef.current;
+      if (!n) return;
+      n.focus();
+      try {
+        n.setSelectionRange(nextCaret, nextCaret);
+      } catch {
+        // ignore
+      }
+      setCaret(nextCaret);
+    });
+  }
+
+  function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setOpen(true);
+      setHighlight((h) => (suggestions.length === 0 ? 0 : (h + 1) % suggestions.length));
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setOpen(true);
+      setHighlight((h) =>
+        suggestions.length === 0 ? 0 : (h - 1 + suggestions.length) % suggestions.length,
+      );
+      return;
+    }
+    if ((e.key === "Enter" || e.key === "Tab") && open && suggestions[highlight]) {
+      e.preventDefault();
+      commit(suggestions[highlight]);
+      return;
+    }
+    if (e.key === "Escape") {
+      setOpen(false);
+    }
+  }
+
+  const isInvalid = forceInvalid || (parseResult !== null && parseResult.ok === false);
+  const errorMsg =
+    parseResult && parseResult.ok === false && value.trim()
+      ? parseResult.message.split("\n")[0]
+      : null;
+
+  const canonical =
+    parseResult && parseResult.ok ? parseResult.canonical : null;
+  const showCanonical =
+    canonical !== null && canonical !== value.trim() && canonical !== value;
+
+  const activeOptionId = open && suggestions[highlight] ? `${listboxId}-opt-${highlight}` : undefined;
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      {showChips && (
+        <OperatorChipStrip onInsert={insertAtCaret} />
+      )}
+      <input
+        ref={inputRef}
+        id={inputId}
+        type="text"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+          setCaret(e.target.selectionStart ?? e.target.value.length);
+        }}
+        onKeyDown={onKey}
+        onKeyUp={(e) => {
+          const t = e.currentTarget;
+          setCaret(t.selectionStart ?? t.value.length);
+        }}
+        onClick={(e) => {
+          const t = e.currentTarget;
+          setCaret(t.selectionStart ?? t.value.length);
+          setOpen(true);
+        }}
+        onFocus={(e) => {
+          setCaret(e.currentTarget.selectionStart ?? e.currentTarget.value.length);
+          setOpen(true);
+        }}
+        placeholder={placeholder}
+        aria-label={ariaLabel}
+        aria-invalid={isInvalid}
+        aria-describedby={errorMsg ? errorId : undefined}
+        aria-autocomplete="list"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        aria-activedescendant={activeOptionId}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        style={{
+          width: "100%",
+          padding: "10px 12px",
+          fontFamily: T.fontMono,
+          fontSize: 14,
+          fontVariantNumeric: "tabular-nums",
+          background: T.surface,
+          color: T.text,
+          border: "none",
+          borderRadius: 8,
+          outline: "none",
+          boxShadow: `0 0 0 ${isInvalid ? 1.5 : 1}px ${
+            isInvalid ? T.loss : T.outlineFaint
+          }`,
+          transition: "box-shadow 120ms",
+        }}
+      />
+      {open && suggestions.length > 0 && (
+        <ul
+          id={listboxId}
+          role="listbox"
+          aria-label="Expression suggestions"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            right: 0,
+            margin: 0,
+            padding: 4,
+            listStyle: "none",
+            maxHeight: 220,
+            overflowY: "auto",
+            background: T.surface2,
+            borderRadius: 8,
+            boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 12px 32px -16px rgba(0,0,0,0.55)`,
+            zIndex: 50,
+          }}
+        >
+          {suggestions.map((s, i) => {
+            const active = i === highlight;
+            return (
+              <li
+                key={`${s.insertText}-${i}`}
+                id={`${listboxId}-opt-${i}`}
+                role="option"
+                aria-selected={active}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  commit(s);
+                }}
+                onMouseEnter={() => setHighlight(i)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  padding: "6px 10px",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontFamily: T.fontMono,
+                  fontSize: 13,
+                  background: active ? T.surface3 : "transparent",
+                  color: active ? T.text : T.text2,
+                }}
+              >
+                <span>{s.label}</span>
+                {s.hint && (
+                  <span style={{ fontSize: 11, color: T.text3 }}>{s.hint}</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {errorMsg ? (
+        <div
+          id={errorId}
+          role="alert"
+          style={{
+            marginTop: 6,
+            fontFamily: T.fontMono,
+            fontSize: 11,
+            color: T.loss,
+          }}
+        >
+          {errorMsg}
+        </div>
+      ) : showCanonical ? (
+        <div
+          style={{
+            marginTop: 6,
+            fontFamily: T.fontMono,
+            fontSize: 11,
+            color: T.text3,
+          }}
+          aria-live="polite"
+        >
+          parses as <span style={{ color: T.text2 }}>{canonical}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Re-exported helper so callers can render the canonical form in summaries
+// (canvas leaves, ungroup previews, …) without duplicating the import path.
+export { expressionToSource };
+
+// ── OperatorChipStrip ───────────────────────────────────────────────────
+
+// Horizontal scrollable bar above the input on touch devices. Tapping a chip
+// inserts its literal at the caret. WCAG 2.5.5 target size: 44×44 px chips.
+function OperatorChipStrip({ onInsert }: { onInsert: (text: string) => void }) {
+  const T = useT();
+  return (
+    <div
+      role="toolbar"
+      aria-label="Expression operators"
+      style={{
+        display: "flex",
+        gap: 6,
+        overflowX: "auto",
+        paddingBottom: 8,
+        marginBottom: 6,
+        WebkitOverflowScrolling: "touch",
+      }}
+    >
+      {OPERATOR_CHIPS.map((chip) => (
+        <button
+          key={chip.display}
+          type="button"
+          aria-label={chip.aria}
+          onClick={() => onInsert(chip.insert)}
+          style={{
+            minWidth: 44,
+            height: 44,
+            flexShrink: 0,
+            border: "none",
+            borderRadius: 8,
+            cursor: "pointer",
+            fontFamily: T.fontMono,
+            fontSize: 16,
+            fontVariantNumeric: "tabular-nums",
+            background: T.surface,
+            color: T.text2,
+            boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+          }}
+        >
+          {chip.display}
+        </button>
+      ))}
+    </div>
+  );
+}

@@ -49,6 +49,12 @@ import type {
   Timeframe,
 } from "@/lib/api/strategies";
 import {
+  expressionToSource,
+  hasIndicatorRef,
+  tryParseExpression,
+} from "@/lib/strategy/expression";
+import { ExpressionInput } from "@/components/strategy-editor/expression/expression-input";
+import {
   type CondId,
   type ConditionGroup,
   type ConditionLeaf,
@@ -116,8 +122,10 @@ function condToMeta(cond: SingleCondition): CondMeta {
   return {
     indicator: formatIndicator(cond.indicator, cond.params ?? null),
     op: formatOp(cond.operator),
-    val: formatValue(cond.value),
-    valIsRef: cond.value.type === "indicator",
+    val: formatValue(cond.value, cond.value_source),
+    // Phase SB1: expression may contain at least one live series. The visual
+    // cue ("compares against a live indicator") still maps to the same case.
+    valIsRef: hasIndicatorRef(cond.value),
     meta: "condition",
     kind: classifyIndicator(cond.indicator),
   };
@@ -159,9 +167,16 @@ function formatOp(op: Operator): string {
   return op;
 }
 
-function formatValue(value: ConditionValue): string {
+function formatValue(value: ConditionValue, source?: string | null): string {
+  // SB1: prefer the user-authored source text (migration 058 backfilled it for
+  // legacy rows). The AST round-trip via `expressionToSource` is a safety
+  // fallback for any pre-migration / malformed shape that slips through.
+  if (source && source.trim()) return source;
+  // Leaf-level rendering keeps the long-form indicator label so simple
+  // conditions still read like "RSI < 30" instead of "rsi < 30".
   if (value.type === "constant") return String(value.value);
-  return formatIndicator(value.indicator, null);
+  if (value.type === "indicator") return formatIndicator(value.indicator, null);
+  return expressionToSource(value);
 }
 
 // Phase E: build a plain-English expression from a tree node, used by the
@@ -170,7 +185,7 @@ function formatValue(value: ConditionValue): string {
 // the semantic-shift case the modal warns about, and matches how a reader
 // would naturally write the expression.
 function describeCondition(c: SingleCondition): string {
-  return `${formatIndicator(c.indicator, c.params ?? null)} ${formatOp(c.operator)} ${formatValue(c.value)}`;
+  return `${formatIndicator(c.indicator, c.params ?? null)} ${formatOp(c.operator)} ${formatValue(c.value, c.value_source)}`;
 }
 
 function describeNode(node: ConditionNode, parentLogic: ConditionLogic): string {
@@ -763,6 +778,7 @@ export function EditorView({
         indicator: "rsi",
         operator: "<",
         value: { type: "constant", value: 50 },
+        value_source: "50",
         params: null,
       },
     });
@@ -3083,44 +3099,6 @@ function InsertPicker({
   );
 }
 
-type CompareMode = "Constant" | "Indicator";
-
-function useSliderDrag(onChange: (pct: number) => void) {
-  const trackRef = useRef<HTMLDivElement>(null);
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
-
-  const update = (clientX: number) => {
-    const el = trackRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    onChangeRef.current(pct);
-  };
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    update(e.clientX);
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    const el = e.currentTarget as HTMLElement;
-    if (!el.hasPointerCapture(e.pointerId)) return;
-    update(e.clientX);
-  };
-
-  const onPointerUp = (e: React.PointerEvent) => {
-    const el = e.currentTarget as HTMLElement;
-    if (el.hasPointerCapture(e.pointerId)) {
-      el.releasePointerCapture(e.pointerId);
-    }
-  };
-
-  return { trackRef, onPointerDown, onPointerMove, onPointerUp };
-}
-
 // Operator options match backend's Operator enum (schemas/strategy.py).
 // `value` is the wire format; `label` is the canvas/drawer glyph.
 // `hint` is the hover tooltip — kept short and plain-English so a new user
@@ -3143,8 +3121,6 @@ const OPERATOR_OPTIONS: { value: Operator; label: string; hint: string }[] = [
     hint: "Crosses below — the indicator just dropped past the value (was above on the previous bar, now at or below).",
   },
 ];
-const COMPARE_MODES: CompareMode[] = ["Constant", "Indicator"];
-
 // Bar resolutions a condition can evaluate against. Mirrors backend's
 // Timeframe enum (schemas/strategy.py). `available: false` chips render as
 // locked ("coming soon") — backend rejects them today, so the UI disables
@@ -3177,7 +3153,7 @@ const FIELD_INFO = {
   operator:
     "How to compare the indicator on the left to the value on the right: greater than, less than, equal, or a 'cross' that fires only the moment the line moves past the threshold.",
   comparedTo:
-    "Compare the indicator to a fixed number you choose (Constant — e.g. 'RSI < 30') or to another live indicator's value (Indicator — e.g. 'Close crosses above SMA 50').",
+    "What the indicator on the left is compared against. Type a number (e.g. '30'), an indicator name (e.g. 'sma_20'), or an arithmetic expression mixing both (e.g. 'sma_20 + 5'). Suggestions appear as you type.",
 } as const;
 
 function DrawerContainer({ children }: { children: React.ReactNode }) {
@@ -3252,22 +3228,29 @@ function ConditionDrawer({
   onClose: () => void;
 }) {
   const T = useT();
-  const initialCompare: CompareMode = cond.value.type === "indicator" ? "Indicator" : "Constant";
-  const initialThreshold = cond.value.type === "constant" ? cond.value.value : 0;
-  const initialRefIndicator = cond.value.type === "indicator" ? cond.value.indicator : "";
+  // SB1: drawer state is now a single source-text string. Hydrate from the
+  // backend-provided `value_source` when present (preserves user-authored
+  // whitespace and parens); otherwise canonicalize the AST so legacy data
+  // still opens with a sensible default.
+  const initialExpressionText = cond.value_source && cond.value_source.trim()
+    ? cond.value_source
+    : expressionToSource(cond.value);
 
   const [indicator, setIndicator] = useState<string>(cond.indicator);
   const [op, setOp] = useState<Operator>(cond.operator);
-  const [compareMode, setCompareMode] = useState<CompareMode>(initialCompare);
-  const [threshold, setThreshold] = useState<number>(initialThreshold);
-  const [refIndicator, setRefIndicator] = useState<string>(initialRefIndicator);
+  const [expressionText, setExpressionText] = useState<string>(initialExpressionText);
+  // Tracks whether the current text parses + validates. Toggled by the live
+  // parse callback inside ExpressionInput; consumed to disable the Apply
+  // button and gate save.
+  const [expressionOk, setExpressionOk] = useState<boolean>(() => {
+    const r = tryParseExpression(initialExpressionText);
+    return r.ok;
+  });
+  const [forceInvalid, setForceInvalid] = useState<boolean>(false);
   // Bar resolution. Backend defaults absent values to "1D"; if a legacy
   // condition was saved before the field existed we surface "1D" so the
   // chip row reflects the live evaluation behavior.
   const [timeframe, setTimeframe] = useState<Timeframe>(cond.timeframe ?? "1D");
-  const thresholdPct = Math.max(0, Math.min(100, threshold));
-
-  const slider = useSliderDrag((pct) => setThreshold(Math.round(pct * 100)));
 
   // Build Combobox options from IndicatorMeta. Group name becomes the
   // right-aligned hint; value is the wire format consumed by the backend.
@@ -3288,9 +3271,21 @@ function ConditionDrawer({
 
   const period = getPeriodConfig(indicator);
   const lhsLabel = formatIndicator(indicator, null);
-  const refLabel = refIndicator ? formatIndicator(refIndicator, null) : "—";
-  const previewVal = compareMode === "Constant" ? String(threshold) : refLabel;
+  const previewVal = expressionText.trim() || "—";
   const previewOp = formatOp(op);
+
+  // Wire list of indicator names for ExpressionInput's autocomplete. The
+  // editor's `indicatorMeta` is grouped by category; the parser only needs
+  // the flat name list (it already enforces the closed set via
+  // `KNOWN_INDICATORS`). Flat list + bare formatter keeps the dropdown row
+  // legible without dragging the category hint through the parser layer.
+  const expressionIndicators = useMemo(() => {
+    const out: string[] = [];
+    for (const list of Object.values(indicatorMeta.indicators)) {
+      for (const ind of list) out.push(ind);
+    }
+    return out;
+  }, [indicatorMeta]);
 
   const handleIndicatorChange = (next: string) => {
     setIndicator(next);
@@ -3303,21 +3298,22 @@ function ConditionDrawer({
   };
 
   const handleSave = () => {
-    let nextValue: ConditionValue;
-    if (compareMode === "Constant") {
-      nextValue = { type: "constant", value: threshold };
-    } else if (refIndicator) {
-      nextValue = { type: "indicator", indicator: refIndicator };
-    } else {
-      // Compare-to-Indicator with no reference picked — fall back to
-      // constant rather than emitting an invalid SingleCondition.
-      nextValue = { type: "constant", value: threshold };
+    // Re-parse one last time at Apply — the debounced live state may lag a
+    // final keystroke, and we'd rather block here than ship a 422.
+    const parsed = tryParseExpression(expressionText);
+    if (!parsed.ok) {
+      setForceInvalid(true);
+      setExpressionOk(false);
+      return;
     }
     const next: SingleCondition = {
       kind: "condition",
       indicator,
       operator: op,
-      value: nextValue,
+      value: parsed.ast,
+      // Persist the user's exact text, not the canonical — see spec §4. Keeps
+      // user-authored parens/whitespace stable across edit round-trips.
+      value_source: expressionText,
       timeframe,
       params: cond.params ?? null,
     };
@@ -3526,149 +3522,24 @@ function ConditionDrawer({
 
         <div style={{ marginTop: 18 }}>
           <Kicker info={FIELD_INFO.comparedTo}>compared to</Kicker>
-          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-            {COMPARE_MODES.map((t) => {
-              const active = compareMode === t;
-              const modeHint =
-                t === "Constant"
-                  ? "Compare against a fixed number you choose with the slider/input below."
-                  : "Compare against another live indicator's value (e.g. Close vs SMA 50).";
-              return (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setCompareMode(t)}
-                  title={modeHint}
-                  style={{
-                    padding: "6px 12px",
-                    borderRadius: 999,
-                    fontSize: 11.5,
-                    border: "none",
-                    cursor: "pointer",
-                    fontFamily: "inherit",
-                    background: active ? T.surface3 : T.surface,
-                    color: active ? T.text : T.text3,
-                    boxShadow: `0 0 0 1px ${active ? T.outlineVariant : T.outlineFaint}`,
-                    transition: "background 140ms, color 140ms",
-                  }}
-                >
-                  {t}
-                </button>
-              );
-            })}
-          </div>
-          {compareMode === "Constant" ? (
-            <div
-              style={{
-                marginTop: 10,
-                padding: "12px 14px",
-                background: T.surface,
-                borderRadius: 8,
-                boxShadow: `0 0 0 1px ${T.outlineFaint}`,
-                display: "flex",
-                alignItems: "baseline",
-                gap: 8,
+          {/* SB1: single free-form expression field replaces the legacy
+              Constant / Indicator segmented control. Parses client-side for
+              instant feedback; backend re-validates on save. Spec:
+              docs/design_call_dossiers/SB1_frontend_expression_editor_2026-05-15.md */}
+          <div style={{ marginTop: 8 }}>
+            <ExpressionInput
+              value={expressionText}
+              onChange={(next) => {
+                setExpressionText(next);
+                setForceInvalid(false);
               }}
-            >
-              <input
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                value={threshold}
-                onChange={(e) => {
-                  const digits = e.target.value.replace(/[^0-9]/g, "");
-                  if (digits === "") {
-                    setThreshold(0);
-                    return;
-                  }
-                  const n = Number(digits);
-                  if (Number.isFinite(n)) setThreshold(Math.max(0, Math.min(100, n)));
-                }}
-                style={{
-                  fontFamily: T.fontHead,
-                  fontSize: 28,
-                  color: T.text,
-                  letterSpacing: -0.4,
-                  fontVariantNumeric: "tabular-nums",
-                  background: "transparent",
-                  border: "none",
-                  width: 64,
-                  padding: 0,
-                }}
-              />
-              <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>of 100</span>
-              <div style={{ flex: 1 }} />
-              <div
-                ref={slider.trackRef}
-                onPointerDown={slider.onPointerDown}
-                onPointerMove={slider.onPointerMove}
-                onPointerUp={slider.onPointerUp}
-                onPointerCancel={slider.onPointerUp}
-                style={{
-                  position: "relative",
-                  width: 120,
-                  height: 14,
-                  display: "flex",
-                  alignItems: "center",
-                  cursor: "pointer",
-                  touchAction: "none",
-                }}
-              >
-                <div
-                  style={{
-                    position: "absolute",
-                    left: 0,
-                    right: 0,
-                    height: 4,
-                    borderRadius: 2,
-                    background: T.surface3,
-                    overflow: "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      width: `${thresholdPct}%`,
-                      background: T.primaryLight,
-                      transition: "width 80ms linear",
-                    }}
-                  />
-                </div>
-                <div
-                  style={{
-                    position: "absolute",
-                    left: `${thresholdPct}%`,
-                    top: "50%",
-                    width: 12,
-                    height: 12,
-                    borderRadius: 6,
-                    background: T.primaryLight,
-                    transform: "translate(-6px, -6px)",
-                    boxShadow: `0 0 0 3px ${T.primaryLight}33`,
-                  }}
-                />
-              </div>
-            </div>
-          ) : (
-            <div style={{ marginTop: 10 }}>
-              <Combobox
-                label="reference indicator"
-                info="The indicator on the right side of the comparison. Both sides are evaluated on the same bar, so this lets you write rules like 'Close > SMA 50' or 'EMA 12 crosses above EMA 26'."
-                value={refIndicator ? formatIndicator(refIndicator, null) : ""}
-                onChange={(v) => {
-                  const match = indicatorOptions.find(
-                    (o) => o.label.toLowerCase() === v.toLowerCase() || o.value === v,
-                  );
-                  setRefIndicator(match ? match.value : v);
-                }}
-                options={indicatorOptions}
-                mono
-                placeholder="Pick an indicator…"
-                emptyHint="No matching indicator"
-              />
-            </div>
-          )}
+              onParse={(result) => setExpressionOk(result.ok)}
+              indicators={expressionIndicators}
+              formatIndicatorLabel={(wire) => formatIndicator(wire, null)}
+              ariaLabel="Condition value expression"
+              forceInvalid={forceInvalid}
+            />
+          </div>
         </div>
       </div>
 
@@ -3691,7 +3562,12 @@ function ConditionDrawer({
             Duplicate
           </Btn>
         )}
-        <Btn variant="primary" size="sm" onClick={handleSave}>
+        <Btn
+          variant="primary"
+          size="sm"
+          onClick={handleSave}
+          disabled={!expressionOk || !expressionText.trim()}
+        >
           Apply
         </Btn>
       </div>

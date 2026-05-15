@@ -38,17 +38,59 @@ export type Timeframe = "5m" | "15m" | "30m" | "1h" | "4h" | "1D" | "1W" | "1M";
 
 // ============ Condition shapes ============
 
-export interface ConstantValue {
+// SB1 — discriminated union mirroring `backend/app/schemas/strategy.py:343-399`.
+// The leaf cases (`ConstantNode` / `IndicatorRefNode`) have the same wire
+// shape as the pre-SB1 two-variant union, so older strategies still hydrate
+// without a transitional read pass. Migration 058 backfilled `value_source`
+// on existing leaves.
+export type ArithOp = "+" | "-" | "*" | "/" | "%";
+export type CmpOp = "<" | ">" | "<=" | ">=" | "==" | "!=";
+
+export interface ConstantNode {
   type: "constant";
   value: number;
 }
 
-export interface IndicatorValue {
+export interface IndicatorRefNode {
   type: "indicator";
   indicator: Indicator;
+  params?: Record<string, number> | null;
 }
 
-export type ConditionValue = ConstantValue | IndicatorValue;
+export interface BinaryOpNode {
+  type: "binary_op";
+  op: ArithOp | CmpOp;
+  left: ExprNode;
+  right: ExprNode;
+}
+
+export interface UnaryOpNode {
+  type: "unary_op";
+  op: "-";
+  operand: ExprNode;
+}
+
+export interface ParenNode {
+  type: "paren";
+  operand: ExprNode;
+}
+
+export type ExprNode =
+  | ConstantNode
+  | IndicatorRefNode
+  | BinaryOpNode
+  | UnaryOpNode
+  | ParenNode;
+
+// Public alias — kept so existing callers can keep importing `ConditionValue`
+// (the editor uses it widely). The backend exports the same alias for the
+// same reason.
+export type ConditionValue = ExprNode;
+
+// Back-compat type aliases for any external importer that grabbed the old
+// class names. Pure typing-level rename.
+export type ConstantValue = ConstantNode;
+export type IndicatorValue = IndicatorRefNode;
 
 // Wire shape for the recursive condition tree (STRATEGY_TREE_PLAN.md). After
 // Phase A the backend stores every node with its `kind` discriminator and
@@ -61,6 +103,11 @@ export interface SingleCondition {
   indicator: Indicator;
   operator: Operator;
   value: ConditionValue;
+  // SB1 — user-authored source text for the RHS expression. Persisted so the
+  // editor re-opens with exactly what the user typed (parens, whitespace).
+  // Optional on the wire; backend backfills via `expression_to_source` when
+  // absent. Migration 058 already populated this on existing rows.
+  value_source?: string | null;
   // Bar resolution this condition evaluates on. Optional on the wire —
   // backend defaults to "1D" when absent so existing strategies stay valid.
   // Only "1D" is accepted today; other values fail backend validation until
