@@ -67,6 +67,7 @@ export const KNOWN_INDICATORS: ReadonlySet<string> = new Set([
   "high_price",
   "low_price",
   "volume",
+  "volume_sma_20",
   "sma_20",
   "sma_50",
   "sma_200",

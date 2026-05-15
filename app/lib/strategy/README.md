@@ -45,6 +45,47 @@ edit are simpler and fast enough.
 `MAX_CONDITION_DEPTH = 32` — mirrors the backend constant in
 `backend/app/schemas/strategy.py`. Update both together if it ever moves.
 
+## Preset chips (SB10 + SB3)
+
+The strategy editor surfaces a row of preset chips above the expression input
+that one-tap-insert pre-validated compositions over the indicator vocabulary.
+The catalog lives at `app/components/strategy-editor/expression/expression-input.tsx`
+as the module-scope `PRESET_CHIPS: readonly PresetChip[]`. Each entry carries
+a stable `id` (used as React key and reserved for future analytics), a short
+chip-friendly `label`, a single-line tooltip `description`, the `expression`
+text the chip inserts at the caret, and `matchKeys` — lowercased prefix-match
+keys the autocomplete dropdown uses to surface the preset alongside indicator
+suggestions.
+
+| Preset id | Source | Inserted expression | Industry parity |
+|---|---|---|---|
+| `atr-percent` | SB10 | `atr_percent` | TradingView `ta.atr / close * 100` |
+| `distance-atr` | SB10 | `(close_price - sma_50) / atr` | Distance in ATR units (TrendSpider, Composer) |
+| `bb-percent-b` | SB10 | `bb_percent_b` | TradingView `ta.bbpercent` |
+| `bb-bandwidth` | SB10 | `(bb_upper - bb_lower) / bb_middle` | Bollinger Bandwidth (Bollinger Bands official) |
+| `relative-volume` | SB3 | `volume / volume_sma_20` | Trade Ideas RelVol; Finviz "Volume / Avg Volume"; TradingView `volume / ta.sma(volume, 20)` |
+| `dollar-volume` | SB3 | `close_price * volume` | TradingView `close * volume`; Bloomberg `PX_VOLUME_TRADED` |
+
+SB3 also extends the indicator vocabulary itself — `KNOWN_INDICATORS` in
+`expression.ts` adds `"volume_sma_20"` so the bare ref typechecks against the
+parser's whitelist. The matching backend column is persisted (NUMERIC(20, 2),
+20-bar rolling mean of daily volume — see `backend/BACKEND.md`'s
+`TechnicalIndicator` row and ADR-009's SB3 extension note); the parser is
+unchanged because `volume_sma_20` matches the existing `IDENT` regex and
+routes through `Indicator(name)` enum lookup.
+
+Threshold guidance (e.g. relvol > 1.5 = unusual interest, > 3 = stalking-horse;
+dollar volume > 10M PKR = liquid name) is **tooltip-only** — the outer
+`SingleCondition.value` stays user-supplied. The chip only inserts the LHS
+expression; the user fills in the operator + threshold via the existing
+condition-drawer surface. Same convention as SB10.
+
+The `matchKeys: [..., "volume"]` on the SB3 `relative-volume` preset shares
+its string with the bare-indicator wire name, so typing `volume` surfaces
+both the raw series and the ratio preset. This is intentional for v1; drop
+the entry from `matchKeys` if field-testing reveals confusion (SB3.b
+candidate).
+
 ## `./layout.ts` — layered (logic-graph) auto-layout
 
 Every node gets a `level` = depth from root (root=0, root.children=1, …) and

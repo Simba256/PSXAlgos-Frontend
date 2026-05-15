@@ -70,7 +70,13 @@ const OPERATOR_CHIPS: ReadonlyArray<{ display: string; insert: string; aria: str
 // arithmetic compositions with no equivalent indicator.
 export interface PresetChip {
   /** Stable id, used as React key and for analytics if added later. */
-  id: "atr-percent" | "distance-atr" | "bb-percent-b" | "bb-bandwidth";
+  id:
+    | "atr-percent"
+    | "distance-atr"
+    | "bb-percent-b"
+    | "bb-bandwidth"
+    | "relative-volume"
+    | "dollar-volume";
   /** Chip + autocomplete label. Keep short — fits a 44 px chip. */
   label: string;
   /** Single-line tooltip and autocomplete `hint` text. */
@@ -114,6 +120,25 @@ export const PRESET_CHIPS: readonly PresetChip[] = [
     description: "Bollinger bandwidth as a fraction of the midline: (bb_upper − bb_lower) ÷ bb_middle. Volatility regime.",
     expression: "(bb_upper - bb_lower) / bb_middle",
     matchKeys: ["bandwidth", "bbw", "bb_width", "vol_regime"],
+  },
+  {
+    id: "relative-volume",
+    label: "Relative Volume",
+    description:
+      "Current bar volume vs 20-day average: volume ÷ volume_sma_20. > 1.5 = unusual interest; > 3 = stalking-horse.",
+    expression: "volume / volume_sma_20",
+    // `volume` is also the bare indicator's wire name — autocomplete intentionally
+    // surfaces both when the user types `volume` so they can pick the ratio or the
+    // raw series. Drop `"volume"` here in SB3.b if field-testing shows confusion.
+    matchKeys: ["relvol", "relative_volume", "rvol", "unusual_volume", "volume"],
+  },
+  {
+    id: "dollar-volume",
+    label: "Dollar Volume",
+    description:
+      "Dollar turnover for the bar: close_price × volume. Large = liquid name; small = thin-liquidity warning.",
+    expression: "close_price * volume",
+    matchKeys: ["dollar_volume", "dvol", "turnover", "liquidity", "notional"],
   },
 ] as const;
 
