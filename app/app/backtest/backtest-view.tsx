@@ -48,6 +48,22 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function fmtPctSigned(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  return `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+}
+
+function fmtPctAbs(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  return `${v.toFixed(1)}%`;
+}
+
+function fmtPkr(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  const sign = v >= 0 ? "+" : "−";
+  return `${sign}PKR ${Math.round(Math.abs(v)).toLocaleString()}`;
+}
+
 function formatDateLabel(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
@@ -125,6 +141,103 @@ function computeMonthlyReturns(
     out.push({ label, pct });
   }
   return out.slice(-12);
+}
+
+interface PnlBin {
+  lower: number;
+  upper: number;
+  count: number;
+}
+
+function computePnlHistogram(
+  trades: BacktestResultResponse["trades"],
+  binCount = 20,
+): { bins: PnlBin[]; maxCount: number; min: number; max: number } | null {
+  if (!trades || trades.length < 4) return null;
+  const values = trades.map((t) => num(t.pnl));
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+  if (min === max) {
+    min -= 1;
+    max += 1;
+  }
+  const step = (max - min) / binCount;
+  const bins: PnlBin[] = Array.from({ length: binCount }, (_, i) => ({
+    lower: min + i * step,
+    upper: i === binCount - 1 ? max : min + (i + 1) * step,
+    count: 0,
+  }));
+  for (const v of values) {
+    let idx = Math.floor((v - min) / step);
+    if (idx >= binCount) idx = binCount - 1;
+    if (idx < 0) idx = 0;
+    bins[idx].count += 1;
+  }
+  const maxCount = bins.reduce((m, b) => (b.count > m ? b.count : m), 0);
+  return { bins, maxCount, min, max };
+}
+
+interface HoldBucket {
+  label: string;
+  color: string;
+  count: number;
+}
+
+function computeHoldBuckets(
+  trades: BacktestResultResponse["trades"],
+  T: ReturnType<typeof useT>,
+): { buckets: HoldBucket[]; maxCount: number } {
+  const defs: Array<{ label: string; match: (h: number) => boolean; color: string }> = [
+    { label: "<1d", match: (h) => h < 1, color: T.gain },
+    { label: "1–5d", match: (h) => h >= 1 && h < 6, color: T.primaryLight },
+    { label: "5–20d", match: (h) => h >= 6 && h < 21, color: T.primary },
+    { label: "20d+", match: (h) => h >= 21, color: T.text3 },
+  ];
+  const buckets: HoldBucket[] = defs.map((d) => ({ label: d.label, color: d.color, count: 0 }));
+  if (trades) {
+    for (const t of trades) {
+      const h = num(t.holding_days);
+      const idx = defs.findIndex((d) => d.match(h));
+      if (idx >= 0) buckets[idx].count += 1;
+    }
+  }
+  const maxCount = buckets.reduce((m, b) => (b.count > m ? b.count : m), 0);
+  return { buckets, maxCount };
+}
+
+interface ExitSegment {
+  reason: string;
+  label: string;
+  color: string;
+  count: number;
+}
+
+function computeExitReasonBreakdown(
+  trades: BacktestResultResponse["trades"],
+  T: ReturnType<typeof useT>,
+): { segments: ExitSegment[]; total: number } {
+  const meta: Record<string, { label: string; color: string }> = {
+    take_profit: { label: "Take profit", color: T.gain },
+    stop_loss: { label: "Stop loss", color: T.loss },
+    trailing_stop: { label: "Trailing stop", color: T.primaryLight },
+    max_holding: { label: "Time stop", color: T.text3 },
+    signal: { label: "Signal exit", color: T.primaryContainer },
+    end_of_backtest: { label: "Forced close", color: T.outline },
+  };
+  const counts = new Map<string, number>();
+  if (trades) {
+    for (const t of trades) {
+      counts.set(t.exit_reason, (counts.get(t.exit_reason) ?? 0) + 1);
+    }
+  }
+  const segments: ExitSegment[] = Array.from(counts.entries()).map(([reason, count]) => {
+    const m = meta[reason] ?? { label: reason, color: T.outline };
+    return { reason, label: m.label, color: m.color, count };
+  });
+  segments.sort((a, b) => b.count - a.count);
+  const total = segments.reduce((s, x) => s + x.count, 0);
+  return { segments, total };
 }
 
 function resultToTrades(result: BacktestResultResponse | null): Trade[] {
@@ -270,6 +383,32 @@ export function BacktestView({
     () => computeMonthlyReturns(result?.equity_curve ?? null),
     [result?.equity_curve],
   );
+
+  // Drawdown points are non-positive on the backend (0 at peaks, negative at
+  // troughs). If a future run ships them positive, the sign-flip below keeps
+  // the chart's "lower = worse" reading intact.
+  const drawdownValues = useMemo(() => {
+    const pts = result?.equity_curve?.map((p) => num(p.drawdown)) ?? [];
+    if (pts.length === 0) return pts;
+    const maxAbs = Math.max(...pts.map(Math.abs));
+    const flip = pts.every((v) => v >= 0) && maxAbs > 0;
+    return flip ? pts.map((v) => -v) : pts;
+  }, [result?.equity_curve]);
+  const drawdownHasMovement = drawdownValues.length > 1 && drawdownValues.some((v) => v !== 0);
+
+  const pnlHistogram = useMemo(
+    () => computePnlHistogram(result?.trades ?? null),
+    [result?.trades],
+  );
+  const holdBuckets = useMemo(
+    () => computeHoldBuckets(result?.trades ?? null, T),
+    [result?.trades, T],
+  );
+  const exitBreakdown = useMemo(
+    () => computeExitReasonBreakdown(result?.trades ?? null, T),
+    [result?.trades, T],
+  );
+  const hasTrades = (result?.trades?.length ?? 0) > 0;
   const slug = strategyId != null ? String(strategyId) : "—";
   const dateRange = result
     ? formatRangeHeader(result.start_date, result.end_date)
@@ -357,6 +496,9 @@ export function BacktestView({
             }),
           }}
         >
+          {result && result.warnings && result.warnings.length > 0 && (
+            <WarningsBanner warnings={result.warnings} />
+          )}
           <div
             style={{
               display: "grid",
@@ -411,6 +553,74 @@ export function BacktestView({
               sub="trading days"
             />
           </div>
+
+          {result && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: pick(bp, {
+                  mobile: "1fr 1fr",
+                  tablet: "repeat(4, 1fr)",
+                  desktop: "repeat(6, 1fr)",
+                }),
+                gap: pick(bp, { mobile: 22, desktop: 40 }),
+                paddingTop: 28,
+                paddingBottom: 28,
+                borderBottom: `1px solid ${T.outlineFaint}`,
+              }}
+            >
+              <Lede
+                label="Sortino"
+                value={result.sortino_ratio == null ? "—" : num(result.sortino_ratio).toFixed(2)}
+                sub="downside-risk-adjusted"
+              />
+              <Lede
+                label="CAGR"
+                value={result.cagr == null ? "—" : fmtPctSigned(num(result.cagr))}
+                color={result.cagr == null ? undefined : num(result.cagr) >= 0 ? T.gain : T.loss}
+                sub="annualized return"
+              />
+              <Lede
+                label="Volatility"
+                value={result.volatility == null ? "—" : fmtPctAbs(num(result.volatility))}
+                sub="annualized stdev"
+              />
+              <Lede
+                label="DD duration"
+                value={
+                  result.max_drawdown_duration == null
+                    ? "—"
+                    : `${Math.round(num(result.max_drawdown_duration)).toLocaleString()}d`
+                }
+                color={T.loss}
+                sub="longest underwater run"
+              />
+              <Lede
+                label="Avg win"
+                value={result.avg_win == null ? "—" : fmtPkr(num(result.avg_win))}
+                color={T.gain}
+                sub="mean PKR per win"
+              />
+              <Lede
+                label="Avg loss"
+                value={result.avg_loss == null ? "—" : fmtPkr(num(result.avg_loss))}
+                color={T.loss}
+                sub="mean PKR per loss"
+              />
+              <Lede
+                label="Largest win"
+                value={result.largest_win == null ? "—" : fmtPkr(num(result.largest_win))}
+                color={T.gain}
+                sub="best single trade"
+              />
+              <Lede
+                label="Largest loss"
+                value={result.largest_loss == null ? "—" : fmtPkr(num(result.largest_loss))}
+                color={T.loss}
+                sub="worst single trade"
+              />
+            </div>
+          )}
 
           <div
             style={{
@@ -481,6 +691,27 @@ export function BacktestView({
                       return <span key={i}>{fmt(c[idx].date)}</span>;
                     });
                   })()}
+                </div>
+              )}
+
+              {drawdownHasMovement && (
+                <div style={{ marginTop: 4 }}>
+                  <Ribbon
+                    kicker="drawdown"
+                    color={T.loss}
+                    right={
+                      <span style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3 }}>
+                        <span style={{ color: T.loss }}>━</span> underwater %
+                      </span>
+                    }
+                  />
+                  <EquityCurve
+                    width={760}
+                    height={74}
+                    data={drawdownValues}
+                    color={T.loss}
+                    grid={false}
+                  />
                 </div>
               )}
 
@@ -650,6 +881,35 @@ export function BacktestView({
               showing {visibleTrades.length} of {filterCounts[filter]} trade
               {filterCounts[filter] === 1 ? "" : "s"}
             </div>
+
+            {result && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: pick(bp, {
+                    mobile: "1fr",
+                    tablet: "1fr 1fr",
+                    desktop: "1fr 1fr 1fr",
+                  }),
+                  gap: pick(bp, { mobile: 28, tablet: 28, desktop: 32 }),
+                  marginTop: 36,
+                  paddingTop: 28,
+                  borderTop: `1px solid ${T.outlineFaint}`,
+                }}
+              >
+                <PnLHistogram histogram={pnlHistogram} hasTrades={hasTrades} />
+                <HoldTimeHistogram
+                  buckets={holdBuckets.buckets}
+                  maxCount={holdBuckets.maxCount}
+                  hasTrades={hasTrades}
+                />
+                <ExitReasonDonut
+                  segments={exitBreakdown.segments}
+                  total={exitBreakdown.total}
+                  hasTrades={hasTrades}
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -809,6 +1069,376 @@ function EffectiveRiskPanel({
           risk snapshot not recorded for this run
         </div>
       )}
+    </div>
+  );
+}
+
+function WarningsBanner({
+  warnings,
+}: {
+  warnings: NonNullable<BacktestResultResponse["warnings"]>;
+}) {
+  const T = useT();
+  return (
+    <div
+      style={{
+        marginBottom: 24,
+        padding: "12px 16px",
+        borderRadius: 4,
+        border: `1px solid ${T.warning}33`,
+        background: `${T.warning}14`,
+        borderLeft: `3px solid ${T.warning}`,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontFamily: T.fontMono,
+          fontSize: 11,
+          color: T.warning,
+          letterSpacing: 0.8,
+          textTransform: "uppercase",
+        }}
+      >
+        <span style={{ color: T.warning, display: "inline-flex" }}>{Icon.warn}</span>
+        Methodology notes
+      </div>
+      <ul
+        style={{
+          listStyle: "none",
+          padding: 0,
+          margin: "10px 0 0",
+          display: "grid",
+          gap: 8,
+        }}
+      >
+        {warnings.map((w, i) => {
+          const bullet = w.severity === "warning" ? T.warning : T.text3;
+          return (
+            <li
+              key={`${w.code}-${i}`}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 8,
+                fontFamily: T.fontSans,
+                fontSize: 13,
+                lineHeight: 1.55,
+                color: T.text2,
+              }}
+            >
+              <span style={{ color: bullet, lineHeight: 1.55 }}>•</span>
+              <span>{w.message || w.code}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function PnLHistogram({
+  histogram,
+  hasTrades,
+}: {
+  histogram: ReturnType<typeof computePnlHistogram>;
+  hasTrades: boolean;
+}) {
+  const T = useT();
+  const summary =
+    histogram == null
+      ? null
+      : { min: histogram.min, max: histogram.max };
+  return (
+    <div>
+      <Ribbon kicker="pnl distribution" />
+      {!hasTrades ? (
+        <EmptyAnalyticsBody label="no trades yet" />
+      ) : histogram == null ? (
+        <EmptyAnalyticsBody label="needs ≥4 trades for a distribution" />
+      ) : (
+        <>
+          <svg
+            viewBox="0 0 200 90"
+            preserveAspectRatio="none"
+            width="100%"
+            height={90}
+            style={{ display: "block", marginTop: 12 }}
+          >
+            {(() => {
+              const { bins, maxCount, min, max } = histogram;
+              const binWidth = 200 / bins.length;
+              const zeroIn = min <= 0 && max >= 0;
+              const zeroX = zeroIn ? ((0 - min) / (max - min)) * 200 : null;
+              return (
+                <>
+                  {bins.map((b, i) => {
+                    const h = maxCount > 0 ? (b.count / maxCount) * 90 : 0;
+                    const mid = (b.lower + b.upper) / 2;
+                    const fill = mid >= 0 ? T.gain : T.loss;
+                    return (
+                      <rect
+                        key={i}
+                        x={i * binWidth + 0.5}
+                        y={90 - h}
+                        width={Math.max(0, binWidth - 1)}
+                        height={h}
+                        fill={fill}
+                        opacity={b.count === 0 ? 0.2 : 0.85}
+                      />
+                    );
+                  })}
+                  {zeroX != null && (
+                    <line
+                      x1={zeroX}
+                      x2={zeroX}
+                      y1={0}
+                      y2={90}
+                      stroke={T.outlineVariant}
+                      strokeDasharray="2 2"
+                    />
+                  )}
+                </>
+              );
+            })()}
+          </svg>
+          {summary && (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontFamily: T.fontMono,
+                fontSize: 10,
+                color: T.text3,
+                marginTop: 8,
+              }}
+            >
+              <span>{fmtPkr(summary.min)}</span>
+              <span>{fmtPkr(summary.max)}</span>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function HoldTimeHistogram({
+  buckets,
+  maxCount,
+  hasTrades,
+}: {
+  buckets: HoldBucket[];
+  maxCount: number;
+  hasTrades: boolean;
+}) {
+  const T = useT();
+  return (
+    <div>
+      <Ribbon kicker="hold time" />
+      {!hasTrades || maxCount === 0 ? (
+        <EmptyAnalyticsBody label="no trades yet" />
+      ) : (
+        <>
+          <svg
+            viewBox="0 0 200 90"
+            preserveAspectRatio="none"
+            width="100%"
+            height={90}
+            style={{ display: "block", marginTop: 12 }}
+          >
+            {buckets.map((b, i) => {
+              const barWidth = 40;
+              const gap = 10;
+              const total = buckets.length * barWidth + (buckets.length - 1) * gap;
+              const startX = (200 - total) / 2;
+              const x = startX + i * (barWidth + gap);
+              const h = (b.count / maxCount) * 90;
+              return (
+                <rect
+                  key={b.label}
+                  x={x}
+                  y={90 - h}
+                  width={barWidth}
+                  height={h}
+                  fill={b.color}
+                  opacity={b.count === 0 ? 0.2 : 0.85}
+                />
+              );
+            })}
+          </svg>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: `repeat(${buckets.length}, 1fr)`,
+              gap: 4,
+              marginTop: 8,
+              fontFamily: T.fontMono,
+              fontSize: 10,
+              color: T.text3,
+              textAlign: "center",
+            }}
+          >
+            {buckets.map((b) => (
+              <div key={b.label}>
+                <div>{b.label}</div>
+                <div style={{ color: T.text2, marginTop: 2 }}>{b.count}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ExitReasonDonut({
+  segments,
+  total,
+  hasTrades,
+}: {
+  segments: ExitSegment[];
+  total: number;
+  hasTrades: boolean;
+}) {
+  const T = useT();
+  return (
+    <div>
+      <Ribbon kicker="exit breakdown" />
+      {!hasTrades || total === 0 ? (
+        <EmptyAnalyticsBody label="no trades yet" />
+      ) : (
+        <>
+          <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }}>
+            <svg
+              viewBox="0 0 120 120"
+              width="100%"
+              height={160}
+              style={{ display: "block", maxHeight: 160 }}
+              preserveAspectRatio="xMidYMid meet"
+            >
+              {(() => {
+                const r = 48;
+                const cx = 60;
+                const cy = 60;
+                const circ = 2 * Math.PI * r;
+                let offset = 0;
+                const arcs = segments.map((s) => {
+                  const len = (s.count / total) * circ;
+                  const node = (
+                    <circle
+                      key={s.reason}
+                      cx={cx}
+                      cy={cy}
+                      r={r}
+                      fill="none"
+                      stroke={s.color}
+                      strokeWidth={18}
+                      strokeDasharray={`${len} ${circ - len}`}
+                      strokeDashoffset={-offset}
+                      transform={`rotate(-90 ${cx} ${cy})`}
+                    />
+                  );
+                  offset += len;
+                  return node;
+                });
+                return (
+                  <>
+                    {arcs}
+                    <text
+                      x={cx}
+                      y={cy + 2}
+                      textAnchor="middle"
+                      style={{
+                        fontFamily: T.fontHead,
+                        fontSize: 24,
+                        fill: T.text,
+                        fontWeight: 500,
+                      }}
+                    >
+                      {total}
+                    </text>
+                    <text
+                      x={cx}
+                      y={cy + 18}
+                      textAnchor="middle"
+                      style={{
+                        fontFamily: T.fontMono,
+                        fontSize: 10,
+                        fill: T.text3,
+                        letterSpacing: 0.6,
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      trades
+                    </text>
+                  </>
+                );
+              })()}
+            </svg>
+          </div>
+          <div
+            style={{
+              marginTop: 12,
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "6px 12px",
+              fontFamily: T.fontMono,
+              fontSize: 10.5,
+              color: T.text2,
+            }}
+          >
+            {segments.map((s) => {
+              const pct = total > 0 ? (s.count / total) * 100 : 0;
+              return (
+                <div
+                  key={s.reason}
+                  style={{ display: "flex", alignItems: "center", gap: 6 }}
+                >
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: 8,
+                      height: 8,
+                      borderRadius: 2,
+                      background: s.color,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ flex: 1, color: T.text2 }}>{s.label}</span>
+                  <span style={{ color: T.text3 }}>
+                    {s.count} · {pct.toFixed(0)}%
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function EmptyAnalyticsBody({ label }: { label: string }) {
+  const T = useT();
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        height: 90,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: T.fontMono,
+        fontSize: 11,
+        color: T.text3,
+        border: `1px dashed ${T.outlineFaint}`,
+        borderRadius: 4,
+      }}
+    >
+      {label}
     </div>
   );
 }

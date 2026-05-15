@@ -474,6 +474,12 @@ export interface BacktestResultResponse {
   // `effective_risk` block (or no `run_config` at all); the panel falls
   // back to a neutral "not recorded" state in that case.
   run_config?: BacktestRunConfig | null;
+  warnings?: Array<{
+    code: string;
+    severity: "info" | "warning";
+    message: string;
+    details?: Record<string, unknown> | null;
+  }> | null;
   created_at?: string | null;
 }
 
