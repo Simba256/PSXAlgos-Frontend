@@ -130,6 +130,13 @@ export const KNOWN_INDICATORS: ReadonlySet<string> = new Set([
   "support_2",
   "resistance_1",
   "resistance_2",
+  // SB7 — calendar & cooldown tokens. Resolved at evaluator time against
+  // the current bar's date / per-strategy entry ledger. Bare-identifier
+  // shape; users compose against the existing SingleCondition.operator
+  // (e.g. `dayofweek == 1`, `entries_today < 2`, `bars_since_entry > 5`).
+  "dayofweek",
+  "entries_today",
+  "bars_since_entry",
 ]);
 
 // ── Errors ──────────────────────────────────────────────────────────────

@@ -158,6 +158,9 @@ function formatIndicator(ind: string, params: Record<string, number> | null): st
   if (lower === "stochastic_k") return "Stoch %K";
   if (lower === "stochastic_d") return "Stoch %D";
   if (lower === "parabolic_sar") return "Parabolic SAR";
+  if (lower === "dayofweek") return "Day of week";
+  if (lower === "entries_today") return "Entries today";
+  if (lower === "bars_since_entry") return "Bars since last entry";
   return ind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 

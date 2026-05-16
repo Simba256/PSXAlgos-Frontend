@@ -45,7 +45,7 @@ edit are simpler and fast enough.
 `MAX_CONDITION_DEPTH = 32` — mirrors the backend constant in
 `backend/app/schemas/strategy.py`. Update both together if it ever moves.
 
-## Preset chips (SB10 + SB3 + SB2)
+## Preset chips (SB10 + SB3 + SB2 + SB7)
 
 The strategy editor surfaces a row of preset chips above the expression input
 that one-tap-insert pre-validated compositions over the indicator vocabulary.
@@ -68,6 +68,9 @@ suggestions.
 | `donchian-breakout` | SB2 | `close > highest(high, 20)[1]` | Pine `close > ta.highest(high, 20)[1]`; canonical Donchian-channel breakout |
 | `donchian-breakdown` | SB2 | `close < lowest(low, 20)[1]` | Pine `close < ta.lowest(low, 20)[1]`; canonical Donchian breakdown |
 | `previous-close` | SB2 | `close[1]` | Pine `close[1]`; single-bar lookback (yesterday's close) |
+| `monday-only` | SB7 | `dayofweek` | Pine `dayofweek == 1` (ISO Monday=1); TradingView screener "Day of week" filter |
+| `max-entries-per-day` | SB7 | `entries_today` | Streak / Tradetron `entry_count_today`; TrendSpider "Max N signals per day"; Pine analogue `strategy.opentrades` |
+| `cooldown-5-bars` | SB7 | `bars_since_entry` | Pine `ta.barssince(strategy.position_size != 0)`; per-symbol cooldown — most common quality filter in retail backtests |
 
 SB3 also extends the indicator vocabulary itself — `KNOWN_INDICATORS` in
 `expression.ts` adds `"volume_sma_20"` so the bare ref typechecks against the
@@ -131,10 +134,50 @@ a real `pd.DataFrame` OHLC fixture matches `df.high.rolling(20).max()` for
 every bar in a 50-bar window (under-warm bars return None on both sides).
 
 SB2 reason codes (mirrored from backend, surfaced by the editor's inline
-diagnostics): `subscript_offset_not_static` (FE / dossier), `highest_lowest_length_invalid`,
-`math_fn_arity`. Backend uses `subscript_index_dynamic_deferred` for the same
-case — string asymmetry only; tests on each side are self-consistent. Dossier:
+diagnostics): `subscript_offset_not_static`, `highest_lowest_length_invalid`,
+`math_fn_arity`. Dossier:
 `docs/design_call_dossiers/SB2_indexed_history_2026-05-16.md` (psxDataPortal).
+
+### SB7 — calendar & cooldown filters (`dayofweek`, `entries_today`, `bars_since_entry`)
+
+SB7 (2026-05-16) extends the indicator vocabulary with three **bare-identifier
+tokens** that resolve at evaluator time against the current bar's date and the
+per-strategy entry-signal ledger. No grammar change — the tokens slot into the
+existing `IndicatorRefNode` path and compose with the standard comparison
+operators on `SingleCondition.operator` (e.g. `dayofweek == 1`,
+`entries_today < 2`, `bars_since_entry > 5`).
+
+| Token | Range | Semantics | Pine analogue |
+|---|---|---|---|
+| `dayofweek` | 1–7 (Mon=1, Sun=7) | ISO weekday of the current bar's `trade_date` (matches Python `datetime.isoweekday()` and Pine v5 `dayofweek.monday=1` constants). PSX trades Mon–Fri so values 1–5 are the meaningful entries. | `dayofweek` (Pine v5 ISO alignment) |
+| `entries_today` | 0…N | Count of entry signals fired *today, this strategy, this symbol*. Excludes the current bar's own pending signal (the ledger records AFTER evaluation, so a "max 2 per day" rule can't paradoxically block itself). | `strategy.opentrades` (closest analogue) |
+| `bars_since_entry` | 0…N or `None` | Bars between the current bar and the most-recent entry on *this symbol*. `None` (≡ "never fired in the loaded window") propagates as a missing leaf — the outer condition short-circuits to `False`. | `ta.barssince(strategy.position_size != 0)` |
+
+Three new preset chips ride alongside (table above): `monday-only` inserts
+`dayofweek`, `max-entries-per-day` inserts `entries_today`,
+`cooldown-5-bars` inserts `bars_since_entry`. Per the SB10/SB3/SB2
+convention each chip inserts the LHS expression only — the user wires the
+outer indicator + operator + threshold via the existing condition-drawer
+surface. The chip `description` tooltips spell out the full canonical
+pair (`dayofweek == 1`, `entries_today < 2`, `bars_since_entry > 5`).
+
+Autocomplete: the three tokens are added to `KNOWN_INDICATORS` in
+`expression.ts`, so the existing suggestion loop in `expression-input.tsx`
+surfaces them automatically — typing `day` → `dayofweek`, `entries` →
+`entries_today`, `bars` → both `barssince` (SB2 math fn) and
+`bars_since_entry` (SB7 indicator), function-call hints first then
+indicators.
+
+Display labels (in `editor-view.tsx::formatIndicator`): `dayofweek` →
+"Day of week", `entries_today` → "Entries today", `bars_since_entry` →
+"Bars since last entry". The canvas-leaf chips show the friendly label
+while the expression input + canonical serialization keep the wire name.
+
+Calendar tokens that *defer* (no SB7.0 wire entries — would always read 0
+on a daily bar): `hour`, `minute`, `is_first_session_bar`,
+`is_last_session_bar`, `bar_of_day`. These ship in SB7.b alongside the
+intraday data layer. Dossier:
+`docs/design_call_dossiers/SB7_calendar_cooldown_2026-05-16.md` (psxDataPortal).
 
 ## `./layout.ts` — layered (logic-graph) auto-layout
 

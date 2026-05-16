@@ -80,7 +80,10 @@ export interface PresetChip {
     | "dollar-volume"
     | "donchian-breakout"
     | "donchian-breakdown"
-    | "previous-close";
+    | "previous-close"
+    | "monday-only"
+    | "max-entries-per-day"
+    | "cooldown-5-bars";
   /** Chip + autocomplete label. Keep short — fits a 44 px chip. */
   label: string;
   /** Single-line tooltip and autocomplete `hint` text. */
@@ -171,6 +174,33 @@ export const PRESET_CHIPS: readonly PresetChip[] = [
       "Yesterday's close: close_price[1]. Use [N] to reach any prior bar — close_price[5] is 5 bars ago.",
     expression: "close_price[1]",
     matchKeys: ["previous", "yesterday", "lag", "prior", "before"],
+  },
+  // SB7 — calendar & cooldown presets. Each inserts the RHS of a Single-
+  // Condition; the user wires the outer indicator + operator. Composes
+  // with the existing operator menu (`<`, `>`, `==`, etc.).
+  {
+    id: "monday-only",
+    label: "Monday only",
+    description:
+      "Day-of-week filter: dayofweek == 1 (ISO Monday=1, Sunday=7). Pair with LHS dayofweek and operator '==' so the strategy only fires on Mondays. Other useful values: 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri.",
+    expression: "dayofweek",
+    matchKeys: ["dayofweek", "monday", "weekday", "calendar", "day"],
+  },
+  {
+    id: "max-entries-per-day",
+    label: "Max 2 entries/day",
+    description:
+      "Daily entry cap: entries_today < 2. Pair with LHS entries_today and operator '<' so the strategy stops firing after 2 signals on the same symbol same day. Counts ENTRY signals (not fills); excludes the bar's own pending signal.",
+    expression: "entries_today",
+    matchKeys: ["entries_today", "max_entries", "cap", "daily", "throttle"],
+  },
+  {
+    id: "cooldown-5-bars",
+    label: "5-bar cooldown",
+    description:
+      "Per-symbol cooldown: bars_since_entry > 5. Pair with LHS bars_since_entry and operator '>'. The bar count walks back to the most recent entry on this symbol; the strategy waits at least 5 bars after a fill before firing again. None (≡ never fired) reads as 0 < 5 — first entry is unblocked.",
+    expression: "bars_since_entry",
+    matchKeys: ["cooldown", "bars_since_entry", "wait", "lockout", "between_entries"],
   },
 ] as const;
 
