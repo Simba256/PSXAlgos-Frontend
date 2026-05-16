@@ -60,6 +60,14 @@ export const MATH_FN_NAMES: ReadonlySet<MathFnName> = new Set([
   "lowest",
   "barssince",
   "valuewhen",
+  // SB11 — statistical primitives. Same parse path (function call); backed
+  // by per-symbol rolling window in evaluator. See
+  // `docs/design_call_dossiers/SB11_statistical_fns_2026-05-16.md`.
+  "percentrank",
+  "stdev",
+  "zscore",
+  "correlation",
+  "linreg_slope",
 ]);
 
 // Arity bounds keyed by math-fn name. `maxArgs: null` means variadic
@@ -76,6 +84,12 @@ export const MATH_FN_ARITY: Readonly<Record<MathFnName, { minArgs: number; maxAr
   lowest: { minArgs: 2, maxArgs: 2 },
   barssince: { minArgs: 1, maxArgs: 1 },
   valuewhen: { minArgs: 2, maxArgs: 2 },
+  // SB11 — all fixed arity. correlation is the only ternary.
+  percentrank: { minArgs: 2, maxArgs: 2 },
+  stdev: { minArgs: 2, maxArgs: 2 },
+  zscore: { minArgs: 2, maxArgs: 2 },
+  correlation: { minArgs: 3, maxArgs: 3 },
+  linreg_slope: { minArgs: 2, maxArgs: 2 },
 };
 
 // SB2 — hint copy for the autocomplete dropdown. The five SB8 helpers
@@ -92,6 +106,13 @@ export const MATH_FN_HINTS: Readonly<Record<MathFnName, string>> = {
   lowest: "history",
   barssince: "history",
   valuewhen: "history",
+  // SB11 — read as "statistics" so users can tell them apart from plain
+  // math and history fns at a glance.
+  percentrank: "statistics",
+  stdev: "statistics",
+  zscore: "statistics",
+  correlation: "statistics",
+  linreg_slope: "statistics",
 };
 
 export const KNOWN_INDICATORS: ReadonlySet<string> = new Set([
@@ -689,15 +710,34 @@ function walkAndCheck(
         }
       }
     }
-    // SB2 — highest/lowest length must be a positive integer literal.
-    // Mirrors `rolling_length_not_static` in the backend validator.
-    if (node.name === "highest" || node.name === "lowest") {
+    // SB2 + SB11 — rolling length must be a positive integer literal.
+    // Mirrors `rolling_length_not_static` in the backend validator. The
+    // six 2-arg names below take length as args[1]; `correlation` is
+    // 3-arg and reads length from args[2] (split below).
+    if (
+      node.name === "highest" ||
+      node.name === "lowest" ||
+      node.name === "percentrank" ||
+      node.name === "stdev" ||
+      node.name === "zscore" ||
+      node.name === "linreg_slope"
+    ) {
       const length = resolveStaticIntOffset(node.args[1]);
       if (length === null || length < 1) {
         throw new ValidationError(
-          `${node.name}() length must be a positive integer literal in SB2.0; dynamic length is coming in SB2.b`,
+          `${node.name}() length must be a positive integer literal in SB2.0 / SB11.0; dynamic length is deferred`,
           "rolling_length_not_static",
           path + "/args/1",
+        );
+      }
+    }
+    if (node.name === "correlation") {
+      const length = resolveStaticIntOffset(node.args[2]);
+      if (length === null || length < 1) {
+        throw new ValidationError(
+          "correlation() length must be a positive integer literal in SB11.0; dynamic length is deferred",
+          "rolling_length_not_static",
+          path + "/args/2",
         );
       }
     }

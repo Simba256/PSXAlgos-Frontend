@@ -85,6 +85,10 @@ export interface ParenNode {
 // most-recent True bar. All four return None when under-warm — same Pine
 // semantics as `ta.highest` etc. Length / offset args are static integers
 // in SB2.0; dynamic forms defer to SB2.b.
+// SB11 — five statistical primitives (percentrank/stdev/zscore/correlation/
+// linreg_slope). Same FunctionCallNode wire shape; evaluator dispatches
+// through `_eval_stat_fn` over the SB2 rolling window. Pine-aligned —
+// see `docs/design_call_dossiers/SB11_statistical_fns_2026-05-16.md`.
 export type MathFnName =
   | "abs"
   | "max"
@@ -94,7 +98,13 @@ export type MathFnName =
   | "highest"
   | "lowest"
   | "barssince"
-  | "valuewhen";
+  | "valuewhen"
+  // SB11 — statistical primitives.
+  | "percentrank"
+  | "stdev"
+  | "zscore"
+  | "correlation"
+  | "linreg_slope";
 
 export interface FunctionCallNode {
   type: "function_call";

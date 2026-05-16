@@ -83,7 +83,12 @@ export interface PresetChip {
     | "previous-close"
     | "monday-only"
     | "max-entries-per-day"
-    | "cooldown-5-bars";
+    | "cooldown-5-bars"
+    | "rsi-top-decile"
+    | "zscore-breakout"
+    | "trend-strength-slope"
+    | "high-volatility-regime"
+    | "stat-correlation";
   /** Chip + autocomplete label. Keep short — fits a 44 px chip. */
   label: string;
   /** Single-line tooltip and autocomplete `hint` text. */
@@ -201,6 +206,49 @@ export const PRESET_CHIPS: readonly PresetChip[] = [
       "Per-symbol cooldown: bars_since_entry > 5. Pair with LHS bars_since_entry and operator '>'. The bar count walks back to the most recent entry on this symbol; the strategy waits at least 5 bars after a fill before firing again. None (≡ never fired) reads as 0 < 5 — first entry is unblocked.",
     expression: "bars_since_entry",
     matchKeys: ["cooldown", "bars_since_entry", "wait", "lockout", "between_entries"],
+  },
+  // SB11 — statistical-function presets. Pine-aligned; backed by the SB2
+  // MarketDataWindow rolling walk. Each inserts a ready-to-use expression;
+  // pair with the appropriate outer indicator + operator.
+  {
+    id: "rsi-top-decile",
+    label: "RSI top decile",
+    description:
+      "Current RSI is in the top 10% of its 252-bar (≈1 year) history: percentrank(rsi, 252) > 90. Pair with LHS percentrank(rsi, 252) and operator '>'.",
+    expression: "percentrank(rsi, 252)",
+    matchKeys: ["percentrank", "rank", "decile", "percentile", "top"],
+  },
+  {
+    id: "zscore-breakout",
+    label: "Z-score breakout",
+    description:
+      "Close is more than 2 standard deviations above its 20-bar mean: zscore(close_price, 20) > 2. Mean-reversion signal flipped — fade overextensions. Pair with LHS zscore(close_price, 20) and operator '>'.",
+    expression: "zscore(close_price, 20)",
+    matchKeys: ["zscore", "z_score", "standardize", "breakout", "deviation"],
+  },
+  {
+    id: "trend-strength-slope",
+    label: "Trend strength",
+    description:
+      "OLS regression slope of close over the last 20 bars is positive (uptrend): linreg_slope(close_price, 20) > 0. Negative slope = downtrend. Pair with LHS linreg_slope(close_price, 20) and operator '>'.",
+    expression: "linreg_slope(close_price, 20)",
+    matchKeys: ["linreg", "slope", "trend", "regression", "linear"],
+  },
+  {
+    id: "high-volatility-regime",
+    label: "High volatility",
+    description:
+      "Short-term volatility exceeds long-term: stdev(close_price, 20) > stdev(close_price, 60). Regime detection — vol is expanding. Pair with LHS stdev(close_price, 20) and operator '>' (RHS: stdev(close_price, 60)).",
+    expression: "stdev(close_price, 20)",
+    matchKeys: ["stdev", "volatility", "std", "deviation", "regime"],
+  },
+  {
+    id: "stat-correlation",
+    label: "Correlation",
+    description:
+      "Pearson rolling correlation between two series over N bars: correlation(close_price, volume, 20). Range [-1, +1]. Pair with LHS correlation(...) and the appropriate operator. (Cross-asset correlation needs SB6 — for now both args must be same-symbol indicators.)",
+    expression: "correlation(close_price, volume, 20)",
+    matchKeys: ["correlation", "corr", "pearson", "cor", "relate"],
   },
 ] as const;
 

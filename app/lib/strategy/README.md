@@ -45,7 +45,7 @@ edit are simpler and fast enough.
 `MAX_CONDITION_DEPTH = 32` — mirrors the backend constant in
 `backend/app/schemas/strategy.py`. Update both together if it ever moves.
 
-## Preset chips (SB10 + SB3 + SB2 + SB7)
+## Preset chips (SB10 + SB3 + SB2 + SB7 + SB11)
 
 The strategy editor surfaces a row of preset chips above the expression input
 that one-tap-insert pre-validated compositions over the indicator vocabulary.
@@ -71,6 +71,11 @@ suggestions.
 | `monday-only` | SB7 | `dayofweek` | Pine `dayofweek == 1` (ISO Monday=1); TradingView screener "Day of week" filter |
 | `max-entries-per-day` | SB7 | `entries_today` | Streak / Tradetron `entry_count_today`; TrendSpider "Max N signals per day"; Pine analogue `strategy.opentrades` |
 | `cooldown-5-bars` | SB7 | `bars_since_entry` | Pine `ta.barssince(strategy.position_size != 0)`; per-symbol cooldown — most common quality filter in retail backtests |
+| `rsi-top-decile` | SB11 | `percentrank(rsi, 252)` | Pine `ta.percentrank(rsi, 252) > 90`; TradingView screener `Percent_Rank_RSI_14`; current RSI is in the top 10% of its ~1-year history |
+| `zscore-breakout` | SB11 | `zscore(close_price, 20)` | Industry-standard `(close - mean) / stdev` over 20 bars (QuantConnect / FactSet / Bloomberg `ZSCORE`); pair with `> 2` for 2σ breakouts |
+| `trend-strength-slope` | SB11 | `linreg_slope(close_price, 20)` | ta-lib `LINEARREG_SLOPE(close, 20)` / Bloomberg `LR_SLOPE`; OLS slope (price units per bar) — positive = uptrend, negative = downtrend |
+| `high-volatility-regime` | SB11 | `stdev(close_price, 20)` | Pine `ta.stdev(close, 20, biased=true)`; pair with `> stdev(close_price, 60)` for "short-term vol exceeds long-term" regime detection |
+| `stat-correlation` | SB11 | `correlation(close_price, volume, 20)` | Pine `ta.correlation(close, volume, 20)`; ta-lib `CORREL`; Pearson rolling correlation in `[-1, +1]` (cross-asset needs SB6) |
 
 SB3 also extends the indicator vocabulary itself — `KNOWN_INDICATORS` in
 `expression.ts` adds `"volume_sma_20"` so the bare ref typechecks against the
@@ -178,6 +183,72 @@ on a daily bar): `hour`, `minute`, `is_first_session_bar`,
 `is_last_session_bar`, `bar_of_day`. These ship in SB7.b alongside the
 intraday data layer. Dossier:
 `docs/design_call_dossiers/SB7_calendar_cooldown_2026-05-16.md` (psxDataPortal).
+
+### SB11 — statistical functions (`percentrank`, `stdev`, `zscore`, `correlation`, `linreg_slope`)
+
+SB11 (2026-05-16) extends the SB8 `MathFnName` whitelist with five
+**statistical primitives** that walk the SB2 `MarketDataWindow` over a
+rolling-N window and return a closed-form scalar. Same `FunctionCallNode`
+wire shape as SB8 + SB2; the TS Pratt mirror at `expression.ts` adds the
+five names to `MATH_FN_NAMES` (line 60+), the arity table at
+`MATH_FN_ARITY` (line 84+), and a new `"statistics"` entry to
+`MATH_FN_HINTS` (line 106+) so the autocomplete dropdown distinguishes
+them from `"math fn"` / `"history"` at a glance.
+
+| Fn | Arity | Pine analogue | Returns |
+|---|---|---|---|
+| `percentrank(source, N)` | 2 | `ta.percentrank(source, length)` | Percentile rank (0–100) of current `source` within the last N bars. Pandas `rank(method='average')` tie-break. |
+| `stdev(source, N)` | 2 | `ta.stdev(source, length, biased=true)` | **Population** rolling stdev (ddof=0). Matches Pine v5 default + W6 Bollinger-band fix. |
+| `zscore(source, N)` | 2 | composes as `(s - ta.sma(s, N)) / ta.stdev(s, N)`; first-class in QuantConnect / Bloomberg | `(current - mean) / stdev`. Constant series in window → `None`. |
+| `correlation(source_a, source_b, N)` | 3 | `ta.correlation(source1, source2, length)` | Pearson rolling correlation in `[-1, +1]`. Either series zero-variance → `None`. Cross-asset needs SB6. |
+| `linreg_slope(source, N)` | 2 | ta-lib `LINEARREG_SLOPE(real, timeperiod)` / Bloomberg `LR_SLOPE`; **NOT** Pine's `ta.linreg` which returns the fitted value | OLS slope in price units per bar. Positive = uptrend. |
+
+Rolling-length policy mirrors SB2: `N` must be a positive-integer
+literal at validate time. Dynamic `N` (`stdev(close_price, sma_20)`)
+fails with reason `rolling_length_not_static` — the editor's inline
+diagnostic surfaces the message and underlines the offending arg. The
+validator's `walkAndCheck` predicate at `expression.ts:710+` covers
+seven names (`highest`, `lowest`, `percentrank`, `stdev`, `zscore`,
+`linreg_slope` reading from `args[1]`; `correlation` split out reading
+from `args[2]`) — same shape as the backend Python.
+
+Five new preset chips ride alongside (table above): `rsi-top-decile`
+inserts `percentrank(rsi, 252)`, `zscore-breakout` inserts
+`zscore(close_price, 20)`, `trend-strength-slope` inserts
+`linreg_slope(close_price, 20)`, `high-volatility-regime` inserts
+`stdev(close_price, 20)`, `stat-correlation` inserts
+`correlation(close_price, volume, 20)`. Per the SB10/SB3/SB2/SB7
+convention each chip inserts the LHS expression only — the user wires
+the outer operator + threshold via the existing condition-drawer
+surface. The chip `description` tooltips spell out the full canonical
+pair (e.g. `percentrank(rsi, 252) > 90`, `zscore(close_price, 20) > 2`,
+`linreg_slope(close_price, 20) > 0`, the dual-stdev volatility-regime
+form `stdev(close_price, 20) > stdev(close_price, 60)`).
+
+Autocomplete: the five new fn names surface automatically via the
+existing `MATH_FN_NAMES` iteration in `expression-input.tsx:307-359` —
+no autocomplete-side wiring change. Typing `perc` surfaces
+`percentrank(`; typing `zsc` surfaces `zscore(`; typing `corr` surfaces
+`correlation(`. The `"statistics"` hint label distinguishes them from
+`"math fn"` (`abs`, `max`, `min`, `round`, `log`) and `"history"`
+(`highest`, `lowest`, `barssince`, `valuewhen`) in the dropdown.
+
+Round-trip parity: every SB11 expression (`percentrank(rsi, 252)`,
+`zscore(close_price, 20)`, `correlation(close_price, volume, 20)`,
+`stdev(close_price, 20)`, `linreg_slope(close_price, 20)`) round-trips
+exactly through `tryParseExpression` → `expressionToSource` →
+`tryParseExpression` (textual-idempotent). Cross-system verified by
+`app/scripts/sb11-roundtrip.mjs` — TS parser → AST JSON → Python
+deserialise → `_eval_expr` against a real pandas fixture matches
+`series.rolling(N).<fn>()` to 1e-9 for every bar; the backend side of
+the harness lives at `psxDataPortal/backend/scripts/sb11_xsys_roundtrip.py`
+(no mocks — real `ConditionEvaluator`, real pandas, real numpy).
+
+Statistical primitives that *defer* to SB11.b: `linreg_intercept`,
+`linreg_value(s, N, offset)` (Pine `ta.linreg` form), `variance`,
+`median`, `mean(s, N)`, `beta(s, market, N)` (needs SB6 cross-asset),
+`cov(s_a, s_b, N)`. None appear in the autocomplete today. Dossier:
+`docs/design_call_dossiers/SB11_statistical_fns_2026-05-16.md` (psxDataPortal).
 
 ## `./layout.ts` — layered (logic-graph) auto-layout
 
