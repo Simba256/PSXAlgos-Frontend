@@ -172,6 +172,22 @@ export const KNOWN_INDICATORS: ReadonlySet<string> = new Set([
   "is_outside_bar",
   "gap_up",
   "gap_down",
+  // SB5 — position-state series. Only valid in exit conditions; the validator
+  // rejects them in entry_rules with reason `position_token_in_entry_rules`.
+  "position_entry_price",
+  "position_initial_stop",
+  "position_highest_high",
+  "position_entry_bar",
+]);
+
+// SB5 — position-state tokens. Only meaningful in exit conditions;
+// validator rejects them in entry_rules. Exported so the editor can
+// filter them from the entry-rules indicator picker.
+export const POSITION_STATE_INDICATORS: ReadonlySet<string> = new Set([
+  "position_entry_price",
+  "position_initial_stop",
+  "position_highest_high",
+  "position_entry_bar",
 ]);
 
 // SB9 — candlestick pattern tokens for autocomplete labeling.
@@ -808,6 +824,63 @@ export function validateExpression(node: ExprNode): void {
     );
   }
   walkAndCheck(node, [], false);
+}
+
+// SB5 — walk the tree and raise if any position-state token appears.
+// Called by tryParseEntryExpression so the entry-rules panel surfaces the
+// error inline before the user hits save.
+function checkNoPositionTokens(node: ExprNode, pathParts: string[]): void {
+  const path = pathParts.length ? "/" + pathParts.join("/") : "";
+  if (node.type === "indicator") {
+    if (POSITION_STATE_INDICATORS.has(node.indicator)) {
+      throw new ValidationError(
+        `'${node.indicator}' is a position-state token and may only be used in exit conditions, not entry rules.`,
+        "position_token_in_entry_rules",
+        path,
+      );
+    }
+    return;
+  }
+  if (node.type === "constant") return;
+  if (node.type === "paren" || node.type === "unary_op") {
+    checkNoPositionTokens(node.operand, [...pathParts, "operand"]);
+    return;
+  }
+  if (node.type === "function_call") {
+    node.args.forEach((a, i) => checkNoPositionTokens(a, [...pathParts, "args", String(i)]));
+    return;
+  }
+  if (node.type === "subscript") {
+    checkNoPositionTokens(node.series, [...pathParts, "series"]);
+    checkNoPositionTokens(node.offset, [...pathParts, "offset"]);
+    return;
+  }
+  // binary_op
+  checkNoPositionTokens(node.left, [...pathParts, "left"]);
+  checkNoPositionTokens(node.right, [...pathParts, "right"]);
+}
+
+// Non-throwing wrapper for entry-rules context. Runs the same parse + semantic
+// walk as tryParseExpression, then additionally rejects position-state tokens.
+export function tryParseEntryExpression(source: string): TryParseResult {
+  try {
+    const ast = parseExpression(source);
+    try {
+      validateExpression(ast);
+      checkNoPositionTokens(ast, []);
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        return { ok: false, message: err.message, column: 0, reason: err.reason, path: err.path };
+      }
+      throw err;
+    }
+    return { ok: true, ast, canonical: expressionToSource(ast) };
+  } catch (err) {
+    if (err instanceof ParseError) {
+      return { ok: false, message: err.message, column: err.column, reason: "parse_error", path: "" };
+    }
+    throw err;
+  }
 }
 
 // True if any IndicatorRefNode appears anywhere in the tree. Used by the

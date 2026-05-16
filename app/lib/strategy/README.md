@@ -45,7 +45,7 @@ edit are simpler and fast enough.
 `MAX_CONDITION_DEPTH = 32` — mirrors the backend constant in
 `backend/app/schemas/strategy.py`. Update both together if it ever moves.
 
-## Preset chips (SB10 + SB3 + SB2 + SB7 + SB11 + SB9)
+## Preset chips (SB10 + SB3 + SB2 + SB7 + SB11 + SB9 + SB5)
 
 The strategy editor surfaces a row of preset chips above the expression input
 that one-tap-insert pre-validated compositions over the indicator vocabulary.
@@ -305,6 +305,51 @@ Three-bar patterns (`three_white_soldiers`, `three_black_crows`, `morning_star`,
 `evening_star`) and trend-context filters for hammer/shooting-star defer to
 SB9.b. None appear in the autocomplete today. Dossier:
 `docs/design_call_dossiers/SB9_candlestick_patterns_2026-05-16.md` (psxDataPortal).
+
+### SB5 — ATR-based exit presets (`position_entry_price`, `position_initial_stop`, `position_highest_high`, `position_entry_bar`)
+
+SB5 (2026-05-16) adds **four position-state bare tokens** to `KNOWN_INDICATORS`
+in `expression.ts` and **five exit-only preset chips** appended AFTER the SB9
+candlestick chips (preserving SB10 → SB3 → SB2 → SB7 → SB11 → SB9 → SB5
+order). Industry references: Pine v5 `strategy.position_avg_price`, Van Tharp
+R-multiple, TradingView chandelier-exit indicator.
+
+| Token | Resolves to | Notes |
+|---|---|---|
+| `position_entry_price` | Fill price of the current open position | `None` when flat → condition evaluates `False` |
+| `position_initial_stop` | Stop-loss price frozen at entry | `None` when no SL was set at entry |
+| `position_highest_high` | Highest bar `high` since entry (ratchets up, never down) | `None` when flat |
+| `position_entry_bar` | Absolute bar index at fill | Used for raw offset math; `bars_since_entry` (SB7) is simpler for the common case |
+
+**Position-state tokens are only valid in exit conditions.** The validator
+rejects them in entry rules with reason `position_token_in_entry_rules`. On the
+frontend, `tryParseEntryExpression` (exported from `expression.ts`) wraps
+`tryParseExpression` with an additional `checkNoPositionTokens` walk — called
+from `ConditionDrawer` when `isExitRules === false` so the inline error surfaces
+before the user can click Apply.
+
+The four tokens are added to `KNOWN_INDICATORS` (parser whitelists them) and to
+the new `POSITION_STATE_INDICATORS` exported set (used by `ExpressionInput` to
+filter them from the entry-rules autocomplete and by `POSITION_STATE_INDICATORS`
+checks in `checkNoPositionTokens`).
+
+Five preset chips (exit-only, hidden in entry-rules context via `exitOnly: true`
+on the `PresetChip` entry):
+
+| Chip id | Inserted expression | Canonical condition |
+|---|---|---|
+| `atr-trailing-3x` | `position_highest_high - 3 * atr` | `low <= position_highest_high - 3 * atr` (ATR chandelier 3×) |
+| `atr-trailing-2x` | `position_highest_high - 2 * atr` | `low <= position_highest_high - 2 * atr` (ATR chandelier 2×) |
+| `r-multiple-2to1` | `position_entry_price + 2 * (position_entry_price - position_initial_stop)` | `high >= <expr>` (R=2 take-profit) |
+| `r-multiple-3to1` | `position_entry_price + 3 * (position_entry_price - position_initial_stop)` | `high >= <expr>` (R=3 take-profit) |
+| `time-stop-10bars` | `10` | `bars_since_entry > 10` (time stop — pair LHS `bars_since_entry` op `>`) |
+
+`ExpressionInput` and `PresetChipStrip` accept an `isExitRules` boolean prop.
+When `false` (default), exit-only chips are hidden from the strip and
+`POSITION_STATE_INDICATORS` tokens are skipped in the autocomplete loop.
+`ConditionDrawer` in `editor-view.tsx` sets `isExitRules={creating.source === "exit"}`
+(or `selection.source === "exit"`) to gate both surfaces at once. Dossier:
+`docs/design_call_dossiers/SB5_atr_exits_2026-05-16.md` (psxDataPortal).
 
 ## `./layout.ts` — layered (logic-graph) auto-layout
 

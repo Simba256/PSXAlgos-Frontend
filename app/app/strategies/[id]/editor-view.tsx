@@ -52,6 +52,7 @@ import {
   expressionToSource,
   hasIndicatorRef,
   tryParseExpression,
+  tryParseEntryExpression,
 } from "@/lib/strategy/expression";
 import { ExpressionInput } from "@/components/strategy-editor/expression/expression-input";
 import {
@@ -1075,6 +1076,7 @@ export function EditorView({
                 creating.source === "exit" ? "New exit condition" : "New condition"
               }
               indicatorMeta={indicatorMeta}
+              isExitRules={creating.source === "exit"}
               onApply={(nextCond) => {
                 const leaf = leafFromCond(nextCond);
                 const parentId = creating.parentId;
@@ -1100,6 +1102,7 @@ export function EditorView({
                 selectedLeaf.cond.params ?? null
               )}
               indicatorMeta={indicatorMeta}
+              isExitRules={selection.source === "exit"}
               onApply={(nextCond) => {
                 const next: ConditionLeaf = {
                   kind: "condition",
@@ -3217,6 +3220,7 @@ function ConditionDrawer({
   cond,
   displayName,
   indicatorMeta,
+  isExitRules = false,
   onApply,
   onDelete,
   onDuplicate,
@@ -3225,6 +3229,9 @@ function ConditionDrawer({
   cond: SingleCondition;
   displayName: string;
   indicatorMeta: IndicatorMeta;
+  /** SB5 — when true, the drawer is editing an exit condition: position-state
+   *  tokens are shown in the picker and exit-only preset chips appear. */
+  isExitRules?: boolean;
   onApply: (next: SingleCondition) => void;
   onDelete?: () => void;
   onDuplicate?: () => void;
@@ -3245,8 +3252,10 @@ function ConditionDrawer({
   // Tracks whether the current text parses + validates. Toggled by the live
   // parse callback inside ExpressionInput; consumed to disable the Apply
   // button and gate save.
+  // SB5 — entry-rules context additionally rejects position-state tokens.
+  const parseForContext = isExitRules ? tryParseExpression : tryParseEntryExpression;
   const [expressionOk, setExpressionOk] = useState<boolean>(() => {
-    const r = tryParseExpression(initialExpressionText);
+    const r = parseForContext(initialExpressionText);
     return r.ok;
   });
   const [forceInvalid, setForceInvalid] = useState<boolean>(false);
@@ -3303,7 +3312,9 @@ function ConditionDrawer({
   const handleSave = () => {
     // Re-parse one last time at Apply — the debounced live state may lag a
     // final keystroke, and we'd rather block here than ship a 422.
-    const parsed = tryParseExpression(expressionText);
+    // SB5 — entry-rules context uses tryParseEntryExpression to catch
+    // position-state tokens before they reach the backend.
+    const parsed = parseForContext(expressionText);
     if (!parsed.ok) {
       setForceInvalid(true);
       setExpressionOk(false);
@@ -3541,6 +3552,7 @@ function ConditionDrawer({
               formatIndicatorLabel={(wire) => formatIndicator(wire, null)}
               ariaLabel="Condition value expression"
               forceInvalid={forceInvalid}
+              isExitRules={isExitRules}
             />
           </div>
         </div>

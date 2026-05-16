@@ -17,6 +17,7 @@ import {
   MATH_FN_HINTS,
   MATH_FN_NAMES,
   PATTERN_INDICATORS,
+  POSITION_STATE_INDICATORS,
   tryParseExpression,
   type TryParseResult,
 } from "@/lib/strategy/expression";
@@ -40,6 +41,11 @@ export interface ExpressionInputProps {
       the debounced parse result. Used by the drawer to flash a save-attempted
       error before the next keystroke clears it. */
   forceInvalid?: boolean;
+  /** When true, the input is in the exit-rules panel: position-state tokens
+   *  (`position_*`) appear in autocomplete and exit-only preset chips are shown.
+   *  When false/absent, position tokens are filtered from suggestions and
+   *  exit-only chips are hidden from the preset strip. */
+  isExitRules?: boolean;
 }
 
 interface Suggestion {
@@ -94,7 +100,13 @@ export interface PresetChip {
     | "bearish-reversal"
     | "inside-bar"
     | "gap-watch"
-    | "indecision";
+    | "indecision"
+    // SB5 — ATR-based exit presets.
+    | "atr-trailing-3x"
+    | "atr-trailing-2x"
+    | "r-multiple-2to1"
+    | "r-multiple-3to1"
+    | "time-stop-10bars";
   /** Chip + autocomplete label. Keep short — fits a 44 px chip. */
   label: string;
   /** Single-line tooltip and autocomplete `hint` text. */
@@ -108,6 +120,9 @@ export interface PresetChip {
    *  because `tokenAtCaret` only includes `[a-z0-9_]` — typing the alphanumeric
    *  prefix alone (e.g. `atr`) is enough to surface the preset. */
   matchKeys: readonly string[];
+  /** When true, the chip is only shown in exit-rules context and hidden from
+   *  the entry-rules strip. Defaults to false. */
+  exitOnly?: true;
 }
 
 export const PRESET_CHIPS: readonly PresetChip[] = [
@@ -297,6 +312,53 @@ export const PRESET_CHIPS: readonly PresetChip[] = [
     expression: "is_doji",
     matchKeys: ["doji", "indecision", "spinning_top", "uncertainty", "neutral"],
   },
+  // SB5 — ATR-based exit presets. Only shown in the exit-conditions strip;
+  // position-state tokens (`position_*`) have no meaning in entry rules.
+  {
+    id: "atr-trailing-3x",
+    label: "ATR trailing 3x",
+    description:
+      "ATR chandelier trailing stop at 3× ATR: low <= position_highest_high - 3 * atr. The high-water-mark ratchets up each bar and never decreases. Pair with LHS low_price, operator '<=', and this RHS expression.",
+    expression: "position_highest_high - 3 * atr",
+    matchKeys: ["chandelier", "atr_trailing", "trailing_stop", "atr_exit", "position_highest"],
+    exitOnly: true,
+  },
+  {
+    id: "atr-trailing-2x",
+    label: "ATR trailing 2x",
+    description:
+      "ATR chandelier trailing stop at 2× ATR: low <= position_highest_high - 2 * atr. Tighter than 3× — use when you want a closer trail. Pair with LHS low_price, operator '<='.",
+    expression: "position_highest_high - 2 * atr",
+    matchKeys: ["chandelier", "atr_trailing", "trailing_stop", "atr_exit", "position_highest"],
+    exitOnly: true,
+  },
+  {
+    id: "r-multiple-2to1",
+    label: "R-multiple 2:1",
+    description:
+      "Take profit at 2× initial risk (Van Tharp R-multiple): high >= position_entry_price + 2 * (position_entry_price - position_initial_stop). Requires a stop-loss set at entry — position_initial_stop is None otherwise. Pair with LHS high_price, operator '>='.",
+    expression: "position_entry_price + 2 * (position_entry_price - position_initial_stop)",
+    matchKeys: ["r_multiple", "take_profit", "reward_risk", "van_tharp", "position_entry"],
+    exitOnly: true,
+  },
+  {
+    id: "r-multiple-3to1",
+    label: "R-multiple 3:1",
+    description:
+      "Take profit at 3× initial risk (Van Tharp R-multiple): high >= position_entry_price + 3 * (position_entry_price - position_initial_stop). Requires a stop-loss set at entry. Pair with LHS high_price, operator '>='.",
+    expression: "position_entry_price + 3 * (position_entry_price - position_initial_stop)",
+    matchKeys: ["r_multiple", "take_profit", "reward_risk", "van_tharp", "position_entry"],
+    exitOnly: true,
+  },
+  {
+    id: "time-stop-10bars",
+    label: "Time stop 10 bars",
+    description:
+      "Exit after 10 bars in the trade: bars_since_entry > 10. Pair with LHS bars_since_entry and operator '>'. Change the RHS value to adjust the holding period.",
+    expression: "10",
+    matchKeys: ["time_stop", "holding_period", "bars_since", "max_bars", "time_exit"],
+    exitOnly: true,
+  },
 ] as const;
 
 function useTouchPointer(): boolean {
@@ -348,6 +410,7 @@ export function ExpressionInput({
   showOperatorChips = "auto",
   placeholder = "e.g. 50  •  sma_20  •  sma_20 + 5",
   forceInvalid = false,
+  isExitRules = false,
 }: ExpressionInputProps) {
   const T = useT();
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -423,7 +486,9 @@ export function ExpressionInput({
       }
       // SB10 — surface volatility presets as operand-like suggestions. Empty
       // token shows all four; otherwise prefix-match against `matchKeys`.
+      // SB5 — exit-only presets are skipped when not in exit-rules context.
       for (const preset of PRESET_CHIPS) {
+        if (preset.exitOnly && !isExitRules) continue;
         if (!q || preset.matchKeys.some((k) => k.startsWith(q))) {
           indMatches.push({
             insertText: preset.expression,
@@ -435,10 +500,12 @@ export function ExpressionInput({
       // Filter the indicator list by prefix on the current token. Falls back
       // to contains-match if no prefix hits, so a user typing "20" inside an
       // empty token still gets sma_20 etc.
+      // SB5 — position-state tokens are hidden from the entry-rules picker.
       const starts: Suggestion[] = [];
       const contains: Suggestion[] = [];
       for (const ind of indicators) {
         if (!KNOWN_INDICATORS.has(ind)) continue;
+        if (POSITION_STATE_INDICATORS.has(ind) && !isExitRules) continue;
         const hint = PATTERN_INDICATORS.has(ind) ? "pattern" : ind;
         if (!q) {
           starts.push({
@@ -476,7 +543,7 @@ export function ExpressionInput({
       return [...opMatches, ...indMatches].slice(0, cap);
     }
     return [...indMatches, ...opMatches].slice(0, cap);
-  }, [value, caret, indicators, formatIndicatorLabel]);
+  }, [value, caret, indicators, formatIndicatorLabel, isExitRules]);
 
   function commit(opt: Suggestion) {
     const tok = tokenAtCaret(value, caret);
@@ -561,7 +628,7 @@ export function ExpressionInput({
 
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
-      <PresetChipStrip onInsert={insertAtCaret} />
+      <PresetChipStrip onInsert={insertAtCaret} isExitRules={isExitRules} />
       {showChips && (
         <OperatorChipStrip onInsert={insertAtCaret} />
       )}
@@ -762,8 +829,16 @@ function OperatorChipStrip({ onInsert }: { onInsert: (text: string) => void }) {
 // (desktop + mobile) because these are the discovery vehicle for the whole
 // arithmetic surface. Wider chips than OperatorChipStrip — auto-fit content
 // — so the human-readable label ("ATR %", "BB Bandwidth") fits.
-function PresetChipStrip({ onInsert }: { onInsert: (text: string) => void }) {
+// SB5 — exit-only chips are hidden when not in exit-rules context.
+function PresetChipStrip({
+  onInsert,
+  isExitRules,
+}: {
+  onInsert: (text: string) => void;
+  isExitRules: boolean;
+}) {
   const T = useT();
+  const visibleChips = PRESET_CHIPS.filter((p) => !p.exitOnly || isExitRules);
   return (
     <div
       role="toolbar"
@@ -777,7 +852,7 @@ function PresetChipStrip({ onInsert }: { onInsert: (text: string) => void }) {
         WebkitOverflowScrolling: "touch",
       }}
     >
-      {PRESET_CHIPS.map((preset) => (
+      {visibleChips.map((preset) => (
         <button
           key={preset.id}
           type="button"
