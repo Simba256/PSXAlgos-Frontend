@@ -3,19 +3,23 @@
 // semantic walks in `expression_validator.py`. Lives client-side so the editor
 // can give instant parse errors; backend re-runs the same checks on save.
 //
-// Grammar (SB1 — arithmetic only; comparison reserved for SB2):
+// Grammar (SB2 — arithmetic + postfix subscript; AND/OR reserved for SB9):
 //
 //     expr           := additive
 //     additive       := multiplicative (("+"|"-") multiplicative)*
 //     multiplicative := unary (("*"|"/"|"%") unary)*
-//     unary          := ("-"|"+") unary | primary
-//     primary        := number | indicator_ref | "(" additive ")"
+//     unary          := ("-"|"+") unary | postfix
+//     postfix        := primary ("[" expr "]")*               -- SB2
+//     primary        := number | indicator_ref | "(" expr ")" | function_call
+//     function_call  := IDENT "(" expr ("," expr)* ")"
 //     number         := /\d+(\.\d+)?([eE][+-]?\d+)?/
 //     indicator_ref  := IDENT ( "(" IDENT ("," NUMBER)? ")" )?
 //     IDENT          := /[a-z][a-z0-9_]*/
 //
-// The parser accepts comparison operators so SB2 can flip a single switch,
-// but `validateExpression` rejects them inside an expression in SB1.
+// The parser accepts comparison operators so SB9 can flip a single switch,
+// but `validateExpression` rejects them at the top of a condition value.
+// SB2 relaxes the cmp ban inside the first arg of `barssince(...)` and
+// `valuewhen(...)` via the `cmp_allowed` flag on the walk.
 
 import type {
   ArithOp,
@@ -26,6 +30,7 @@ import type {
   IndicatorRefNode,
   BinaryOpNode,
   MathFnName,
+  SubscriptNode,
   UnaryOpNode,
   ParenNode,
 } from "../api/strategies";
@@ -48,17 +53,45 @@ export const MATH_FN_NAMES: ReadonlySet<MathFnName> = new Set([
   "min",
   "round",
   "log",
+  // SB2 — indexed-history helpers. Same parse path (function call), but
+  // backed by a per-symbol rolling window in the evaluator. See
+  // `docs/design_call_dossiers/SB2_indexed_history_2026-05-16.md` §1.3.
+  "highest",
+  "lowest",
+  "barssince",
+  "valuewhen",
 ]);
 
 // Arity bounds keyed by math-fn name. `maxArgs: null` means variadic
 // (>= `minArgs`). Mirror of `_MATH_FN_ARITY` in
 // `backend/app/services/strategy/expression_validator.py`.
-const MATH_FN_ARITY: Readonly<Record<MathFnName, { minArgs: number; maxArgs: number | null }>> = {
+export const MATH_FN_ARITY: Readonly<Record<MathFnName, { minArgs: number; maxArgs: number | null }>> = {
   abs: { minArgs: 1, maxArgs: 1 },
   round: { minArgs: 1, maxArgs: 2 },
   log: { minArgs: 1, maxArgs: 2 },
   max: { minArgs: 2, maxArgs: null },
   min: { minArgs: 2, maxArgs: null },
+  // SB2 — fixed arity per dossier §2.3.2.
+  highest: { minArgs: 2, maxArgs: 2 },
+  lowest: { minArgs: 2, maxArgs: 2 },
+  barssince: { minArgs: 1, maxArgs: 1 },
+  valuewhen: { minArgs: 2, maxArgs: 2 },
+};
+
+// SB2 — hint copy for the autocomplete dropdown. The five SB8 helpers
+// read as plain "math fn"; the four SB2 helpers walk per-symbol history
+// and read as "history" so users can tell them apart at a glance.
+// Consumed by `expression-input.tsx` (PRESET_CHIPS autocomplete loop).
+export const MATH_FN_HINTS: Readonly<Record<MathFnName, string>> = {
+  abs: "math fn",
+  max: "math fn",
+  min: "math fn",
+  round: "math fn",
+  log: "math fn",
+  highest: "history",
+  lowest: "history",
+  barssince: "history",
+  valuewhen: "history",
 };
 
 export const KNOWN_INDICATORS: ReadonlySet<string> = new Set([
@@ -132,6 +165,8 @@ type TokKind =
   | "IDENT"
   | "LPAREN"
   | "RPAREN"
+  | "LBRACK"
+  | "RBRACK"
   | "COMMA"
   | "EOF"
   | ArithOp
@@ -181,6 +216,16 @@ function tokenize(source: string): Token[] {
       i += 1;
       continue;
     }
+    if (ch === "[") {
+      tokens.push({ kind: "LBRACK", text: "[", column: i });
+      i += 1;
+      continue;
+    }
+    if (ch === "]") {
+      tokens.push({ kind: "RBRACK", text: "]", column: i });
+      i += 1;
+      continue;
+    }
     if (ch === ",") {
       tokens.push({ kind: "COMMA", text: ",", column: i });
       i += 1;
@@ -226,6 +271,10 @@ const PREC_CMP = 10;
 const PREC_ADD = 20;
 const PREC_MUL = 30;
 const PREC_UNARY = 40;
+// SB2 — postfix subscript binds tighter than unary minus and looser than the
+// primary atom (so `-a[1]` is `-(a[1])`, not `(-a)[1]`). Mirrors backend
+// `_PREC_SUBSCRIPT = 45` in `expression_parser.py`.
+const PREC_SUBSCRIPT = 45;
 
 const CMP_OPS: ReadonlySet<string> = new Set(["<", ">", "<=", ">=", "==", "!="]);
 const ADD_OPS: ReadonlySet<string> = new Set(["+", "-"]);
@@ -272,6 +321,17 @@ class Parser {
       const t = this.peek();
       const bp = this.ledBp(t.kind);
       if (bp <= minBp) break;
+      // SB2 — postfix subscript. `series[offset]` binds left as the series
+      // and re-enters the parser at min_bp=0 inside the brackets (matching
+      // the `[` ... `]` reset of precedence, same as `(` ... `)`).
+      if (t.kind === "LBRACK") {
+        this.advance();
+        const offset = this.parseExpr(0);
+        this.expect("RBRACK", "expected ']'");
+        const sub: SubscriptNode = { type: "subscript", series: left, offset };
+        left = sub;
+        continue;
+      }
       this.advance();
       const right = this.parseExpr(bp);
       const op = t.text as ArithOp | CmpOp;
@@ -285,6 +345,7 @@ class Parser {
     if (CMP_OPS.has(kind)) return PREC_CMP;
     if (ADD_OPS.has(kind)) return PREC_ADD;
     if (MUL_OPS.has(kind)) return PREC_MUL;
+    if (kind === "LBRACK") return PREC_SUBSCRIPT;
     return 0;
   }
 
@@ -430,6 +491,10 @@ function nodePrec(node: ExprNode): number {
     if (MUL_OPS.has(node.op)) return PREC_MUL;
   }
   if (node.type === "unary_op") return PREC_UNARY;
+  // SB2 — subscript ranks above unary but below the primary atom ceiling,
+  // so a subscripted series renders without extra parens when nested in a
+  // binary op (e.g. `close_price[1] + 5`).
+  if (node.type === "subscript") return PREC_SUBSCRIPT;
   return PREC_UNARY + 1;
 }
 
@@ -452,6 +517,14 @@ function render(node: ExprNode, parentPrec: number): string {
     // `max(a + b, c * d)` round-trips without spurious parens around args.
     const renderedArgs = node.args.map((a) => render(a, 0)).join(", ");
     return `${node.name}(${renderedArgs})`;
+  }
+  if (node.type === "subscript") {
+    // SB2 — `series` renders at our own precedence so `(a + b)[1]` keeps its
+    // parens; `offset` renders at parentPrec=0 (bracketed context resets
+    // precedence, same as a function-call arg).
+    const seriesSrc = render(node.series, PREC_SUBSCRIPT);
+    const offsetSrc = render(node.offset, 0);
+    return `${seriesSrc}[${offsetSrc}]`;
   }
   if (node.type === "paren") {
     return `(${render(node.operand, 0)})`;
@@ -484,6 +557,12 @@ function walkDepth(node: ExprNode, depth = 1): number {
     if (node.args.length === 0) return depth;
     return Math.max(...node.args.map((a) => walkDepth(a, depth + 1)));
   }
+  if (node.type === "subscript") {
+    return Math.max(
+      walkDepth(node.series, depth + 1),
+      walkDepth(node.offset, depth + 1),
+    );
+  }
   // binary_op
   return Math.max(walkDepth(node.left, depth + 1), walkDepth(node.right, depth + 1));
 }
@@ -495,7 +574,27 @@ function isLiteralZero(node: ExprNode): boolean {
   return false;
 }
 
-function walkAndCheck(node: ExprNode, pathParts: string[]): void {
+// SB2 — returns the static non-negative integer value of `node`, or null.
+// Accepts `ConstantNode(value=k)` where k is a non-negative whole number,
+// or a `ParenNode` wrapping the same. Mirrors backend
+// `_resolve_static_int_offset` in `expression_validator.py`. The
+// SubscriptNode offset and the second arg of `highest`/`lowest` are both
+// SB2.0-restricted to this shape — dynamic offsets defer to SB2.b.
+function resolveStaticIntOffset(node: ExprNode): number | null {
+  if (node.type === "paren") return resolveStaticIntOffset(node.operand);
+  if (node.type === "constant") {
+    if (node.value < 0) return null;
+    if (node.value !== Math.trunc(node.value)) return null;
+    return node.value;
+  }
+  return null;
+}
+
+function walkAndCheck(
+  node: ExprNode,
+  pathParts: string[],
+  cmpAllowed = false,
+): void {
   const path = pathParts.length ? "/" + pathParts.join("/") : "";
   if (node.type === "constant") return;
   if (node.type === "indicator") {
@@ -509,11 +608,42 @@ function walkAndCheck(node: ExprNode, pathParts: string[]): void {
     return;
   }
   if (node.type === "paren") {
-    walkAndCheck(node.operand, [...pathParts, "operand"]);
+    walkAndCheck(node.operand, [...pathParts, "operand"], cmpAllowed);
     return;
   }
   if (node.type === "unary_op") {
-    walkAndCheck(node.operand, [...pathParts, "operand"]);
+    walkAndCheck(node.operand, [...pathParts, "operand"], cmpAllowed);
+    return;
+  }
+  if (node.type === "subscript") {
+    // SB2 — offset must reduce statically to a non-negative integer literal.
+    // Dynamic offsets defer to SB2.b. Mirrors backend rule
+    // `subscript_offset_not_static` in `expression_validator.py`.
+    const staticOffset = resolveStaticIntOffset(node.offset);
+    if (staticOffset === null) {
+      throw new ValidationError(
+        "subscript offset must be a non-negative integer literal in SB2.0 (e.g. close_price[1]). Dynamic offsets are coming in SB2.b.",
+        "subscript_offset_not_static",
+        path + "/offset",
+      );
+    }
+    if (node.series.type === "constant") {
+      throw new ValidationError(
+        "cannot subscript a constant value",
+        "subscript_on_constant",
+        path + "/series",
+      );
+    }
+    if (node.series.type === "subscript") {
+      throw new ValidationError(
+        "double-subscript (a[i][j]) is not supported — combine the offsets manually (close_price[1][1] == close_price[2])",
+        "subscript_double",
+        path + "/series",
+      );
+    }
+    walkAndCheck(node.series, [...pathParts, "series"], cmpAllowed);
+    // Inside the offset subtree no special rules apply; cmp ops stay rejected.
+    walkAndCheck(node.offset, [...pathParts, "offset"], false);
     return;
   }
   if (node.type === "function_call") {
@@ -552,13 +682,31 @@ function walkAndCheck(node: ExprNode, pathParts: string[]): void {
         }
       }
     }
+    // SB2 — highest/lowest length must be a positive integer literal.
+    // Mirrors `rolling_length_not_static` in the backend validator.
+    if (node.name === "highest" || node.name === "lowest") {
+      const length = resolveStaticIntOffset(node.args[1]);
+      if (length === null || length < 1) {
+        throw new ValidationError(
+          `${node.name}() length must be a positive integer literal in SB2.0; dynamic length is coming in SB2.b`,
+          "rolling_length_not_static",
+          path + "/args/1",
+        );
+      }
+    }
     node.args.forEach((arg, i) => {
-      walkAndCheck(arg, [...pathParts, "args", String(i)]);
+      // SB2 — relax the cmp-op-in-arith ban inside the FIRST arg of
+      // `barssince(...)` and `valuewhen(...)`. The flag propagates to
+      // children so a nested binary_op tree (future SB9 AND/OR) inherits.
+      const allowChild =
+        cmpAllowed ||
+        ((node.name === "barssince" || node.name === "valuewhen") && i === 0);
+      walkAndCheck(arg, [...pathParts, "args", String(i)], allowChild);
     });
     return;
   }
   // binary_op
-  if (CMP_OPS.has(node.op)) {
+  if (CMP_OPS.has(node.op) && !cmpAllowed) {
     throw new ValidationError(
       `comparison operator '${node.op}' is not yet supported inside a condition value — SB1 ships arithmetic-only (the outer SingleCondition.operator carries the comparison)`,
       "comparison_op_in_arith",
@@ -572,8 +720,8 @@ function walkAndCheck(node: ExprNode, pathParts: string[]): void {
       path + "/right",
     );
   }
-  walkAndCheck(node.left, [...pathParts, "left"]);
-  walkAndCheck(node.right, [...pathParts, "right"]);
+  walkAndCheck(node.left, [...pathParts, "left"], cmpAllowed);
+  walkAndCheck(node.right, [...pathParts, "right"], cmpAllowed);
 }
 
 export function validateExpression(node: ExprNode): void {
@@ -584,7 +732,7 @@ export function validateExpression(node: ExprNode): void {
       "depth_overflow",
     );
   }
-  walkAndCheck(node, []);
+  walkAndCheck(node, [], false);
 }
 
 // True if any IndicatorRefNode appears anywhere in the tree. Used by the
@@ -594,5 +742,6 @@ export function hasIndicatorRef(node: ExprNode): boolean {
   if (node.type === "constant") return false;
   if (node.type === "paren" || node.type === "unary_op") return hasIndicatorRef(node.operand);
   if (node.type === "function_call") return node.args.some((a) => hasIndicatorRef(a));
+  if (node.type === "subscript") return hasIndicatorRef(node.series) || hasIndicatorRef(node.offset);
   return hasIndicatorRef(node.left) || hasIndicatorRef(node.right);
 }

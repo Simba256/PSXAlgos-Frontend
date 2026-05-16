@@ -45,7 +45,7 @@ edit are simpler and fast enough.
 `MAX_CONDITION_DEPTH = 32` — mirrors the backend constant in
 `backend/app/schemas/strategy.py`. Update both together if it ever moves.
 
-## Preset chips (SB10 + SB3)
+## Preset chips (SB10 + SB3 + SB2)
 
 The strategy editor surfaces a row of preset chips above the expression input
 that one-tap-insert pre-validated compositions over the indicator vocabulary.
@@ -65,6 +65,9 @@ suggestions.
 | `bb-bandwidth` | SB10 | `(bb_upper - bb_lower) / bb_middle` | Bollinger Bandwidth (Bollinger Bands official) |
 | `relative-volume` | SB3 | `volume / volume_sma_20` | Trade Ideas RelVol; Finviz "Volume / Avg Volume"; TradingView `volume / ta.sma(volume, 20)` |
 | `dollar-volume` | SB3 | `close_price * volume` | TradingView `close * volume`; Bloomberg `PX_VOLUME_TRADED` |
+| `donchian-breakout` | SB2 | `close > highest(high, 20)[1]` | Pine `close > ta.highest(high, 20)[1]`; canonical Donchian-channel breakout |
+| `donchian-breakdown` | SB2 | `close < lowest(low, 20)[1]` | Pine `close < ta.lowest(low, 20)[1]`; canonical Donchian breakdown |
+| `previous-close` | SB2 | `close[1]` | Pine `close[1]`; single-bar lookback (yesterday's close) |
 
 SB3 also extends the indicator vocabulary itself — `KNOWN_INDICATORS` in
 `expression.ts` adds `"volume_sma_20"` so the bare ref typechecks against the
@@ -85,6 +88,53 @@ its string with the bare-indicator wire name, so typing `volume` surfaces
 both the raw series and the ratio preset. This is intentional for v1; drop
 the entry from `matchKeys` if field-testing reveals confusion (SB3.b
 candidate).
+
+### SB2 — indexed history (`series[N]` + 4 history fns)
+
+SB2 (2026-05-16) extends the grammar with the **historical reference layer**.
+The TS Pratt parser at `app/lib/strategy/expression.ts` mirrors the backend
+Python verbatim — same tokens, same binding powers, same error reason codes
+— so the editor's instant-feedback parse matches what the server will accept.
+
+| Addition | Shape | Notes |
+|---|---|---|
+| `SubscriptNode` | `{type: "subscript", series, offset}` | Postfix `series[N]`. Source `close[1]` parses to `Subscript(series=IndicatorRef(close), offset=Const(1))`. In SB2.0 `offset` must be a positive-integer constant; dynamic offsets are reserved for SB2.b. |
+| `highest(series, N)` | `FunctionCall` | Rolling max over the last N bars. Length `N` must be a positive-integer literal. |
+| `lowest(series, N)` | `FunctionCall` | Rolling min, same arity rules as `highest`. |
+| `barssince(cond)` | `FunctionCall` | Bars since `cond` was last True (Pine `na` if never). The `cond` arg accepts a comparison-op tree (`rsi > 70`) — the only place SB2's `cmp_allowed` flag flips on inside the validator walk. |
+| `valuewhen(cond, expr)` | `FunctionCall` | Value of `expr` at the bar `cond` was last True. Two-arg only in SB2.0 (Pine's `occurrence=N` third arg deferred to SB2.b). |
+
+Lexer change: `[` is added to the operator set; the parser registers a postfix
+led-handler at atom precedence so `close_price[1]` binds tighter than unary
+minus (`-close[1]` parses as `-(close[1])`). `MATH_FN_NAMES` is extended with
+the four history fn names; the existing function-call snippet path in
+`<ExpressionInput>` autocomplete surfaces them with a "history" hint label
+(via the new `MATH_FN_HINTS` map) instead of the generic "math fn" so the
+dropdown reads like a real screener.
+
+The three SB2 preset chips (above) ship in a "Historical context" mini-strip
+appended to the `PRESET_CHIPS` array AFTER SB3's two volume entries. The
+Donchian chips deliberately use the `[1]` shift on `highest`/`lowest` so the
+breakout/breakdown is judged against the **prior** bar's rolling max/min —
+matching Pine's `close > ta.highest(high, 20)[1]` convention. The same-bar
+form (`close > highest(high, 20)`) is mathematically degenerate (OHLC
+invariant: today's close cannot exceed today's high), and the tester
+confirmed our evaluator correctly never fires the degenerate form across the
+50-bar Donchian fixture.
+
+Round-trip parity: every SB2 expression (`close > highest(high, 20)`,
+`close[1]`, `barssince(rsi > 70)`, `valuewhen(rsi > 70, close_price)`)
+round-trips exactly through `tryParseExpression` → `expressionToSource` →
+`tryParseExpression` (string-equality stable across re-parses). Cross-system
+verified: TS parser → AST JSON → Python deserialize → `_eval_expr` against
+a real `pd.DataFrame` OHLC fixture matches `df.high.rolling(20).max()` for
+every bar in a 50-bar window (under-warm bars return None on both sides).
+
+SB2 reason codes (mirrored from backend, surfaced by the editor's inline
+diagnostics): `subscript_offset_not_static` (FE / dossier), `highest_lowest_length_invalid`,
+`math_fn_arity`. Backend uses `subscript_index_dynamic_deferred` for the same
+case — string asymmetry only; tests on each side are self-consistent. Dossier:
+`docs/design_call_dossiers/SB2_indexed_history_2026-05-16.md` (psxDataPortal).
 
 ## `./layout.ts` — layered (logic-graph) auto-layout
 

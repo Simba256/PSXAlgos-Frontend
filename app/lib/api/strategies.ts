@@ -78,12 +78,40 @@ export interface ParenNode {
 // SB8 — closed-set math helpers. Plain identifier (no `math.` namespace),
 // strict NaN propagation matches Pine Script `math.*` semantics. Arity:
 // `abs` exactly 1 ; `round` / `log` 1–2 ; `max` / `min` >= 2.
-export type MathFnName = "abs" | "max" | "min" | "round" | "log";
+// SB2 — extends the closed set with four history-aware helpers:
+// `highest(series, N)` / `lowest(series, N)` are rolling extrema over the
+// last N bars (current included); `barssince(cond)` counts bars since a
+// condition was last True; `valuewhen(cond, expr)` returns `expr` at the
+// most-recent True bar. All four return None when under-warm — same Pine
+// semantics as `ta.highest` etc. Length / offset args are static integers
+// in SB2.0; dynamic forms defer to SB2.b.
+export type MathFnName =
+  | "abs"
+  | "max"
+  | "min"
+  | "round"
+  | "log"
+  | "highest"
+  | "lowest"
+  | "barssince"
+  | "valuewhen";
 
 export interface FunctionCallNode {
   type: "function_call";
   name: MathFnName;
   args: ExprNode[];
+}
+
+// SB2 — postfix indexed history. `series[N]` is the value of `series` N
+// bars ago; `close_price[0]` is the current bar, `close_price[1]` is the
+// previous bar. Pine-exact: returns None (≡ NaN) when N exceeds the bar
+// history window. SB2.0 enforces a non-negative integer literal offset at
+// validate time; dynamic offsets (e.g. `close[barssince(cross)]`) are
+// deferred to SB2.b.
+export interface SubscriptNode {
+  type: "subscript";
+  series: ExprNode;
+  offset: ExprNode;
 }
 
 export type ExprNode =
@@ -92,7 +120,8 @@ export type ExprNode =
   | BinaryOpNode
   | UnaryOpNode
   | ParenNode
-  | FunctionCallNode;
+  | FunctionCallNode
+  | SubscriptNode;
 
 // Public alias — kept so existing callers can keep importing `ConditionValue`
 // (the editor uses it widely). The backend exports the same alias for the

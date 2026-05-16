@@ -14,6 +14,7 @@ import { useT } from "@/components/theme";
 import {
   expressionToSource,
   KNOWN_INDICATORS,
+  MATH_FN_HINTS,
   MATH_FN_NAMES,
   tryParseExpression,
   type TryParseResult,
@@ -76,7 +77,10 @@ export interface PresetChip {
     | "bb-percent-b"
     | "bb-bandwidth"
     | "relative-volume"
-    | "dollar-volume";
+    | "dollar-volume"
+    | "donchian-breakout"
+    | "donchian-breakdown"
+    | "previous-close";
   /** Chip + autocomplete label. Keep short — fits a 44 px chip. */
   label: string;
   /** Single-line tooltip and autocomplete `hint` text. */
@@ -139,6 +143,34 @@ export const PRESET_CHIPS: readonly PresetChip[] = [
       "Dollar turnover for the bar: close_price × volume. Large = liquid name; small = thin-liquidity warning.",
     expression: "close_price * volume",
     matchKeys: ["dollar_volume", "dvol", "turnover", "liquidity", "notional"],
+  },
+  // SB2 — historical-context presets. Each inserts the RHS of a Single-
+  // Condition; the user wires the outer indicator + operator (e.g. set the
+  // LHS to `close_price` and the operator to `>`). Matches TradingView's
+  // Donchian Channels 20-bar default.
+  {
+    id: "donchian-breakout",
+    label: "Donchian Breakout",
+    description:
+      "Highest high of the last 20 bars: highest(high_price, 20). Pair with LHS close_price and operator '>' for a 20-bar breakout.",
+    expression: "highest(high_price, 20)",
+    matchKeys: ["donchian", "breakout", "highest", "new_high", "channel"],
+  },
+  {
+    id: "donchian-breakdown",
+    label: "Donchian Breakdown",
+    description:
+      "Lowest low of the last 20 bars: lowest(low_price, 20). Pair with LHS close_price and operator '<' for a 20-bar breakdown.",
+    expression: "lowest(low_price, 20)",
+    matchKeys: ["donchian", "breakdown", "lowest", "new_low", "channel"],
+  },
+  {
+    id: "previous-close",
+    label: "Previous Close",
+    description:
+      "Yesterday's close: close_price[1]. Use [N] to reach any prior bar — close_price[5] is 5 bars ago.",
+    expression: "close_price[1]",
+    matchKeys: ["previous", "yesterday", "lag", "prior", "before"],
   },
 ] as const;
 
@@ -252,13 +284,15 @@ export function ExpressionInput({
       // SB8 — math helper snippets. Surface before indicators so the
       // function-call form is one keystroke away (`abs` → `abs(`). The
       // user still completes the args themselves; the snippet just lands
-      // the open paren and a hint at the arity.
+      // the open paren and a hint at the arity. SB2 — the four history
+      // helpers (highest/lowest/barssince/valuewhen) read as "history"
+      // via MATH_FN_HINTS so users can tell them apart from plain math.
       for (const fn of MATH_FN_NAMES) {
         if (!q || fn.startsWith(q)) {
           indMatches.push({
             insertText: `${fn}(`,
             label: `${fn}( … )`,
-            hint: "math fn",
+            hint: MATH_FN_HINTS[fn],
           });
         }
       }
