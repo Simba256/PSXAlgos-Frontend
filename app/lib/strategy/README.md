@@ -45,7 +45,7 @@ edit are simpler and fast enough.
 `MAX_CONDITION_DEPTH = 32` — mirrors the backend constant in
 `backend/app/schemas/strategy.py`. Update both together if it ever moves.
 
-## Preset chips (SB10 + SB3 + SB2 + SB7 + SB11)
+## Preset chips (SB10 + SB3 + SB2 + SB7 + SB11 + SB9)
 
 The strategy editor surfaces a row of preset chips above the expression input
 that one-tap-insert pre-validated compositions over the indicator vocabulary.
@@ -76,6 +76,11 @@ suggestions.
 | `trend-strength-slope` | SB11 | `linreg_slope(close_price, 20)` | ta-lib `LINEARREG_SLOPE(close, 20)` / Bloomberg `LR_SLOPE`; OLS slope (price units per bar) — positive = uptrend, negative = downtrend |
 | `high-volatility-regime` | SB11 | `stdev(close_price, 20)` | Pine `ta.stdev(close, 20, biased=true)`; pair with `> stdev(close_price, 60)` for "short-term vol exceeds long-term" regime detection |
 | `stat-correlation` | SB11 | `correlation(close_price, volume, 20)` | Pine `ta.correlation(close, volume, 20)`; ta-lib `CORREL`; Pearson rolling correlation in `[-1, +1]` (cross-asset needs SB6) |
+| `bullish-reversal` | SB9 | `is_hammer` | ta-lib `CDLHAMMER`; Pine `ta.cdlhammer != 0`; Nison Ch. 4 — small body in upper half, lower wick ≥ 2× body |
+| `bearish-reversal` | SB9 | `is_shooting_star` | ta-lib `CDLSHOOTINGSTAR`; Pine `ta.cdlshootingstar != 0`; Nison Ch. 7 — small body in lower half, upper wick ≥ 2× body |
+| `inside-bar` | SB9 | `is_inside_bar` | TradingView "Inside Bar" screener (wick-inclusive `h < h[1] and l > l[1]`); Western definition, not strict Nison harami |
+| `gap-watch` | SB9 | `gap_up` | TradingView "Gap Up" screener — `low > high[1]`; any gap including 1-tick counts |
+| `indecision` | SB9 | `is_doji` | ta-lib `CDLDOJI`; Pine `ta.cdldoji != 0`; Nison Ch. 8 — body < 10% of range |
 
 SB3 also extends the indicator vocabulary itself — `KNOWN_INDICATORS` in
 `expression.ts` adds `"volume_sma_20"` so the bare ref typechecks against the
@@ -249,6 +254,57 @@ Statistical primitives that *defer* to SB11.b: `linreg_intercept`,
 `median`, `mean(s, N)`, `beta(s, market, N)` (needs SB6 cross-asset),
 `cov(s_a, s_b, N)`. None appear in the autocomplete today. Dossier:
 `docs/design_call_dossiers/SB11_statistical_fns_2026-05-16.md` (psxDataPortal).
+
+### SB9 — candlestick pattern booleans (`is_doji`, `is_hammer`, `is_shooting_star`, `is_marubozu`, `bullish_engulfing`, `bearish_engulfing`, `is_inside_bar`, `is_outside_bar`, `gap_up`, `gap_down`)
+
+SB9 (2026-05-16) extends the `Indicator` enum with **10 candlestick pattern
+boolean tokens** that slot into the existing `IndicatorRefNode` path. No new
+grammar, no new node type, no schema migration. Industry-standard references:
+ta-lib `CDL*` / Pine Script v5 `ta.cdl*` / Nison *Japanese Candlestick
+Charting Techniques*. TradingView screener label alignment is the
+industry-standard tiebreaker (memory: `feedback_industry_standard_ux`).
+
+| Token | Bars needed | Returns `1.0` when… |
+|---|---|---|
+| `is_doji` | 1 | `abs(c - o) / (h - l) < 0.10`; flat bar uses `o == c` |
+| `is_hammer` | 1 | Small body (< 35% of range), lower wick ≥ 2× body, upper wick ≤ 10% of range |
+| `is_shooting_star` | 1 | Small body (< 35%), upper wick ≥ 2× body, lower wick ≤ 10% of range |
+| `is_marubozu` | 1 | Both shadows ≤ 1% of body (ta-lib `ShadowVeryShort` tolerance) |
+| `bullish_engulfing` | 2 | Prev bearish + current bullish body fully engulfs prev body |
+| `bearish_engulfing` | 2 | Prev bullish + current bearish body fully engulfs prev body |
+| `is_inside_bar` | 2 | `h < ph and l > pl` (wick-inclusive; TradingView definition) |
+| `is_outside_bar` | 2 | `h > ph and l < pl` (exact opposite of inside bar) |
+| `gap_up` | 2 | `l > ph` (current low above prev high — any gap, including 1-tick) |
+| `gap_down` | 2 | `h < pl` (current high below prev low) |
+
+All 10 tokens are added to `KNOWN_INDICATORS` in `expression.ts` so the
+parser accepts them as bare identifiers. A new `PATTERN_INDICATORS:
+ReadonlySet<string>` export in `expression.ts` lists all 10; the autocomplete
+loop in `expression-input.tsx` checks `PATTERN_INDICATORS.has(ind)` and
+emits `hint: "pattern"` so users can distinguish them from plain numeric
+indicators (`"indicator"` hint), math functions (`"math fn"` / `"history"` /
+`"statistics"`), and preset chips (`"preset"` hint).
+
+**Condition wiring**: users set the LHS `indicator` of a `SingleCondition` to
+the pattern token, operator `>`, value `0`. This reads as "pattern is present
+(1 > 0 = True)". `== 1` also works. The chip `description` tooltips spell out
+the canonical pair.
+
+**Five new preset chips** (appended AFTER SB11's `stat-correlation`, preserving
+SB10 → SB3 → SB2 → SB7 → SB11 → SB9 order):
+
+| Chip id | Inserts | Canonical condition |
+|---|---|---|
+| `bullish-reversal` | `is_hammer` | `is_hammer > 0` (combine with `bearish_engulfing > 0` in an OR group for the full reversal screen) |
+| `bearish-reversal` | `is_shooting_star` | `is_shooting_star > 0` |
+| `inside-bar` | `is_inside_bar` | `is_inside_bar > 0` (compression / range contraction) |
+| `gap-watch` | `gap_up` | `gap_up > 0` or `gap_down > 0` in a separate condition |
+| `indecision` | `is_doji` | `is_doji > 0` (body < 10% of range) |
+
+Three-bar patterns (`three_white_soldiers`, `three_black_crows`, `morning_star`,
+`evening_star`) and trend-context filters for hammer/shooting-star defer to
+SB9.b. None appear in the autocomplete today. Dossier:
+`docs/design_call_dossiers/SB9_candlestick_patterns_2026-05-16.md` (psxDataPortal).
 
 ## `./layout.ts` — layered (logic-graph) auto-layout
 

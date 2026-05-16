@@ -16,6 +16,7 @@ import {
   KNOWN_INDICATORS,
   MATH_FN_HINTS,
   MATH_FN_NAMES,
+  PATTERN_INDICATORS,
   tryParseExpression,
   type TryParseResult,
 } from "@/lib/strategy/expression";
@@ -88,7 +89,12 @@ export interface PresetChip {
     | "zscore-breakout"
     | "trend-strength-slope"
     | "high-volatility-regime"
-    | "stat-correlation";
+    | "stat-correlation"
+    | "bullish-reversal"
+    | "bearish-reversal"
+    | "inside-bar"
+    | "gap-watch"
+    | "indecision";
   /** Chip + autocomplete label. Keep short — fits a 44 px chip. */
   label: string;
   /** Single-line tooltip and autocomplete `hint` text. */
@@ -250,6 +256,47 @@ export const PRESET_CHIPS: readonly PresetChip[] = [
     expression: "correlation(close_price, volume, 20)",
     matchKeys: ["correlation", "corr", "pearson", "cor", "relate"],
   },
+  // SB9 — candlestick pattern presets.
+  {
+    id: "bullish-reversal",
+    label: "Bullish reversal",
+    description:
+      "Hammer or bullish engulfing: is_hammer OR bullish_engulfing. Use as two separate conditions joined by OR logic in the condition group.",
+    expression: "is_hammer",
+    matchKeys: ["hammer", "bullish_reversal", "bullish", "reversal", "cdl_bull"],
+  },
+  {
+    id: "bearish-reversal",
+    label: "Bearish reversal",
+    description:
+      "Shooting star or bearish engulfing: is_shooting_star OR bearish_engulfing. Use as two separate conditions joined by OR logic in the condition group.",
+    expression: "is_shooting_star",
+    matchKeys: ["shooting_star", "bearish_reversal", "bearish", "reversal", "cdl_bear"],
+  },
+  {
+    id: "inside-bar",
+    label: "Inside Bar",
+    description:
+      "Current bar's high < prev high AND low > prev low (Western inside bar / wick containment). Pair with LHS is_inside_bar and operator '>' with value 0.",
+    expression: "is_inside_bar",
+    matchKeys: ["inside_bar", "inside", "harami", "containment", "compression"],
+  },
+  {
+    id: "gap-watch",
+    label: "Gap watch",
+    description:
+      "Gap up or gap down: gap_up OR gap_down. Current bar opens outside the prior bar's entire range. Use as two separate conditions in an OR group.",
+    expression: "gap_up",
+    matchKeys: ["gap", "gap_up", "gap_down", "gap_watch", "opening_gap"],
+  },
+  {
+    id: "indecision",
+    label: "Indecision",
+    description:
+      "Doji or spinning top-like uncertainty: is_doji. Body < 10% of range. Use as LHS is_doji with operator '>' and value 0.",
+    expression: "is_doji",
+    matchKeys: ["doji", "indecision", "spinning_top", "uncertainty", "neutral"],
+  },
 ] as const;
 
 function useTouchPointer(): boolean {
@@ -392,18 +439,19 @@ export function ExpressionInput({
       const contains: Suggestion[] = [];
       for (const ind of indicators) {
         if (!KNOWN_INDICATORS.has(ind)) continue;
+        const hint = PATTERN_INDICATORS.has(ind) ? "pattern" : ind;
         if (!q) {
           starts.push({
             insertText: ind,
             label: formatIndicatorLabel(ind),
-            hint: ind,
+            hint,
           });
           continue;
         }
         if (ind.startsWith(q)) {
-          starts.push({ insertText: ind, label: formatIndicatorLabel(ind), hint: ind });
+          starts.push({ insertText: ind, label: formatIndicatorLabel(ind), hint });
         } else if (ind.includes(q)) {
-          contains.push({ insertText: ind, label: formatIndicatorLabel(ind), hint: ind });
+          contains.push({ insertText: ind, label: formatIndicatorLabel(ind), hint });
         }
       }
       indMatches.push(...starts, ...contains);

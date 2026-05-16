@@ -158,6 +158,34 @@ export const KNOWN_INDICATORS: ReadonlySet<string> = new Set([
   "dayofweek",
   "entries_today",
   "bars_since_entry",
+  // SB9 — candlestick pattern booleans. Bare identifiers that resolve to
+  // 1.0 (True) / 0.0 (False) / None at eval-time from OHLC.
+  // Single-bar:
+  "is_doji",
+  "is_hammer",
+  "is_shooting_star",
+  "is_marubozu",
+  // Two-bar (requires prev bar via MarketDataWindow):
+  "bullish_engulfing",
+  "bearish_engulfing",
+  "is_inside_bar",
+  "is_outside_bar",
+  "gap_up",
+  "gap_down",
+]);
+
+// SB9 — candlestick pattern tokens for autocomplete labeling.
+export const PATTERN_INDICATORS: ReadonlySet<string> = new Set([
+  "is_doji",
+  "is_hammer",
+  "is_shooting_star",
+  "is_marubozu",
+  "bullish_engulfing",
+  "bearish_engulfing",
+  "is_inside_bar",
+  "is_outside_bar",
+  "gap_up",
+  "gap_down",
 ]);
 
 // ── Errors ──────────────────────────────────────────────────────────────
