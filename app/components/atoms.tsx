@@ -380,6 +380,7 @@ export function TerminalTable<R>({
   rows,
   renderCell,
   getRowColor,
+  getRowBackground,
   onRowClick,
   minWidth,
 }: {
@@ -387,6 +388,7 @@ export function TerminalTable<R>({
   rows: R[][];
   renderCell?: (cell: R, ci: number, ri: number, col: Col) => ReactNode;
   getRowColor?: (row: R[], ri: number) => string | undefined;
+  getRowBackground?: (row: R[], ri: number) => string | undefined;
   onRowClick?: (row: R[], ri: number) => void;
   minWidth?: number;
 }) {
@@ -400,6 +402,7 @@ export function TerminalTable<R>({
         rows={rows}
         renderCell={renderCell}
         getRowColor={getRowColor}
+        getRowBackground={getRowBackground}
         onRowClick={onRowClick}
       />
     );
@@ -447,6 +450,7 @@ export function TerminalTable<R>({
       </div>
       {rows.map((row, ri) => {
         const clickable = Boolean(onRowClick);
+        const rowBg = (getRowBackground && getRowBackground(row, ri)) ?? undefined;
         return (
           <div
             key={ri}
@@ -469,6 +473,7 @@ export function TerminalTable<R>({
               padding: "10px 0",
               borderBottom: `1px dotted ${T.outlineFaint}`,
               color: (getRowColor && getRowColor(row, ri)) || T.text2,
+              background: rowBg ?? "transparent",
               alignItems: "center",
               cursor: clickable ? "pointer" : undefined,
               transition: "background 0.12s",
@@ -476,14 +481,14 @@ export function TerminalTable<R>({
             onMouseEnter={
               clickable
                 ? (e) => {
-                    (e.currentTarget as HTMLDivElement).style.background = T.surfaceLow;
+                    if (!rowBg) (e.currentTarget as HTMLDivElement).style.background = T.surfaceLow;
                   }
                 : undefined
             }
             onMouseLeave={
               clickable
                 ? (e) => {
-                    (e.currentTarget as HTMLDivElement).style.background = "transparent";
+                    (e.currentTarget as HTMLDivElement).style.background = rowBg ?? "transparent";
                   }
                 : undefined
             }
@@ -515,12 +520,14 @@ function TerminalCards<R>({
   rows,
   renderCell,
   getRowColor,
+  getRowBackground,
   onRowClick,
 }: {
   cols: Col[];
   rows: R[][];
   renderCell?: (cell: R, ci: number, ri: number, col: Col) => ReactNode;
   getRowColor?: (row: R[], ri: number) => string | undefined;
+  getRowBackground?: (row: R[], ri: number) => string | undefined;
   onRowClick?: (row: R[], ri: number) => void;
 }) {
   const T = useT();
@@ -561,6 +568,7 @@ function TerminalCards<R>({
       {rows.map((row, ri) => {
         const clickable = Boolean(onRowClick);
         const rowColor = (getRowColor && getRowColor(row, ri)) || T.text2;
+        const rowBg = (getRowBackground && getRowBackground(row, ri)) ?? T.surfaceLow;
         const primaryCol = cols[primaryIdx];
         return (
           <div
@@ -581,7 +589,7 @@ function TerminalCards<R>({
             style={{
               padding: 14,
               borderRadius: 8,
-              background: T.surfaceLow,
+              background: rowBg,
               boxShadow: `0 0 0 1px ${T.outlineFaint}`,
               color: rowColor,
               cursor: clickable ? "pointer" : undefined,

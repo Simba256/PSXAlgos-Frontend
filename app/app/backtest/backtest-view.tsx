@@ -1,13 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import type { IChartApi } from "lightweight-charts";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
 import type {
   BacktestEquityPoint,
   BacktestResultResponse,
+  BacktestTrade,
   EffectiveRiskResolution,
   EffectiveRiskSnapshot,
 } from "@/lib/api/strategies";
@@ -24,8 +27,18 @@ import {
 import { EquityCurve } from "@/components/charts";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
+import { useBacktestChartSeries } from "@/lib/hooks/useBacktestChartSeries";
+import type { BacktestPriceChartProps } from "./backtest-price-chart";
 
 type TradeFilter = "all" | "wins" | "losses";
+
+const BacktestPriceChart = dynamic<BacktestPriceChartProps>(
+  () => import("./backtest-price-chart"),
+  {
+    ssr: false,
+    loading: () => <div style={{ height: 320 }} />,
+  },
+);
 
 interface Trade {
   n: number;
@@ -288,7 +301,13 @@ export function BacktestView({
   const [benchmarkSaved, setBenchmarkSaved] = useState(false);
   const [deployed, setDeployed] = useState(false);
   const [filter, setFilter] = useState<TradeFilter>("all");
+  const [focusedTradeIndex, setFocusedTradeIndex] = useState<number | null>(null);
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const chartRef = useRef<IChartApi>(null);
   const { flash, setFlash } = useFlash();
+
+  const backtestId = result?.id ?? null;
+  const { chartData } = useBacktestChartSeries(strategyId, backtestId);
   const [ranLabel, setRanLabel] = useState<string>(
     initialResult ? `ran ${formatRan(Date.now() - lastRun)}` : "no run yet",
   );
@@ -300,6 +319,20 @@ export function BacktestView({
     const iv = setInterval(tick, 10_000);
     return () => clearInterval(iv);
   }, [lastRun, result]);
+
+  useEffect(() => {
+    if (!chartData?.series?.length) return;
+    setSelectedSymbol((prev) => {
+      if (prev && chartData.series.some((s) => s.symbol === prev)) return prev;
+      return chartData.series[0].symbol;
+    });
+  }, [chartData]);
+
+  useEffect(() => {
+    if (focusedTradeIndex === null || !result?.trades) return;
+    const trade = result.trades[focusedTradeIndex];
+    if (trade) setSelectedSymbol(trade.symbol);
+  }, [focusedTradeIndex, result?.trades]);
 
   // Re-run pre-fills the run page with the saved result's window, so the
   // user can tweak it (or just click Run again) instead of remembering the
@@ -622,6 +655,63 @@ export function BacktestView({
             </div>
           )}
 
+          {result && chartData && (
+            <div style={{ marginTop: 32 }}>
+              <Ribbon
+                kicker="price chart"
+                right={
+                  <div style={{ display: "flex", gap: 4, overflowX: "auto" }}>
+                    {chartData.series.map((s) => {
+                      const active = s.symbol === selectedSymbol;
+                      return (
+                        <button
+                          key={s.symbol}
+                          type="button"
+                          onClick={() => {
+                            setSelectedSymbol(s.symbol);
+                            setFocusedTradeIndex(null);
+                          }}
+                          style={{
+                            padding: "3px 10px",
+                            borderRadius: 999,
+                            background: active ? T.surface3 : "transparent",
+                            color: active ? T.text : T.text3,
+                            border: "none",
+                            cursor: "pointer",
+                            fontFamily: T.fontMono,
+                            fontSize: 10.5,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {s.symbol}
+                        </button>
+                      );
+                    })}
+                  </div>
+                }
+              />
+              <div style={{ marginTop: 8 }}>
+                <BacktestPriceChart
+                  symbol={selectedSymbol ?? ""}
+                  bars={chartData.series.find((s) => s.symbol === selectedSymbol)?.bars ?? []}
+                  trades={
+                    (result.trades ?? []).filter(
+                      (t: BacktestTrade) => t.symbol === selectedSymbol,
+                    )
+                  }
+                  focusedTradeIndex={
+                    focusedTradeIndex !== null &&
+                    result.trades?.[focusedTradeIndex]?.symbol === selectedSymbol
+                      ? focusedTradeIndex
+                      : null
+                  }
+                  onClearFocus={() => setFocusedTradeIndex(null)}
+                  chartRef={chartRef}
+                />
+              </div>
+            </div>
+          )}
+
           <div
             style={{
               display: "grid",
@@ -868,7 +958,19 @@ export function BacktestView({
               }
             />
             <div style={{ marginTop: 8 }}>
-              <TradeLog trades={visibleTrades} />
+              <TradeLog
+                trades={visibleTrades}
+                onTradeClick={(visibleIdx) => {
+                  const clicked = visibleTrades[visibleIdx];
+                  const originalIdx = allTrades.findIndex((t) => t === clicked);
+                  setFocusedTradeIndex(originalIdx >= 0 ? originalIdx : visibleIdx);
+                }}
+                focusedRowIndex={
+                  focusedTradeIndex !== null
+                    ? visibleTrades.findIndex((t) => t === allTrades[focusedTradeIndex])
+                    : null
+                }
+              />
             </div>
             <div
               style={{
@@ -918,7 +1020,15 @@ export function BacktestView({
   );
 }
 
-function TradeLog({ trades }: { trades: Trade[] }) {
+function TradeLog({
+  trades,
+  onTradeClick,
+  focusedRowIndex,
+}: {
+  trades: Trade[];
+  onTradeClick?: (index: number) => void;
+  focusedRowIndex?: number | null;
+}) {
   const T = useT();
   const cols: Col[] = [
     { label: "#", width: "40px", hideOnMobile: true },
@@ -963,6 +1073,12 @@ function TradeLog({ trades }: { trades: Trade[] }) {
     <TerminalTable
       cols={cols}
       rows={rows}
+      onRowClick={onTradeClick ? (_row, ri) => onTradeClick(ri) : undefined}
+      getRowBackground={
+        focusedRowIndex != null
+          ? (_row, ri) => (ri === focusedRowIndex ? T.surface3 : undefined)
+          : undefined
+      }
       renderCell={(cell, ci) => {
         if (ci === 0) return <span style={{ color: T.text3 }}>{cell as ReactNode}</span>;
         if (ci === 1)
