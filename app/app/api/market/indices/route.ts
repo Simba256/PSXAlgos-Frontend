@@ -19,17 +19,20 @@ interface IndexRow {
 const BACKEND_TIMEOUT_MS = 6_000;
 const REVALIDATE_S = 60; // ticker is per-day EOD-derived, 60s is overkill-fresh
 
-export async function GET() {
+export async function GET(request: Request) {
   const base = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "");
   if (!base) {
     return NextResponse.json({ error: "backend not configured" }, { status: 500 });
   }
 
+  const { searchParams } = new URL(request.url);
+  const period = searchParams.get("period") ?? "1D";
+
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), BACKEND_TIMEOUT_MS);
 
   try {
-    const res = await fetch(`${base}/market/indices?period=1D`, {
+    const res = await fetch(`${base}/market/indices?period=${encodeURIComponent(period)}`, {
       signal: controller.signal,
       headers: { Accept: "application/json" },
       next: { revalidate: REVALIDATE_S },

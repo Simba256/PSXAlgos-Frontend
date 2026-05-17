@@ -11,6 +11,13 @@
 app/
 ├── app/                   # Next.js App Router pages + API proxy routes
 │   ├── api/               # Proxy routes (forward auth headers to Railway backend)
+│   │   ├── market/        # Public BFF routes (no auth — market data is public)
+│   │   │   ├── overview/route.ts
+│   │   │   ├── indices/route.ts
+│   │   │   ├── top-gainers/route.ts
+│   │   │   ├── top-losers/route.ts
+│   │   │   ├── most-active/route.ts
+│   │   │   └── sector-performance/route.ts
 │   │   └── strategies/
 │   │       ├── [id]/
 │   │       │   └── backtests/
@@ -20,6 +27,7 @@ app/
 │   ├── backtest/          # /backtests/[id] — result page, chart, trade log
 │   ├── bots/              # /bots — bot management
 │   ├── leaderboard/
+│   ├── market/            # /market — market overview (indices, breadth, movers, sectors)
 │   ├── portfolio/
 │   ├── pricing/
 │   ├── signals/
@@ -49,6 +57,69 @@ app/
 ---
 
 ## Hooks Reference
+
+### `useMarketOverview()` — `app/lib/hooks/use-market.ts`
+
+Fetches market summary: total stocks, latest trading date, and breadth stats.
+
+```ts
+interface MarketBreadth {
+  advancers: number; decliners: number; unchanged: number;
+  advance_decline_ratio: number | null; total_volume: number;
+  advancing_volume: number; declining_volume: number;
+  new_highs: number; new_lows: number;
+}
+interface MarketOverviewResponse {
+  total_stocks: number | null; latest_date: string | null;
+  market_breadth: MarketBreadth | null;
+}
+useMarketOverview() // Returns: { data, hasLoaded, isValidating, error }
+```
+
+- SWR key: `/api/market/overview`
+- `errorRetryCount: 0`, `keepPreviousData: true`, `revalidateOnFocus: false`
+
+### `useMarketIndices(period)` — `app/lib/hooks/use-market.ts`
+
+Fetches KSE-100, KSE-30, KMI-30 with value, change, changePercent, and sparkline points for a given period.
+
+```ts
+type Period = "1D" | "1W" | "1M" | "3M" | "YTD" | "1Y";
+interface IndexResponse {
+  name: string; symbol: string; value: number;
+  change: number; changePercent: number; sparkline: number[]; period: string;
+}
+useMarketIndices(period: string) // Returns: { data: IndexResponse[] | null, hasLoaded, isValidating, error }
+```
+
+- SWR key: `/api/market/indices?period=${period}` (key changes on period switch)
+
+### `useTopMovers(type, limit?)` — `app/lib/hooks/use-market.ts`
+
+Fetches gainers, losers, or most-active stocks. `limit` defaults to 10.
+
+```ts
+type MoverType = "gainers" | "losers" | "most-active";
+interface StockMoverResponse { symbol: string; name: string | null; sector: string | null; current_price: number; previous_price: number; volume: number | null; change_percent: number; }
+interface MostActiveStockResponse { symbol: string; name: string | null; sector: string | null; current_price: number; volume: number | null; change_percent: number; }
+useTopMovers(type: MoverType, limit?: number) // Returns: { data: StockMoverResponse[] | MostActiveStockResponse[] | null, hasLoaded, isValidating, error }
+```
+
+- SWR key: `/api/market/${type}?limit=${limit}`
+
+### `useSectorPerformance()` — `app/lib/hooks/use-market.ts`
+
+Fetches per-sector avg change, advancers/decliners counts, total volume, and stock count.
+
+```ts
+interface SectorPerformanceResponse {
+  sector: string; stock_count: number; avg_change_percent: number;
+  total_volume: number | null; advancers: number; decliners: number;
+}
+useSectorPerformance() // Returns: { data: SectorPerformanceResponse[] | null, hasLoaded, isValidating, error }
+```
+
+- SWR key: `/api/market/sector-performance`
 
 ### `useBacktestChartSeries(strategyId, backtestId)` — `app/lib/hooks/useBacktestChartSeries.ts`
 
@@ -113,6 +184,33 @@ Allows callers to supply a per-row background color. Used by `backtest-view.tsx`
 
 ## Pages Reference
 
+### `/market` — `app/app/market/market-view.tsx`
+
+Pakistan Stock Exchange market overview page. Statically generated (`○`) with six vertical sections:
+
+| Section | Component | Data hook |
+|---|---|---|
+| Hero | `MarketHero` | `useMarketOverview`, `useMarketIndices("1D")` |
+| Indices strip | `IndicesStrip` | `useMarketIndices(period)` — period toggle: 1D/1W/1M/3M/YTD/1Y |
+| Market breadth | `BreadthRow` | `useMarketOverview` — advancers, decliners, A/D ratio, new highs/lows, volumes |
+| Top movers | `TopMoversTabs` | `useTopMovers(type, 10)` — tabbed: Gainers / Losers / Most Active |
+| Sector performance | `SectorPerformanceList` | `useSectorPerformance` — proportional bar + grid (1/2/3 cols by breakpoint) |
+| Heatmap CTA | `HeatmapCta` | Static — "Coming Soon" placeholder |
+
+**Key details:**
+- Market status badge (Open/Closed/Pre-Market/After-Hours) computed client-side from PKT clock — no API call.
+- KSE-100 headline value and change pulled from `useMarketIndices("1D")` in the hero.
+- Each index card renders an inline SVG `Sparkline` (polyline, no chart library).
+- Sector rows link to `/screener?sector=<encoded>`. Mover rows link to `/stock/<symbol>`.
+- All sections use `hasLoaded`-gated skeletons and inline error states.
+- Full dark-mode (Paper/Amber) and mobile-responsive via `useBreakpoint` + `PAD.page` spacing.
+
+**Files:**
+- `app/app/market/page.tsx` — RSC shell with metadata
+- `app/app/market/market-view.tsx` — all UI components (client)
+- `app/lib/hooks/use-market.ts` — four SWR hooks
+- `app/lib/api/market.ts` — typed fetch functions + response interfaces
+
 ### `/backtests/[id]` — `app/app/backtest/backtest-view.tsx`
 
 Backtest result detail page. Shows metrics, trade log, and price chart.
@@ -173,3 +271,22 @@ IBM Plex Sans (`--font-plex-sans`), IBM Plex Mono (`--font-plex-mono`), and Spac
 ## API Proxy Pattern
 
 All routes in `app/app/api/` forward to the Railway backend with the NextAuth session token attached as `Authorization: Bearer <token>`. The proxy layer exists so the backend URL and Railway credentials never reach the browser.
+
+---
+
+## BFF Routes Reference
+
+### Market BFF routes — `app/app/api/market/*/route.ts`
+
+Public routes (no auth required — market data is not user-scoped). Each route sets `Cache-Control: public, max-age=60, stale-while-revalidate=300` and uses Next.js `next: { revalidate: 60 }` on the upstream fetch. Upstream timeout: 6 s.
+
+| Route | Method | Upstream backend endpoint | Response type |
+|---|---|---|---|
+| `/api/market/overview` | GET | `GET /market/overview` | `MarketOverviewResponse` |
+| `/api/market/indices` | GET | `GET /market/indices?period=` | `IndexResponse[]` |
+| `/api/market/top-gainers` | GET | `GET /market/top-gainers?limit=` | `StockMoverResponse[]` |
+| `/api/market/top-losers` | GET | `GET /market/top-losers?limit=` | `StockMoverResponse[]` |
+| `/api/market/most-active` | GET | `GET /market/most-active?limit=` | `MostActiveStockResponse[]` |
+| `/api/market/sector-performance` | GET | `GET /market/sector-performance` | `SectorPerformanceResponse[]` |
+
+All interfaces are defined and exported from `app/lib/api/market.ts`.
