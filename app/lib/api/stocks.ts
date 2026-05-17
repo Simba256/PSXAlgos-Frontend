@@ -21,6 +21,9 @@ export interface StockResponse {
   is_active: boolean;
   created_at?: string | null;
   updated_at?: string | null;
+  last_close?: number | null;
+  last_close_date?: string | null;
+  last_change_pct?: number | null;
 }
 
 export interface StockListResponse {
@@ -62,6 +65,32 @@ export async function getStocksPage(
     throw new Error(`Failed to load stocks (${res.status})`);
   }
   return (await res.json()) as StockListResponse;
+}
+
+// Browser-safe: always hits the same-origin /api/stocks proxy.
+// Used by client components that need the full stock list + price snapshot.
+async function getStocksPageClient(
+  page: number,
+  pageSize: number,
+): Promise<StockListResponse> {
+  const res = await fetch(
+    `/api/stocks?page=${page}&page_size=${pageSize}&active_only=true`,
+    { headers: { Accept: "application/json" } },
+  );
+  if (!res.ok) throw new Error(`Failed to load stocks (${res.status})`);
+  return (await res.json()) as StockListResponse;
+}
+
+export async function getAllStocksClient(): Promise<StockResponse[]> {
+  const PAGE_SIZE = 100;
+  const first = await getStocksPageClient(1, PAGE_SIZE);
+  if (first.total_pages <= 1) return first.items;
+  const rest = await Promise.all(
+    Array.from({ length: first.total_pages - 1 }, (_, i) =>
+      getStocksPageClient(i + 2, PAGE_SIZE),
+    ),
+  );
+  return [...first.items, ...rest.flatMap((r) => r.items)];
 }
 
 // Fetch every active stock by walking pages in parallel after the first.

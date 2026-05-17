@@ -31,7 +31,8 @@ app/
 │   ├── portfolio/
 │   ├── pricing/
 │   ├── signals/
-│   └── strategies/        # /strategies — list + editor
+│   ├── strategies/        # /strategies — list + editor
+│   └── watchlists/        # /watchlists — saved symbol lists (auth-gated)
 ├── components/            # Shared UI primitives
 │   ├── atoms.tsx          # TerminalTable, StatTile, Badge, ProgressBar, etc.
 │   ├── charts.tsx         # Shared Recharts wrappers (not used for backtest price chart)
@@ -211,6 +212,10 @@ Pakistan Stock Exchange market overview page. Statically generated (`○`) with 
 - `app/lib/hooks/use-market.ts` — four SWR hooks
 - `app/lib/api/market.ts` — typed fetch functions + response interfaces
 
+### `/watchlists` — `app/app/watchlists/watchlists-view.tsx`
+
+Auth-gated page for managing saved symbol lists. Full details in the **Watchlists Page** section below.
+
 ### `/backtests/[id]` — `app/app/backtest/backtest-view.tsx`
 
 Backtest result detail page. Shows metrics, trade log, and price chart.
@@ -290,3 +295,54 @@ Public routes (no auth required — market data is not user-scoped). Each route 
 | `/api/market/sector-performance` | GET | `GET /market/sector-performance` | `SectorPerformanceResponse[]` |
 
 All interfaces are defined and exported from `app/lib/api/market.ts`.
+
+### Watchlist BFF routes — `app/app/api/watchlist/*/route.ts`
+
+Auth-required routes (NextAuth session → signed backend JWT). Upstream timeout: 8 s.
+
+| Route | Method | Upstream backend endpoint | Notes |
+|---|---|---|---|
+| `/api/watchlist` | GET | `GET /watchlists` | Lists all user watchlists |
+| `/api/watchlist` | POST | `POST /watchlists` | Create watchlist `{ name, symbols? }` |
+| `/api/watchlist/[id]` | GET | `GET /watchlists/{id}` | Single watchlist with items |
+| `/api/watchlist/[id]` | PATCH | `PATCH /watchlists/{id}` | Rename or update position |
+| `/api/watchlist/[id]` | DELETE | `DELETE /watchlists/{id}` | Delete watchlist |
+| `/api/watchlist/[id]/symbols` | POST | `POST /watchlists/{id}/symbols` | Add stock/index symbol |
+| `/api/watchlist/[id]/symbols/[symbol]` | DELETE | `DELETE /watchlists/{id}/symbols/{symbol}` | Remove stock/index symbol |
+| `/api/watchlist/[id]/sectors/[sectorId]` | DELETE | `DELETE /watchlists/{id}/sectors/{sectorId}` | Remove sector item |
+| `/api/watchlist/[id]/reorder` | PUT | `PUT /watchlists/{id}/reorder` | Reorder symbols `{ symbols: string[] }` |
+| `/api/watchlist/[id]/items` | POST | `POST /watchlists/{id}/items` | Add item by type (sector support) |
+
+---
+
+## Watchlists Page — `/watchlists`
+
+**Files:**
+- `app/app/watchlists/page.tsx` — RSC shell: auth-gates, redirects to `/?auth=required&from=/watchlists` if no session
+- `app/app/watchlists/watchlists-view.tsx` — full client island
+- `app/lib/hooks/use-watchlists.ts` — `useWatchlists()` + `useWatchlist(id)` SWR hooks
+- `app/lib/api/watchlists.ts` — typed fetch functions + all response/body interfaces
+
+**Layout:** sidebar (240px desktop) + main panel. Mobile: pill-chip row for list selection above the panel.
+
+**Components in `watchlists-view.tsx`:**
+- `WatchlistsView` — root client component; manages `activeId`, `toast`, all mutation handlers
+- `Body` — responsive grid layout: picks sidebar vs. chip row by `isMobile`
+- `WatchlistSidebar` — desktop: `WatchlistRow` list with hover-reveal up/down/rename/delete. Mobile: pill chips.
+- `WatchlistRow` — single sidebar entry; inline rename input on edit; `IconBtn` controls for reorder/rename/delete
+- `WatchlistTable` — `TerminalTable` with cols `["", symbol, name, type, ""]`; up/down arrows for STOCK/INDEX; remove button for all item types (calls `onRemoveSector` for SECTOR items)
+- `AddSymbolInput` — plain text input (uppercase transform) + Add button; Enter to submit
+- `EmptyState` — editorial layout with inline create form; shown when user has no watchlists
+- `ToastBar` — 3-second flash message bar
+
+**Hooks:**
+- `useWatchlists()` — SWR on `/api/watchlist`; returns `{ data: WatchlistListResponse | undefined, hasLoaded, isValidating, error, mutate }`
+- `useWatchlist(id: number | null)` — SWR on `/api/watchlist/${id}` when id non-null; same shape
+
+**Interfaces (`app/lib/api/watchlists.ts`):**
+```ts
+WatchlistItemResponse  // item_type, symbol | null, name, sector_id | null, position
+WatchlistResponse      // watchlist_id, name, position, items, symbols, created_at
+WatchlistListResponse  // watchlists, total
+WatchlistMutationResponse // success, watchlist_id?, watchlist?, message?, symbol?
+```
