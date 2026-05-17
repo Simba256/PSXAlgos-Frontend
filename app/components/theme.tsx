@@ -112,6 +112,10 @@ const Ctx = createContext<ThemeCtx | null>(null);
 
 const STORAGE_KEY = "psxalgos-theme";
 
+function osPrefersDark(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [mode, setModeState] = useState<Mode>(() => {
     if (typeof window === "undefined") return "light";
@@ -119,7 +123,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved === "light" || saved === "dark") return saved;
     } catch {}
-    return "light";
+    return osPrefersDark() ? "dark" : "light";
   });
 
   useEffect(() => {
@@ -137,6 +141,20 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       link.href = href;
     });
   }, [mode]);
+
+  // Live-update when OS preference changes, but only if the user hasn't
+  // explicitly chosen a theme yet (localStorage empty = no manual choice).
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = (e: MediaQueryListEvent) => {
+      try {
+        if (localStorage.getItem(STORAGE_KEY)) return;
+      } catch {}
+      setModeState(e.matches ? "dark" : "light");
+    };
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
 
   const setMode = useCallback((m: Mode) => {
     setModeState(m);

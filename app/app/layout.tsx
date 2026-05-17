@@ -52,7 +52,7 @@ export const viewport: Viewport = {
 // Paper → Amber flash on every load. Sets data-theme on <html> so the CSS
 // cascade in globals.css picks the right token values before first paint.
 // Keep the payload tiny — the script is inline and blocks first paint.
-const themeInit = `(function(){try{var m=localStorage.getItem("psxalgos-theme");if(m==="dark"||m==="light"){document.documentElement.setAttribute("data-theme",m);}}catch(e){}})();`;
+const themeInit = `(function(){try{var m=localStorage.getItem("psxalgos-theme");if(m==="dark"||m==="light"){document.documentElement.setAttribute("data-theme",m);}else if(window.matchMedia("(prefers-color-scheme: dark)").matches){document.documentElement.setAttribute("data-theme","dark");}}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

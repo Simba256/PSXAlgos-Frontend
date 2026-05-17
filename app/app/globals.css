@@ -247,3 +247,11 @@ canvas {
   padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--outline-faint);
 }
+
+/* On mobile (< 640px) the BottomTabBar (56px) sits above the safe area.
+ * Sticky CTAs must clear it so they don't overlap the tab bar. */
+@media (max-width: 639px) {
+  .psx-mobile-cta-bar {
+    bottom: calc(56px + env(safe-area-inset-bottom));
+  }
+}
