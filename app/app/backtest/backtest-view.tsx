@@ -2,9 +2,8 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import type { IChartApi } from "lightweight-charts";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
 import type {
@@ -303,7 +302,6 @@ export function BacktestView({
   const [filter, setFilter] = useState<TradeFilter>("all");
   const [focusedTradeIndex, setFocusedTradeIndex] = useState<number | null>(null);
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
-  const chartRef = useRef<IChartApi>(null);
   const { flash, setFlash } = useFlash();
 
   const backtestId = result?.id ?? null;
@@ -706,7 +704,6 @@ export function BacktestView({
                       : null
                   }
                   onClearFocus={() => setFocusedTradeIndex(null)}
-                  chartRef={chartRef}
                 />
               </div>
             </div>
