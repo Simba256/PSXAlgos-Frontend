@@ -1,7 +1,7 @@
 # PSX UI — Frontend
 
 > FastAPI backend → Next.js 15 frontend. Active repo; `psx-trading-view/` is legacy.
-> Last updated: 2026-05-17
+> Last updated: 2026-05-18
 
 ---
 
@@ -11,6 +11,11 @@
 app/
 ├── app/                   # Next.js App Router pages + API proxy routes
 │   ├── api/               # Proxy routes (forward auth headers to Railway backend)
+│   │   ├── alerts/        # Auth-required BFF routes for price alerts
+│   │   │   ├── route.ts                      # GET list, POST create
+│   │   │   ├── [id]/route.ts                 # GET single, DELETE
+│   │   │   ├── [id]/toggle/route.ts          # PATCH enable/disable
+│   │   │   └── history/triggered/route.ts    # GET triggered history
 │   │   ├── market/        # Public BFF routes (no auth — market data is public)
 │   │   │   ├── overview/route.ts
 │   │   │   ├── indices/route.ts
@@ -24,6 +29,7 @@ app/
 │   │       │       └── [backtestId]/
 │   │       │           └── chart-series/route.ts   # BT5 proxy
 │   │       └── route.ts
+│   ├── alerts/            # /alerts — price alerts (auth-gated)
 │   ├── backtest/          # /backtests/[id] — result page, chart, trade log
 │   ├── bots/              # /bots — bot management
 │   ├── leaderboard/
@@ -58,6 +64,30 @@ app/
 ---
 
 ## Hooks Reference
+
+### `useAlerts()` — `app/lib/hooks/use-alerts.ts`
+
+Fetches the user's active price alerts and their triggered history. Exposes create/toggle/remove mutations.
+
+```ts
+interface UseAlertsResult {
+  alerts: AlertResponse[];       // active alerts (enabled + disabled)
+  history: AlertHistoryItem[];   // triggered alert history (read-only)
+  error: Error | undefined;
+  isLoading: boolean;
+  hasLoaded: boolean;
+  isValidating: boolean;
+  create: (body: CreateAlertRequest) => Promise<void>;
+  toggle: (alertId: number) => Promise<void>;
+  remove: (alertId: number) => Promise<void>;
+}
+useAlerts() // Returns: UseAlertsResult
+```
+
+- SWR keys: `/api/alerts` (list) + `/api/alerts/history/triggered` (history) — both fetched in parallel
+- `errorRetryCount: 0`, `keepPreviousData: true`, `revalidateOnFocus: false`
+- `hasLoaded` is true only when both endpoints have returned
+- Mutations (`create`, `toggle`, `remove`) call the relevant BFF endpoint then call `mutateAlerts()` to revalidate
 
 ### `useMarketOverview()` — `app/lib/hooks/use-market.ts`
 
@@ -185,6 +215,43 @@ Allows callers to supply a per-row background color. Used by `backtest-view.tsx`
 
 ## Pages Reference
 
+### `/alerts` — `app/app/alerts/alerts-view.tsx`
+
+Auth-gated price alerts page. Allows users to create, enable/disable, and delete price alerts, and view triggered history.
+
+**Files:**
+- `app/app/alerts/page.tsx` — RSC shell; redirects to `/?auth=required&from=/alerts` when unauthenticated
+- `app/app/alerts/alerts-view.tsx` — full client island with all UI components
+- `app/lib/hooks/use-alerts.ts` — `useAlerts()` SWR hook
+- `app/lib/api/alerts.ts` — typed fetch functions + all response/request interfaces
+
+**Layout:** `EditorialHeader` (kicker + title + active-count meta + "Create Alert" CTA) → tab bar (Active Alerts / Triggered History) → content area. Mobile uses card layout; desktop uses table layout.
+
+**Tabs:**
+- **Active Alerts**: `AlertRow` table (desktop) / `AlertCard` cards (mobile) — toggle switch (enable/disable), symbol + name + note, human-readable condition label, current price, status pill (`enabled` / `disabled` / `triggered`), created-at relative time, delete button.
+- **Triggered History**: `TriggeredHistoryTable` (desktop) / `HistoryCard` (mobile) — read-only; shows symbol, condition, target price, triggered price, and relative time.
+
+**CreateAlertSheet:** slide-from-right drawer (400 px desktop, full-width mobile). Debounced stock search (300 ms, calls `/api/stocks?search=`), autocomplete dropdown, selected stock chip with last close price, condition select (`ABOVE` / `BELOW` / `CROSSES_ABOVE` / `CROSSES_BELOW`), target price numeric input, optional note (500 char max).
+
+**Empty states:** dedicated `EmptyState` component with Bell icon (active tab) or Clock icon (history tab) + description + CTA.
+
+**Interfaces (`app/lib/api/alerts.ts`):**
+```ts
+AlertCondition       // "ABOVE" | "BELOW" | "CROSSES_ABOVE" | "CROSSES_BELOW"
+AlertResponse        // alert_id, symbol, stock_name, condition, target_price, current_price,
+                     //   is_enabled, is_triggered, trigger_count, note, created_at, triggered_at
+AlertListResponse    // alerts, total
+CreateAlertRequest   // symbol, condition, target_price, note?
+CreateAlertResponse  // success, alert_id, symbol, condition, target_price, current_price
+DeleteAlertResponse  // success, message
+ToggleAlertResponse  // success, alert_id, is_enabled
+AlertHistoryItem     // history_id, alert_id, symbol, stock_name, condition, target_price,
+                     //   triggered_price, triggered_at
+AlertHistoryResponse // history, total
+```
+
+**`frame.tsx` additions:** `/alerts` added to `MORE_DRAWER_ITEMS` (desktop nav) and sidebar navigation link list.
+
 ### `/market` — `app/app/market/market-view.tsx`
 
 Pakistan Stock Exchange market overview page. Statically generated (`○`) with six vertical sections:
@@ -280,6 +347,21 @@ All routes in `app/app/api/` forward to the Railway backend with the NextAuth se
 ---
 
 ## BFF Routes Reference
+
+### Alerts BFF routes — `app/app/api/alerts/*/route.ts`
+
+Auth-required routes (NextAuth session → signed backend JWT). Upstream timeout: 8 s.
+
+| Route | Method | Upstream backend endpoint | Notes |
+|---|---|---|---|
+| `/api/alerts` | GET | `GET /alerts` | Lists user's active alerts; forwards `include_triggered` + `symbol` query params |
+| `/api/alerts` | POST | `POST /alerts` | Create alert `{ symbol, condition, target_price, note? }` |
+| `/api/alerts/[id]` | GET | `GET /alerts/{id}` | Single alert detail |
+| `/api/alerts/[id]` | DELETE | `DELETE /alerts/{id}` | Delete alert |
+| `/api/alerts/[id]/toggle` | PATCH | `PATCH /alerts/{id}/toggle` | Enable/disable alert |
+| `/api/alerts/history/triggered` | GET | `GET /alerts/history/triggered` | Triggered history; forwards `limit` query param |
+
+All interfaces are defined and exported from `app/lib/api/alerts.ts`.
 
 ### Market BFF routes — `app/app/api/market/*/route.ts`
 

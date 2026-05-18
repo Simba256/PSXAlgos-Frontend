@@ -27,6 +27,7 @@ const NAV_ITEMS: MarketingItem[] = [
   { kind: "link", href: "/bots", label: "Bots" },
   { kind: "link", href: "/portfolio", label: "Portfolio" },
   { kind: "link", href: "/watchlists", label: "Watchlists" },
+  { kind: "link", href: "/alerts", label: "Alerts" },
   { kind: "link", href: "/leaderboard", label: "Leaderboard" },
 ];
 
@@ -81,6 +82,7 @@ const BOTTOM_PRIMARY: BottomTab[] = [
 const MORE_DRAWER_ITEMS: { href: string; label: string }[] = [
   { href: "/portfolio", label: "Portfolio" },
   { href: "/watchlists", label: "Watchlists" },
+  { href: "/alerts", label: "Alerts" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/notifications", label: "Notifications" },
   { href: "/pricing", label: "Pricing" },
