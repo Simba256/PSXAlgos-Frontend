@@ -23,7 +23,6 @@ type MarketingItem =
 const NAV_ITEMS: MarketingItem[] = [
   { kind: "link", href: "/strategies", label: "Strategies" },
   { kind: "link", href: "/backtest", label: "Backtest" },
-  { kind: "link", href: "/chart", label: "Chart" },
   { kind: "link", href: "/signals", label: "Signals" },
   { kind: "link", href: "/bots", label: "Bots" },
   { kind: "link", href: "/portfolio", label: "Portfolio" },
@@ -79,7 +78,6 @@ const BOTTOM_PRIMARY: BottomTab[] = [
 ];
 
 const MORE_DRAWER_ITEMS: { href: string; label: string }[] = [
-  { href: "/chart", label: "Chart" },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/notifications", label: "Notifications" },

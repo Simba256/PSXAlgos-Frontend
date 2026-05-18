@@ -17,7 +17,7 @@ const BACKEND_TIMEOUT_MS = 8_000;
 // Server-side cache aligns with the backend's own 5-minute TTL on /stocks.
 const REVALIDATE_S = 300;
 
-const ALLOWED_PARAMS = new Set(["page", "page_size", "active_only"]);
+const ALLOWED_PARAMS = new Set(["page", "page_size", "active_only", "search"]);
 
 export async function GET(req: NextRequest) {
   const base = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "");
