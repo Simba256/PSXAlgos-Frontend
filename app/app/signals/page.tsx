@@ -49,10 +49,20 @@ export default async function SignalsPage() {
     email: session.user.email,
   });
 
-  const res = await getTodaySignals(jwt);
-  const initialSignals = res.groups.flatMap((group) =>
-    group.signals.map((sig) => mapSignal(group.strategy_name, sig)),
-  );
+  let initialSignals: Signal[] = [];
+  let fetchFailed = false;
+  try {
+    const res = await getTodaySignals(jwt);
+    initialSignals = res.groups.flatMap((group) =>
+      group.signals.map((sig) => mapSignal(group.strategy_name, sig)),
+    );
+  } catch {
+    // Backend timeout / 5xx / network: render an empty signals view rather
+    // than the Next.js unhandled-error page. The client-side flash surfaces
+    // the failure once the view mounts so the user knows the empty state is
+    // not "no signals today" but a fetch error.
+    fetchFailed = true;
+  }
 
-  return <SignalsView initialSignals={initialSignals} />;
+  return <SignalsView initialSignals={initialSignals} fetchFailed={fetchFailed} />;
 }

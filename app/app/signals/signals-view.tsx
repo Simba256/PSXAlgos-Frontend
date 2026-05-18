@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
@@ -12,7 +12,6 @@ import {
   FlashToast,
   Kicker,
   Modal,
-  Ribbon,
   TerminalTable,
   useFlash,
   type Col,
@@ -106,12 +105,58 @@ const todayLabel = (): string => {
   return d.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
 };
 
-export function SignalsView({ initialSignals }: { initialSignals: Signal[] }) {
+// PSX trading hours in Pakistan Standard Time. We don't have the public-holiday
+// calendar wired into the frontend (it lives in `PSX_HOLIDAYS` on the backend),
+// so we approximate: weekday + within session window. A holiday will read as
+// "open" here until the calendar is exposed via API.
+function readMarketStatus(): { isOpen: boolean; label: string; time: string } {
+  const now = new Date();
+  const pkt = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Karachi" }));
+  const day = pkt.getDay(); // 0 Sun … 6 Sat
+  const hour = pkt.getHours();
+  const minute = pkt.getMinutes();
+  const minutesSinceMidnight = hour * 60 + minute;
+  const sessionOpen = 9 * 60 + 30;
+  const sessionClose = 15 * 60 + 30;
+  const isWeekday = day >= 1 && day <= 5;
+  const inSession = minutesSinceMidnight >= sessionOpen && minutesSinceMidnight < sessionClose;
+  const isOpen = isWeekday && inSession;
+  const time = pkt.toLocaleTimeString("en-US", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  return {
+    isOpen,
+    label: isOpen ? "market open" : isWeekday ? "market closed" : "weekend",
+    time: `${time} PKT`,
+  };
+}
+
+export function SignalsView({
+  initialSignals,
+  fetchFailed = false,
+}: {
+  initialSignals: Signal[];
+  fetchFailed?: boolean;
+}) {
   const [signals, setSignals] = useState<Signal[]>(initialSignals);
   const [filter, setFilter] = useState<FilterCriteria>(DEFAULT_FILTER);
   const [filterOpen, setFilterOpen] = useState(false);
   const [openSignal, setOpenSignal] = useState<Signal | null>(null);
+  const [marketStatus, setMarketStatus] = useState(() => readMarketStatus());
   const { flash, setFlash } = useFlash();
+
+  useEffect(() => {
+    const tick = setInterval(() => setMarketStatus(readMarketStatus()), 1000);
+    return () => clearInterval(tick);
+  }, []);
+
+  useEffect(() => {
+    if (fetchFailed) setFlash("Couldn't load today's signals — showing empty list");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchFailed]);
 
   const filteredSignals = useMemo(() => applyFilter(signals, filter), [signals, filter]);
   const filterActive = isFilterActive(filter);
@@ -158,6 +203,14 @@ export function SignalsView({ initialSignals }: { initialSignals: Signal[] }) {
 
   const loggedCount = signals.filter((s) => s.logged).length;
 
+  // Per-strategy signal counts from the actual data — replaces a previously
+  // hardcoded chip row that showed fictitious strategy names + counts.
+  const strategyCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const s of signals) counts.set(s.strategy, (counts.get(s.strategy) ?? 0) + 1);
+    return Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
+  }, [signals]);
+
   return (
     <AppFrame route="/signals">
       <Body
@@ -165,6 +218,9 @@ export function SignalsView({ initialSignals }: { initialSignals: Signal[] }) {
         totalCount={signals.length}
         filterActive={filterActive}
         loggedCount={loggedCount}
+        strategyCounts={strategyCounts}
+        deployedCount={availableStrategies.length}
+        marketStatus={marketStatus}
         onLog={setOpenSignal}
         onOpenFilter={() => setFilterOpen(true)}
         onExport={handleExport}
@@ -194,6 +250,9 @@ function Body({
   totalCount,
   filterActive,
   loggedCount,
+  strategyCounts,
+  deployedCount,
+  marketStatus,
   onLog,
   onOpenFilter,
   onExport,
@@ -202,6 +261,9 @@ function Body({
   totalCount: number;
   filterActive: boolean;
   loggedCount: number;
+  strategyCounts: { name: string; count: number }[];
+  deployedCount: number;
+  marketStatus: { isOpen: boolean; label: string; time: string };
   onLog: (s: Signal) => void;
   onOpenFilter: () => void;
   onExport: () => void;
@@ -209,6 +271,20 @@ function Body({
   const T = useT();
   const { bp } = useBreakpoint();
   const padX = pick(bp, PAD.page);
+  // Palette for strategy chips. Stable across renders by indexing into the
+  // sorted strategyCounts list, so the same strategy always reads the same
+  // color within a session.
+  const STRATEGY_CHIP_PALETTE = useMemo(
+    () => [T.primaryLight, T.accent, "#c7a885", T.deploy],
+    [T.primaryLight, T.accent, T.deploy],
+  );
+  const strategyColor = useMemo(() => {
+    const map = new Map<string, string>();
+    strategyCounts.forEach(({ name }, i) =>
+      map.set(name, STRATEGY_CHIP_PALETTE[i % STRATEGY_CHIP_PALETTE.length]),
+    );
+    return map;
+  }, [strategyCounts, STRATEGY_CHIP_PALETTE]);
   const cols: Col[] = [
     { label: "time", width: "80px" },
     { label: "strategy", width: "1.4fr", mono: false, mobileFullWidth: true },
@@ -234,7 +310,7 @@ function Body({
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <EditorialHeader
-        kicker="Live feed · 3 deployed strategies"
+        kicker={`Live feed · ${deployedCount} deployed ${deployedCount === 1 ? "strategy" : "strategies"}`}
         title={
           <>
             Today&apos;s{" "}
@@ -246,8 +322,9 @@ function Body({
         meta={
           <>
             <span>
-              <span style={{ color: T.gain }}>●</span> market open ·{" "}
-              <span style={{ color: T.text2 }}>09:58:12 PKT</span>
+              <span style={{ color: marketStatus.isOpen ? T.gain : T.text3 }}>●</span>{" "}
+              {marketStatus.label} ·{" "}
+              <span style={{ color: T.text2 }}>{marketStatus.time}</span>
             </span>
             <span>
               {filterActive ? `${signals.length} of ${totalCount}` : `${signals.length}`} signals ·{" "}
@@ -300,14 +377,21 @@ function Body({
         >
           sourced from
         </span>
-        <StrategyChip name="RSI Bounce v1" count={2} color={T.primaryLight} />
-        <StrategyChip name="Momentum Breakout" count={2} color={T.accent} />
-        <StrategyChip name="Golden Cross · KSE30" count={1} color="#c7a885" />
-        <StrategyChip name="Mean Rev · Banks" count={1} color={T.deploy} />
+        {strategyCounts.length === 0 ? (
+          <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
+            no deployed strategies firing today
+          </span>
+        ) : (
+          strategyCounts.map(({ name, count }) => (
+            <StrategyChip
+              key={name}
+              name={name}
+              count={count}
+              color={strategyColor.get(name) ?? T.text2}
+            />
+          ))
+        )}
         <div style={{ flex: 1 }} />
-        <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
-          auto-refresh <span style={{ color: T.gain }}>on</span> · every 30s
-        </span>
       </div>
 
       <div
@@ -327,13 +411,7 @@ function Body({
             if (ci === 0) return <span style={{ color: T.text3 }}>{cell as ReactNode}</span>;
             if (ci === 1) {
               const s = String(cell);
-              const color = s.startsWith("RSI")
-                ? T.primaryLight
-                : s.startsWith("Momentum")
-                ? T.accent
-                : s.startsWith("Golden")
-                ? "#c7a885"
-                : T.deploy;
+              const color = strategyColor.get(s) ?? T.text3;
               return (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                   <span
@@ -347,10 +425,14 @@ function Body({
               return (
                 <span style={{ color: T.text, fontWeight: 500 }}>{cell as ReactNode}</span>
               );
-            if (ci === 3)
+            if (ci === 3) {
+              const dir = String(cell) as "BUY" | "SELL";
               return (
-                <span style={{ color: T.gain, fontWeight: 500 }}>{cell as ReactNode}</span>
+                <span style={{ color: dir === "SELL" ? T.loss : T.gain, fontWeight: 500 }}>
+                  {cell as ReactNode}
+                </span>
               );
+            }
             if (ci === 5) {
               const v = cell as number;
               const isLow = v < 30;
@@ -389,16 +471,6 @@ function Body({
           }}
         />
 
-        <div style={{ marginTop: 36 }}>
-          <Ribbon
-            kicker="earlier · pre-market"
-            right={
-              <span style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3 }}>
-                hidden · 14 signals
-              </span>
-            }
-          />
-        </div>
       </div>
     </div>
   );
@@ -497,7 +569,7 @@ function LogTradeModal({
 
         <div style={{ padding: "14px 26px" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-            <ModalField label="Side" value="Buy" />
+            <ModalField label="Side" value={signal.dir === "SELL" ? "Sell" : "Buy"} />
             <ModalField label="Quantity" value={qty.toLocaleString()} suffix="sh" />
             <ModalField label="Entry price" value={signal.price.toFixed(2)} suffix="PKR" />
           </div>
