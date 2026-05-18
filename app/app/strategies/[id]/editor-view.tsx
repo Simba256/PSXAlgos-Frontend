@@ -3477,6 +3477,29 @@ function ConditionDrawer({
     }
   };
 
+  // SB-UX-REVAMP — When the user switches modes, drop any persisted text
+  // that doesn't fit the new mode. Otherwise Number/Indicator inputs render
+  // raw expression strings (e.g. `(close_price - sma_50) / atr` inside a
+  // numeric field) which looks broken. Switching is a "reset to a clean
+  // input of this kind" gesture; users who want to keep the expression stay
+  // on the Expression tab.
+  const handleModeChange = (nextMode: ValueMode) => {
+    if (nextMode === valueMode) return;
+    const trimmed = expressionText.trim();
+    const fitsNumber = /^-?\d+(\.\d+)?$/.test(trimmed);
+    const fitsIndicator = expressionIndicators.includes(trimmed);
+    const compatible =
+      (nextMode === "number" && fitsNumber) ||
+      (nextMode === "indicator" && fitsIndicator) ||
+      nextMode === "expression";
+    setValueMode(nextMode);
+    if (!compatible) {
+      setExpressionText("");
+      setExpressionOk(false);
+      setForceInvalid(false);
+    }
+  };
+
   // SB-UX-REVAMP — Apply a one-click starter template. Fills indicator +
   // operator + RHS in a single state batch so the user sees a complete
   // working condition immediately. Timeframe stays as-is so the user's
@@ -3503,6 +3526,8 @@ function ConditionDrawer({
     if (valueMode === "indicator" && expressionIndicators.includes(trimmed)) {
       return formatIndicator(trimmed, null);
     }
+    // Cap long expressions so a stray paste doesn't overrun the header.
+    if (trimmed.length > 40) return trimmed.slice(0, 40) + "…";
     return trimmed;
   })();
 
@@ -3628,12 +3653,7 @@ function ConditionDrawer({
                   type="button"
                   role="tab"
                   aria-selected={active}
-                  onClick={() => {
-                    setValueMode(tab.id);
-                    // Switching modes does NOT clear the text; the parser will
-                    // reject an inappropriate value and the inline error fires.
-                    // This lets the user widen Number→Expression without losing work.
-                  }}
+                  onClick={() => handleModeChange(tab.id)}
                   title={tab.hint}
                   style={{
                     padding: "8px 0",

@@ -588,16 +588,16 @@ export function ExpressionInput({
     });
   }
 
-  // Preset chips replace the identifier token at the caret rather than
-  // inserting raw text. This prevents concatenation bugs like `50atr_percent`
-  // when the user types a partial value then clicks a chip.
+  // Preset chips REPLACE the entire field. The earlier "replace token at
+  // caret" behavior felt like concatenation to users — tapping multiple
+  // chips piled them up, e.g. `(close - sma_50) / (close - sma_50) / ...`.
+  // Treating each chip as a whole-expression template matches the mental
+  // model: a chip is a starter, not a fragment. Users who want fragment
+  // composition use the autocomplete dropdown (`commit`) which still
+  // does token-aware replacement.
   function commitExpression(expression: string) {
-    const tok = tokenAtCaret(value, caret);
-    const before = value.slice(0, tok.start);
-    const after = value.slice(tok.end);
-    const next = before + expression + after;
-    const nextCaret = (before + expression).length;
-    onChange(next);
+    const nextCaret = expression.length;
+    onChange(expression);
     setOpen(false);
     setHighlight(0);
     requestAnimationFrame(() => {
