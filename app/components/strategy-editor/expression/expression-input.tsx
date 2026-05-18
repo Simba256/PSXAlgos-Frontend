@@ -18,6 +18,7 @@ import {
   MATH_FN_NAMES,
   PATTERN_INDICATORS,
   POSITION_STATE_INDICATORS,
+  tryParseEntryExpression,
   tryParseExpression,
   type TryParseResult,
 } from "@/lib/strategy/expression";
@@ -418,8 +419,13 @@ export function ExpressionInput({
   const [caret, setCaret] = useState(value.length);
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
+  // Use the entry-rules parser when the host drawer is for entry rules; it
+  // additionally rejects position-state tokens (e.g. `position_entry_price`)
+  // that the backend would reject at save time. Without this gate the inline
+  // parse goes green and the Apply button enables, only for the save to fail.
+  const parseFor = isExitRules ? tryParseExpression : tryParseEntryExpression;
   const [parseResult, setParseResult] = useState<TryParseResult | null>(() =>
-    value.trim() ? tryParseExpression(value) : null,
+    value.trim() ? parseFor(value) : null,
   );
   const inputId = useId();
   const errorId = useId();
@@ -437,7 +443,7 @@ export function ExpressionInput({
       return;
     }
     const handle = setTimeout(() => {
-      const result = tryParseExpression(value);
+      const result = parseFor(value);
       setParseResult(result);
       onParse?.(result);
     }, 150);

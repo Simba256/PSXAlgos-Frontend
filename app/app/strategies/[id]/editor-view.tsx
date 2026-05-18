@@ -3513,6 +3513,10 @@ function ConditionDrawer({
     setValueMode(nextMode);
     const r = parseForContext(tpl.valueSource);
     setExpressionOk(r.ok);
+    // Auto-open More Options when the template's indicator is parametric
+    // (e.g. SMA / RSI period) — the disclosure exposes the period picker
+    // the user will likely need to tweak. Mirrors the mount-time initializer.
+    if (getPeriodConfig(tpl.indicator)) setShowMoreOptions(true);
   };
 
   // SB-UX-REVAMP — live English summary that replaces the big `RSI (14)` h2
