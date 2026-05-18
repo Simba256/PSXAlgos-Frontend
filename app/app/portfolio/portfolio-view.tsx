@@ -285,6 +285,32 @@ export function PortfolioView({
     }
   }
 
+  async function handleDeletePosition(pos: OpenPosition): Promise<void> {
+    try {
+      const resp = await fetch(`/api/portfolio/positions/${pos.id}`, { method: "DELETE" });
+      if (!resp.ok) {
+        setFlash(`Could not delete ${pos.sym}: ${await readError(resp)}`);
+        return;
+      }
+      setPositions((rows) => rows.filter((r) => r.id !== pos.id));
+    } catch (err) {
+      setFlash(`Could not delete ${pos.sym}: ${err instanceof Error ? err.message : "network error"}`);
+    }
+  }
+
+  async function handleDeleteTrade(trade: ClosedTrade): Promise<void> {
+    try {
+      const resp = await fetch(`/api/portfolio/trades/${trade.id}`, { method: "DELETE" });
+      if (!resp.ok) {
+        setFlash(`Could not delete ${trade.sym}: ${await readError(resp)}`);
+        return;
+      }
+      setClosed((rows) => rows.filter((r) => r.id !== trade.id));
+    } catch (err) {
+      setFlash(`Could not delete ${trade.sym}: ${err instanceof Error ? err.message : "network error"}`);
+    }
+  }
+
   function handleExport() {
     const csv = toCSV(positions, closed);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -395,6 +421,8 @@ export function PortfolioView({
         onExport={handleExport}
         onImport={triggerImport}
         onRowClick={(p) => setCloseTarget(p)}
+        onDeletePosition={handleDeletePosition}
+        onDeleteTrade={handleDeleteTrade}
         flash={flash}
         sectorMap={sectorMap}
       />
@@ -435,6 +463,8 @@ interface BodyProps {
   onExport: () => void;
   onImport: () => void;
   onRowClick: (p: OpenPosition) => void;
+  onDeletePosition: (pos: OpenPosition) => Promise<void>;
+  onDeleteTrade: (trade: ClosedTrade) => Promise<void>;
   flash: string | null;
   sectorMap: Record<string, string>;
 }
@@ -447,6 +477,8 @@ function Body({
   onExport,
   onImport,
   onRowClick,
+  onDeletePosition,
+  onDeleteTrade,
   flash,
   sectorMap,
 }: BodyProps) {
@@ -710,7 +742,7 @@ function Body({
               }
             />
             <div style={{ marginTop: 8 }}>
-              <OpenPositionsTable rows={positions} onRowClick={onRowClick} />
+              <OpenPositionsTable rows={positions} onRowClick={onRowClick} onDeletePosition={onDeletePosition} />
             </div>
           </div>
 
@@ -724,7 +756,7 @@ function Body({
               }
             />
             <div style={{ marginTop: 8 }}>
-              <ClosedTable rows={closed} />
+              <ClosedTable rows={closed} onDeleteTrade={onDeleteTrade} />
             </div>
           </div>
         </div>
@@ -916,14 +948,38 @@ function buildSectors(
 
 /* ────────── Tables ────────── */
 
+type KebabState = "closed" | "menu" | "confirm" | "deleting";
+
 function OpenPositionsTable({
   rows,
   onRowClick,
+  onDeletePosition,
 }: {
   rows: OpenPosition[];
   onRowClick: (p: OpenPosition) => void;
+  onDeletePosition: (pos: OpenPosition) => Promise<void>;
 }) {
   const T = useT();
+  const [kebab, setKebab] = useState<Record<string, KebabState>>({});
+
+  function openKebab(id: string) {
+    setKebab({ [id]: "menu" });
+  }
+  function closeKebab(id: string) {
+    setKebab((prev) => ({ ...prev, [id]: "closed" }));
+  }
+
+  useEffect(() => {
+    function handleOutside(e: MouseEvent) {
+      const target = e.target as Element | null;
+      if (!target?.closest("[data-kebab-menu]")) {
+        setKebab({});
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, []);
+
   const cols: Col[] = [
     { label: "symbol", width: "90px", primary: true },
     { label: "source", width: "100px", mono: false, mobileFullWidth: true },
@@ -935,6 +991,7 @@ function OpenPositionsTable({
     { label: "p&l", align: "right", width: "110px" },
     { label: "return", align: "right", width: "90px" },
     { label: "held", align: "right", width: "70px" },
+    { label: "", width: "40px", hideOnMobile: true },
   ];
   const tableRows: unknown[][] = rows.map((p) => {
     // null now ⇒ no current price ⇒ no value/pnl/return; render the cell
@@ -943,7 +1000,7 @@ function OpenPositionsTable({
     const value = p.now === null ? null : p.now * p.qty;
     const pnl = p.now === null ? null : (p.now - p.entry) * p.qty;
     const ret = p.now === null ? null : ((p.now - p.entry) / p.entry) * 100;
-    return [p.sym, p, p.qty, p.entry, p.now, p.entry * p.qty, value, pnl, ret, p.date];
+    return [p.sym, p, p.qty, p.entry, p.now, p.entry * p.qty, value, pnl, ret, p.date, p];
   });
   if (!rows.length) {
     return (
@@ -967,7 +1024,7 @@ function OpenPositionsTable({
       cols={cols}
       rows={tableRows}
       onRowClick={(_, ri) => onRowClick(rows[ri])}
-      renderCell={(cell, ci) => {
+      renderCell={(cell, ci, ri) => {
         // Cells with cell === null (now/value/pnl/return for an unpriced
         // row) render as a muted em-dash so the row stays parseable but
         // doesn't fake a 0% return.
@@ -1019,14 +1076,201 @@ function OpenPositionsTable({
           );
         }
         if (ci === 9) return <span style={{ color: T.text3 }}>{cell as ReactNode}</span>;
+        if (ci === 10) {
+          const pos = cell as OpenPosition;
+          const state = kebab[pos.id] ?? "closed";
+          if (state === "confirm" || state === "deleting") {
+            return (
+              <span
+                data-kebab-menu
+                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
+                  Delete row?
+                </span>
+                <button
+                  type="button"
+                  disabled={state === "deleting"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setKebab((prev) => ({ ...prev, [pos.id]: "deleting" }));
+                    void onDeletePosition(pos).then(() => {
+                      setKebab((prev) => ({ ...prev, [pos.id]: "closed" }));
+                    });
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: state === "deleting" ? "default" : "pointer",
+                    color: T.loss,
+                    fontSize: 11,
+                    fontFamily: T.fontMono,
+                    padding: "0 2px",
+                  }}
+                >
+                  {state === "deleting" ? "deleting…" : "yes, delete"}
+                </button>
+                <button
+                  type="button"
+                  disabled={state === "deleting"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeKebab(pos.id);
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: state === "deleting" ? "default" : "pointer",
+                    color: T.text3,
+                    fontSize: 11,
+                    fontFamily: T.fontMono,
+                    padding: "0 2px",
+                  }}
+                >
+                  cancel
+                </button>
+              </span>
+            );
+          }
+          if (state === "menu") {
+            return (
+              <span
+                data-kebab-menu
+                style={{ position: "relative", display: "inline-block" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeKebab(pos.id);
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: T.text,
+                    fontSize: 16,
+                    padding: "0 8px",
+                  }}
+                >
+                  ⋮
+                </button>
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "100%",
+                    right: 0,
+                    background: T.surface,
+                    border: `1px solid ${T.outlineFaint}`,
+                    borderRadius: 4,
+                    zIndex: 10,
+                    minWidth: 110,
+                    boxShadow: `0 4px 12px rgba(0,0,0,0.15)`,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setKebab({});
+                      onRowClick(pos);
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      color: T.text,
+                      fontSize: 12,
+                      fontFamily: T.fontSans,
+                      padding: "8px 12px",
+                    }}
+                  >
+                    Close…
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setKebab((prev) => ({ ...prev, [pos.id]: "confirm" }));
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      color: T.loss,
+                      fontSize: 12,
+                      fontFamily: T.fontSans,
+                      padding: "8px 12px",
+                    }}
+                  >
+                    Delete row
+                  </button>
+                </div>
+              </span>
+            );
+          }
+          return (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openKebab(pos.id);
+              }}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                color: T.text3,
+                fontSize: 16,
+                padding: "0 8px",
+              }}
+            >
+              ⋮
+            </button>
+          );
+        }
         return cell as ReactNode;
       }}
     />
   );
 }
 
-function ClosedTable({ rows }: { rows: ClosedTrade[] }) {
+function ClosedTable({
+  rows,
+  onDeleteTrade,
+}: {
+  rows: ClosedTrade[];
+  onDeleteTrade: (trade: ClosedTrade) => Promise<void>;
+}) {
   const T = useT();
+  const [kebab, setKebab] = useState<Record<string, KebabState>>({});
+
+  function openKebab(id: string) {
+    setKebab({ [id]: "menu" });
+  }
+  function closeKebab(id: string) {
+    setKebab((prev) => ({ ...prev, [id]: "closed" }));
+  }
+
+  useEffect(() => {
+    function handleOutside(e: MouseEvent) {
+      const target = e.target as Element | null;
+      if (!target?.closest("[data-kebab-menu]")) {
+        setKebab({});
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, []);
+
   const cols: Col[] = [
     { label: "symbol", width: "90px", primary: true },
     { label: "qty", align: "right", width: "80px" },
@@ -1036,8 +1280,9 @@ function ClosedTable({ rows }: { rows: ClosedTrade[] }) {
     { label: "return", align: "right", width: "90px" },
     { label: "closed", width: "90px" },
     { label: "reason", width: "1fr", mono: false, mobileFullWidth: true },
+    { label: "", width: "40px", hideOnMobile: true },
   ];
-  const tableRows: unknown[][] = rows.map((c) => [
+  const tableRows: unknown[][] = rows.map((c, ri) => [
     c.sym,
     c.qty,
     c.entry,
@@ -1046,6 +1291,7 @@ function ClosedTable({ rows }: { rows: ClosedTrade[] }) {
     c.ret,
     c.date,
     c.reason,
+    c,
   ]);
   if (!rows.length) {
     return (
@@ -1067,7 +1313,7 @@ function ClosedTable({ rows }: { rows: ClosedTrade[] }) {
     <TerminalTable
       cols={cols}
       rows={tableRows}
-      renderCell={(cell, ci) => {
+      renderCell={(cell, ci, ri) => {
         if (ci === 0)
           return <span style={{ color: T.text2, fontWeight: 500 }}>{cell as ReactNode}</span>;
         if (ci === 1) return <span style={{ color: T.text3 }}>{(cell as number).toLocaleString()}</span>;
@@ -1096,6 +1342,145 @@ function ClosedTable({ rows }: { rows: ClosedTrade[] }) {
           const s = String(cell);
           const c = s.includes("Stop") ? T.loss : s.includes("Target") ? T.gain : T.text2;
           return <span style={{ color: c }}>{s}</span>;
+        }
+        if (ci === 8) {
+          const trade = cell as ClosedTrade;
+          const state = kebab[trade.id] ?? "closed";
+          if (state === "confirm" || state === "deleting") {
+            return (
+              <span
+                data-kebab-menu
+                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
+                  Delete row?
+                </span>
+                <button
+                  type="button"
+                  disabled={state === "deleting"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setKebab((prev) => ({ ...prev, [trade.id]: "deleting" }));
+                    void onDeleteTrade(trade).then(() => {
+                      setKebab((prev) => ({ ...prev, [trade.id]: "closed" }));
+                    });
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: state === "deleting" ? "default" : "pointer",
+                    color: T.loss,
+                    fontSize: 11,
+                    fontFamily: T.fontMono,
+                    padding: "0 2px",
+                  }}
+                >
+                  {state === "deleting" ? "deleting…" : "yes, delete"}
+                </button>
+                <button
+                  type="button"
+                  disabled={state === "deleting"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeKebab(trade.id);
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: state === "deleting" ? "default" : "pointer",
+                    color: T.text3,
+                    fontSize: 11,
+                    fontFamily: T.fontMono,
+                    padding: "0 2px",
+                  }}
+                >
+                  cancel
+                </button>
+              </span>
+            );
+          }
+          if (state === "menu") {
+            return (
+              <span
+                data-kebab-menu
+                style={{ position: "relative", display: "inline-block" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeKebab(trade.id);
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: T.text,
+                    fontSize: 16,
+                    padding: "0 8px",
+                  }}
+                >
+                  ⋮
+                </button>
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "100%",
+                    right: 0,
+                    background: T.surface,
+                    border: `1px solid ${T.outlineFaint}`,
+                    borderRadius: 4,
+                    zIndex: 10,
+                    minWidth: 110,
+                    boxShadow: `0 4px 12px rgba(0,0,0,0.15)`,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setKebab((prev) => ({ ...prev, [trade.id]: "confirm" }));
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      color: T.loss,
+                      fontSize: 12,
+                      fontFamily: T.fontSans,
+                      padding: "8px 12px",
+                    }}
+                  >
+                    Delete row
+                  </button>
+                </div>
+              </span>
+            );
+          }
+          return (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openKebab(trade.id);
+              }}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                color: T.text3,
+                fontSize: 16,
+                padding: "0 8px",
+              }}
+            >
+              ⋮
+            </button>
+          );
         }
         return cell as ReactNode;
       }}
