@@ -73,7 +73,16 @@ export default async function BotsPage() {
     sub: session.user.id,
     email: session.user.email,
   });
-  const res = await getBots(jwt);
-  const initialBots = res.items.map(mapBot);
-  return <BotsView initialBots={initialBots} />;
+  let initialBots: BotRow[] = [];
+  let fetchFailed = false;
+  try {
+    const res = await getBots(jwt);
+    initialBots = res.items.map(mapBot);
+  } catch {
+    // Backend timeout / 5xx / network: render an empty bots list with a flash
+    // toast so the empty state is not misread as 'no bots yet' when it's a
+    // fetch error. The detail route already does this pattern.
+    fetchFailed = true;
+  }
+  return <BotsView initialBots={initialBots} fetchFailed={fetchFailed} />;
 }

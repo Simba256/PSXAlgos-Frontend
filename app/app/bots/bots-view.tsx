@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
 import {
@@ -36,33 +36,46 @@ interface Bot {
   uptime: string;
 }
 
-export function BotsView({ initialBots }: { initialBots: Bot[] }) {
+export function BotsView({
+  initialBots,
+  fetchFailed = false,
+}: {
+  initialBots: Bot[];
+  fetchFailed?: boolean;
+}) {
   const [empty, setEmpty] = useState(false);
-  const [bots, setBots] = useState<Bot[]>(initialBots);
+  const [bots] = useState<Bot[]>(initialBots);
   const [refreshing, setRefreshing] = useState(false);
   const { flash, setFlash } = useFlash();
   const router = useRouter();
 
+  useEffect(() => {
+    if (fetchFailed) setFlash("Couldn't load your bots — showing empty list");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchFailed]);
+
   const handleRefresh = () => {
     if (refreshing) return;
     setRefreshing(true);
-    // router.refresh() triggers the server component to re-fetch and the
-    // updated initialBots prop flows back in; we just need to swap our local
-    // state once the refresh is committed. Simpler: re-fetch the page.
-    Promise.resolve().then(() => {
-      router.refresh();
-      const updatedCount = bots.filter((b) => b.status === "RUNNING").length;
-      setRefreshing(false);
-      setFlash(`Refreshing · ${updatedCount} running bot${updatedCount === 1 ? "" : "s"}`);
-    });
+    setFlash("Refreshing bots…");
+    // router.refresh() schedules a server-component re-fetch. We can't await
+    // its completion; settle the spinner after a short minimum so the user
+    // sees the state change, and trust the parent to flow new initialBots
+    // back in once the re-fetch lands.
+    router.refresh();
+    setTimeout(() => setRefreshing(false), 600);
   };
 
   const runningCount = bots.filter((b) => b.status === "RUNNING").length;
   const pausedAll = runningCount === 0 && bots.some((b) => b.status === "PAUSED");
 
-  // Pause-all / resume-all fire one POST per bot. Failures are reported but
-  // partial success is OK — the UI just shows whichever ones flipped.
-  async function bulkAction(targets: Bot[], action: "start" | "pause"): Promise<number> {
+  // Pause-all / resume-all fire one POST per bot via Promise.allSettled.
+  // Partial failures used to be silently swallowed; we now surface the
+  // first concrete error message so the user knows why N of M succeeded.
+  async function bulkAction(
+    targets: Bot[],
+    action: "start" | "pause",
+  ): Promise<{ ok: number; firstErr: string | null }> {
     const results = await Promise.allSettled(
       targets.map((b) =>
         fetch(`/api/bots/${b.id}/${action}`, { method: "POST" }).then((r) => {
@@ -72,19 +85,26 @@ export function BotsView({ initialBots }: { initialBots: Bot[] }) {
       ),
     );
     const ok = results.filter((r) => r.status === "fulfilled").length;
-    return ok;
+    const firstRejected = results.find((r) => r.status === "rejected");
+    const firstErr =
+      firstRejected && firstRejected.status === "rejected"
+        ? String((firstRejected.reason as Error)?.message ?? firstRejected.reason)
+        : null;
+    return { ok, firstErr };
   }
 
   const handlePauseAll = async () => {
     if (pausedAll) {
       const targets = bots.filter((b) => b.status === "PAUSED");
-      const ok = await bulkAction(targets, "start");
-      setFlash(`Resumed ${ok} of ${targets.length} paused bot${targets.length === 1 ? "" : "s"}`);
+      const { ok, firstErr } = await bulkAction(targets, "start");
+      const msg = `Resumed ${ok} of ${targets.length} paused bot${targets.length === 1 ? "" : "s"}`;
+      setFlash(ok < targets.length && firstErr ? `${msg} · ${firstErr}` : msg);
       router.refresh();
     } else if (runningCount > 0) {
       const targets = bots.filter((b) => b.status === "RUNNING");
-      const ok = await bulkAction(targets, "pause");
-      setFlash(`Paused ${ok} of ${targets.length} running bot${targets.length === 1 ? "" : "s"}`);
+      const { ok, firstErr } = await bulkAction(targets, "pause");
+      const msg = `Paused ${ok} of ${targets.length} running bot${targets.length === 1 ? "" : "s"}`;
+      setFlash(ok < targets.length && firstErr ? `${msg} · ${firstErr}` : msg);
       router.refresh();
     }
   };
@@ -193,6 +213,14 @@ function Populated({ bots }: { bots: Bot[] }) {
   const T = useT();
   const { bp } = useBreakpoint();
   const padX = pick(bp, PAD.page);
+  // Lede card values — all derived from the actual bots list. Previously
+  // hardcoded with example numbers that survived the scaffold.
+  const totalEquity = bots.reduce((s, b) => s + b.equity, 0);
+  const totalStart = bots.reduce((s, b) => s + b.start, 0);
+  const combinedAbs = totalEquity - totalStart;
+  const combinedPct = totalStart > 0 ? (combinedAbs / totalStart) * 100 : 0;
+  const todayTotal = bots.reduce((s, b) => s + b.today, 0);
+  const openTotal = bots.reduce((s, b) => s + b.open, 0);
   const cols: Col[] = [
     { label: "name", width: "1.4fr", mono: false, primary: true },
     { label: "strategy", width: "1.2fr", mono: false, mobileFullWidth: true },
@@ -240,10 +268,28 @@ function Populated({ bots }: { bots: Bot[] }) {
           borderBottom: `1px solid ${T.outlineFaint}`,
         }}
       >
-        <Lede label="Total equity" value="PKR 4.25M" sub="across 4 bots" />
-        <Lede label="Combined P&L" value="+6.17%" color={T.gain} sub="+PKR 246,650" />
-        <Lede label="Today" value="+PKR 2,090" color={T.gain} sub="unrealized" />
-        <Lede label="Open positions" value="5" sub="of 15 max combined" />
+        <Lede
+          label="Total equity"
+          value={`PKR ${(totalEquity / 1_000_000).toFixed(2)}M`}
+          sub={`across ${bots.length} bot${bots.length === 1 ? "" : "s"}`}
+        />
+        <Lede
+          label="Combined P&L"
+          value={`${combinedPct >= 0 ? "+" : ""}${combinedPct.toFixed(2)}%`}
+          color={combinedPct >= 0 ? T.gain : T.loss}
+          sub={`${combinedAbs >= 0 ? "+" : ""}PKR ${Math.round(combinedAbs).toLocaleString()}`}
+        />
+        <Lede
+          label="Today"
+          value={`${todayTotal >= 0 ? "+" : ""}PKR ${todayTotal.toLocaleString()}`}
+          color={todayTotal >= 0 ? T.gain : T.loss}
+          sub="unrealized"
+        />
+        <Lede
+          label="Open positions"
+          value={String(openTotal)}
+          sub={openTotal === 0 ? "no live trades" : "across all bots"}
+        />
       </div>
 
       <div style={{ marginTop: 26 }}>
