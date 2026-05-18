@@ -13,6 +13,13 @@ export default async function NotificationsPage() {
     sub: session.user.id,
     email: session.user.email,
   });
-  const initial = await listNotifications(jwt, { limit: 20 });
-  return <NotificationsView initial={initial} />;
+  // Wrap so a Railway 5xx / Neon hiccup degrades to an empty list + flash
+  // toast on mount, instead of surfacing Next.js's global error boundary
+  // and wiping the page. Mirrors /portfolio + /bots + /signals + /strategies.
+  let fetchFailed = false;
+  const initial = await listNotifications(jwt, { limit: 20 }).catch(() => {
+    fetchFailed = true;
+    return { items: [], next_cursor: null, unread_count: 0 };
+  });
+  return <NotificationsView initial={initial} fetchFailed={fetchFailed} />;
 }

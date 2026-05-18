@@ -24,7 +24,13 @@ function timeSince(iso: string): string {
   return `${days}d ago`;
 }
 
-export function NotificationsView({ initial }: { initial: NotificationListResponse }) {
+export function NotificationsView({
+  initial,
+  fetchFailed = false,
+}: {
+  initial: NotificationListResponse;
+  fetchFailed?: boolean;
+}) {
   const T = useT();
   const { bp } = useBreakpoint();
   const padX = pick(bp, PAD.page);
@@ -35,6 +41,23 @@ export function NotificationsView({ initial }: { initial: NotificationListRespon
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Surface server-side fetch failure on mount so the empty list isn't
+  // misread as "no notifications yet" when it's actually a backend failure.
+  useEffect(() => {
+    if (fetchFailed) {
+      setError("server-side fetch failed");
+    }
+  }, [fetchFailed]);
+
+  // Tick every 60s so timeSince labels stay live ("just now" → "1m ago" →
+  // "2m ago"). Without this they freeze at the value computed on first
+  // render and only refresh on unrelated re-renders.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((n) => n + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Refetch when the unread-only toggle changes (we discard the existing list).
   useEffect(() => {
@@ -53,6 +76,7 @@ export function NotificationsView({ initial }: { initial: NotificationListRespon
         setUnread(body.unread_count);
       })
       .catch((err: Error) => {
+        console.warn("[notifications] list fetch failed", err);
         if (!cancelled) setError(err.message);
       })
       .finally(() => {
@@ -80,6 +104,7 @@ export function NotificationsView({ initial }: { initial: NotificationListRespon
       setCursor(body.next_cursor);
       setUnread(body.unread_count);
     } catch (err) {
+      console.warn("[notifications] loadMore failed", err);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
@@ -87,10 +112,19 @@ export function NotificationsView({ initial }: { initial: NotificationListRespon
   }, [cursor, loading, unreadOnly]);
 
   const handleRead = async (id: number) => {
+    // Only decrement unread if the item was actually unread before this
+    // call — a double-click, or a race with handleReadAll, would otherwise
+    // push the counter ahead of reality (clamped to 0 visually but still
+    // out of sync with item state).
+    let wasUnread = false;
     setItems((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, read_at: new Date().toISOString() } : n)),
+      prev.map((n) => {
+        if (n.id !== id) return n;
+        if (!n.read_at) wasUnread = true;
+        return { ...n, read_at: n.read_at ?? new Date().toISOString() };
+      }),
     );
-    setUnread((prev) => Math.max(0, prev - 1));
+    if (wasUnread) setUnread((prev) => Math.max(0, prev - 1));
     try {
       await fetch(`/api/notifications/${id}/read`, { method: "POST" });
     } catch {
@@ -109,6 +143,11 @@ export function NotificationsView({ initial }: { initial: NotificationListRespon
       // ignore
     }
   };
+
+  // When unread-only is active, hide items the user has just optimistically
+  // read so they disappear from the filtered view immediately instead of
+  // sitting around with their dot gone until the next full refetch.
+  const displayed = unreadOnly ? items.filter((n) => n.read_at === null) : items;
 
   return (
     <AppFrame route="/notifications">
@@ -183,11 +222,11 @@ export function NotificationsView({ initial }: { initial: NotificationListRespon
                 color: T.loss,
               }}
             >
-              Failed to load: {error}
+              Couldn&rsquo;t load notifications. Please try again.
             </div>
           )}
 
-          {items.length === 0 && !loading && (
+          {displayed.length === 0 && !loading && (
             <div
               style={{
                 padding: 60,
@@ -201,7 +240,7 @@ export function NotificationsView({ initial }: { initial: NotificationListRespon
             </div>
           )}
 
-          {items.length > 0 && (
+          {displayed.length > 0 && (
             <div
               style={{
                 background: T.surface,
@@ -210,7 +249,7 @@ export function NotificationsView({ initial }: { initial: NotificationListRespon
                 overflow: "hidden",
               }}
             >
-              {items.map((n) => (
+              {displayed.map((n) => (
                 <NotificationItem
                   key={n.id}
                   notification={n}
