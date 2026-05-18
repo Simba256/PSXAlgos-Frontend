@@ -588,6 +588,31 @@ export function ExpressionInput({
     });
   }
 
+  // Preset chips replace the identifier token at the caret rather than
+  // inserting raw text. This prevents concatenation bugs like `50atr_percent`
+  // when the user types a partial value then clicks a chip.
+  function commitExpression(expression: string) {
+    const tok = tokenAtCaret(value, caret);
+    const before = value.slice(0, tok.start);
+    const after = value.slice(tok.end);
+    const next = before + expression + after;
+    const nextCaret = (before + expression).length;
+    onChange(next);
+    setOpen(false);
+    setHighlight(0);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      try {
+        el.setSelectionRange(nextCaret, nextCaret);
+      } catch {
+        // ignore
+      }
+      setCaret(nextCaret);
+    });
+  }
+
   function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -628,7 +653,7 @@ export function ExpressionInput({
 
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
-      <PresetChipStrip onInsert={insertAtCaret} isExitRules={isExitRules} />
+      <PresetChipStrip onCommit={commitExpression} isExitRules={isExitRules} />
       {showChips && (
         <OperatorChipStrip onInsert={insertAtCaret} />
       )}
@@ -831,10 +856,10 @@ function OperatorChipStrip({ onInsert }: { onInsert: (text: string) => void }) {
 // — so the human-readable label ("ATR %", "BB Bandwidth") fits.
 // SB5 — exit-only chips are hidden when not in exit-rules context.
 function PresetChipStrip({
-  onInsert,
+  onCommit,
   isExitRules,
 }: {
-  onInsert: (text: string) => void;
+  onCommit: (expression: string) => void;
   isExitRules: boolean;
 }) {
   const T = useT();
@@ -858,7 +883,7 @@ function PresetChipStrip({
           type="button"
           title={preset.description}
           aria-label={`Insert ${preset.label} preset: ${preset.description}`}
-          onClick={() => onInsert(preset.expression)}
+          onClick={() => onCommit(preset.expression)}
           style={{
             minHeight: 44,
             padding: "0 12px",
