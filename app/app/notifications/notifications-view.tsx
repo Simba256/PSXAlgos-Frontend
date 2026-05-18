@@ -114,7 +114,7 @@ export function NotificationsView({ initial }: { initial: NotificationListRespon
     <AppFrame route="/notifications">
       <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
         <EditorialHeader
-          kicker="Activity · alerts and platform events"
+          kicker="Activity · signals and platform events"
           title="Notifications"
           meta={
             <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>

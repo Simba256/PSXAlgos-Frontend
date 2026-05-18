@@ -1,7 +1,7 @@
 # PSX UI — Frontend
 
 > FastAPI backend → Next.js 15 frontend. Active repo; `psx-trading-view/` is legacy.
-> Last updated: 2026-05-18
+> Last updated: 2026-05-18 (alerts + watchlists UI removed; backend kept dormant)
 
 ---
 
@@ -11,11 +11,6 @@
 app/
 ├── app/                   # Next.js App Router pages + API proxy routes
 │   ├── api/               # Proxy routes (forward auth headers to Railway backend)
-│   │   ├── alerts/        # Auth-required BFF routes for price alerts
-│   │   │   ├── route.ts                      # GET list, POST create
-│   │   │   ├── [id]/route.ts                 # GET single, DELETE
-│   │   │   ├── [id]/toggle/route.ts          # PATCH enable/disable
-│   │   │   └── history/triggered/route.ts    # GET triggered history
 │   │   ├── market/        # Public BFF routes (no auth — market data is public)
 │   │   │   ├── overview/route.ts
 │   │   │   ├── indices/route.ts
@@ -29,7 +24,6 @@ app/
 │   │       │       └── [backtestId]/
 │   │       │           └── chart-series/route.ts   # BT5 proxy
 │   │       └── route.ts
-│   ├── alerts/            # /alerts — price alerts (auth-gated)
 │   ├── backtest/          # /backtests/[id] — result page, chart, trade log
 │   ├── bots/              # /bots — bot management
 │   ├── leaderboard/
@@ -37,8 +31,7 @@ app/
 │   ├── portfolio/
 │   ├── pricing/
 │   ├── signals/
-│   ├── strategies/        # /strategies — list + editor
-│   └── watchlists/        # /watchlists — saved symbol lists (auth-gated)
+│   └── strategies/        # /strategies — list + editor
 ├── components/            # Shared UI primitives
 │   ├── atoms.tsx          # TerminalTable, StatTile, Badge, ProgressBar, etc.
 │   ├── charts.tsx         # Shared Recharts wrappers (not used for backtest price chart)
@@ -64,30 +57,6 @@ app/
 ---
 
 ## Hooks Reference
-
-### `useAlerts()` — `app/lib/hooks/use-alerts.ts`
-
-Fetches the user's active price alerts and their triggered history. Exposes create/toggle/remove mutations.
-
-```ts
-interface UseAlertsResult {
-  alerts: AlertResponse[];       // active alerts (enabled + disabled)
-  history: AlertHistoryItem[];   // triggered alert history (read-only)
-  error: Error | undefined;
-  isLoading: boolean;
-  hasLoaded: boolean;
-  isValidating: boolean;
-  create: (body: CreateAlertRequest) => Promise<void>;
-  toggle: (alertId: number) => Promise<void>;
-  remove: (alertId: number) => Promise<void>;
-}
-useAlerts() // Returns: UseAlertsResult
-```
-
-- SWR keys: `/api/alerts` (list) + `/api/alerts/history/triggered` (history) — both fetched in parallel
-- `errorRetryCount: 0`, `keepPreviousData: true`, `revalidateOnFocus: false`
-- `hasLoaded` is true only when both endpoints have returned
-- Mutations (`create`, `toggle`, `remove`) call the relevant BFF endpoint then call `mutateAlerts()` to revalidate
 
 ### `useMarketOverview()` — `app/lib/hooks/use-market.ts`
 
@@ -215,43 +184,6 @@ Allows callers to supply a per-row background color. Used by `backtest-view.tsx`
 
 ## Pages Reference
 
-### `/alerts` — `app/app/alerts/alerts-view.tsx`
-
-Auth-gated price alerts page. Allows users to create, enable/disable, and delete price alerts, and view triggered history.
-
-**Files:**
-- `app/app/alerts/page.tsx` — RSC shell; redirects to `/?auth=required&from=/alerts` when unauthenticated
-- `app/app/alerts/alerts-view.tsx` — full client island with all UI components
-- `app/lib/hooks/use-alerts.ts` — `useAlerts()` SWR hook
-- `app/lib/api/alerts.ts` — typed fetch functions + all response/request interfaces
-
-**Layout:** `EditorialHeader` (kicker + title + active-count meta + "Create Alert" CTA) → tab bar (Active Alerts / Triggered History) → content area. Mobile uses card layout; desktop uses table layout.
-
-**Tabs:**
-- **Active Alerts**: `AlertRow` table (desktop) / `AlertCard` cards (mobile) — toggle switch (enable/disable), symbol + name + note, human-readable condition label, current price, status pill (`enabled` / `disabled` / `triggered`), created-at relative time, delete button.
-- **Triggered History**: `TriggeredHistoryTable` (desktop) / `HistoryCard` (mobile) — read-only; shows symbol, condition, target price, triggered price, and relative time.
-
-**CreateAlertSheet:** slide-from-right drawer (400 px desktop, full-width mobile). Debounced stock search (300 ms, calls `/api/stocks?search=`), autocomplete dropdown, selected stock chip with last close price, condition select (`ABOVE` / `BELOW` / `CROSSES_ABOVE` / `CROSSES_BELOW`), target price numeric input, optional note (500 char max).
-
-**Empty states:** dedicated `EmptyState` component with Bell icon (active tab) or Clock icon (history tab) + description + CTA.
-
-**Interfaces (`app/lib/api/alerts.ts`):**
-```ts
-AlertCondition       // "ABOVE" | "BELOW" | "CROSSES_ABOVE" | "CROSSES_BELOW"
-AlertResponse        // alert_id, symbol, stock_name, condition, target_price, current_price,
-                     //   is_enabled, is_triggered, trigger_count, note, created_at, triggered_at
-AlertListResponse    // alerts, total
-CreateAlertRequest   // symbol, condition, target_price, note?
-CreateAlertResponse  // success, alert_id, symbol, condition, target_price, current_price
-DeleteAlertResponse  // success, message
-ToggleAlertResponse  // success, alert_id, is_enabled
-AlertHistoryItem     // history_id, alert_id, symbol, stock_name, condition, target_price,
-                     //   triggered_price, triggered_at
-AlertHistoryResponse // history, total
-```
-
-**`frame.tsx` additions:** `/alerts` added to `MORE_DRAWER_ITEMS` (desktop nav) and sidebar navigation link list.
-
 ### `/market` — `app/app/market/market-view.tsx`
 
 Pakistan Stock Exchange market overview page. Statically generated (`○`) with six vertical sections:
@@ -278,10 +210,6 @@ Pakistan Stock Exchange market overview page. Statically generated (`○`) with 
 - `app/app/market/market-view.tsx` — all UI components (client)
 - `app/lib/hooks/use-market.ts` — four SWR hooks
 - `app/lib/api/market.ts` — typed fetch functions + response interfaces
-
-### `/watchlists` — `app/app/watchlists/watchlists-view.tsx`
-
-Auth-gated page for managing saved symbol lists. Full details in the **Watchlists Page** section below.
 
 ### `/backtests/[id]` — `app/app/backtest/backtest-view.tsx`
 
@@ -348,21 +276,6 @@ All routes in `app/app/api/` forward to the Railway backend with the NextAuth se
 
 ## BFF Routes Reference
 
-### Alerts BFF routes — `app/app/api/alerts/*/route.ts`
-
-Auth-required routes (NextAuth session → signed backend JWT). Upstream timeout: 8 s.
-
-| Route | Method | Upstream backend endpoint | Notes |
-|---|---|---|---|
-| `/api/alerts` | GET | `GET /alerts` | Lists user's active alerts; forwards `include_triggered` + `symbol` query params |
-| `/api/alerts` | POST | `POST /alerts` | Create alert `{ symbol, condition, target_price, note? }` |
-| `/api/alerts/[id]` | GET | `GET /alerts/{id}` | Single alert detail |
-| `/api/alerts/[id]` | DELETE | `DELETE /alerts/{id}` | Delete alert |
-| `/api/alerts/[id]/toggle` | PATCH | `PATCH /alerts/{id}/toggle` | Enable/disable alert |
-| `/api/alerts/history/triggered` | GET | `GET /alerts/history/triggered` | Triggered history; forwards `limit` query param |
-
-All interfaces are defined and exported from `app/lib/api/alerts.ts`.
-
 ### Market BFF routes — `app/app/api/market/*/route.ts`
 
 Public routes (no auth required — market data is not user-scoped). Each route sets `Cache-Control: public, max-age=60, stale-while-revalidate=300` and uses Next.js `next: { revalidate: 60 }` on the upstream fetch. Upstream timeout: 6 s.
@@ -378,53 +291,4 @@ Public routes (no auth required — market data is not user-scoped). Each route 
 
 All interfaces are defined and exported from `app/lib/api/market.ts`.
 
-### Watchlist BFF routes — `app/app/api/watchlist/*/route.ts`
-
-Auth-required routes (NextAuth session → signed backend JWT). Upstream timeout: 8 s.
-
-| Route | Method | Upstream backend endpoint | Notes |
-|---|---|---|---|
-| `/api/watchlist` | GET | `GET /watchlists` | Lists all user watchlists |
-| `/api/watchlist` | POST | `POST /watchlists` | Create watchlist `{ name, symbols? }` |
-| `/api/watchlist/[id]` | GET | `GET /watchlists/{id}` | Single watchlist with items |
-| `/api/watchlist/[id]` | PATCH | `PATCH /watchlists/{id}` | Rename or update position |
-| `/api/watchlist/[id]` | DELETE | `DELETE /watchlists/{id}` | Delete watchlist |
-| `/api/watchlist/[id]/symbols` | POST | `POST /watchlists/{id}/symbols` | Add stock/index symbol |
-| `/api/watchlist/[id]/symbols/[symbol]` | DELETE | `DELETE /watchlists/{id}/symbols/{symbol}` | Remove stock/index symbol |
-| `/api/watchlist/[id]/sectors/[sectorId]` | DELETE | `DELETE /watchlists/{id}/sectors/{sectorId}` | Remove sector item |
-| `/api/watchlist/[id]/reorder` | PUT | `PUT /watchlists/{id}/reorder` | Reorder symbols `{ symbols: string[] }` |
-| `/api/watchlist/[id]/items` | POST | `POST /watchlists/{id}/items` | Add item by type (sector support) |
-
----
-
-## Watchlists Page — `/watchlists`
-
-**Files:**
-- `app/app/watchlists/page.tsx` — RSC shell: auth-gates, redirects to `/?auth=required&from=/watchlists` if no session
-- `app/app/watchlists/watchlists-view.tsx` — full client island
-- `app/lib/hooks/use-watchlists.ts` — `useWatchlists()` + `useWatchlist(id)` SWR hooks
-- `app/lib/api/watchlists.ts` — typed fetch functions + all response/body interfaces
-
-**Layout:** sidebar (240px desktop) + main panel. Mobile: pill-chip row for list selection above the panel.
-
-**Components in `watchlists-view.tsx`:**
-- `WatchlistsView` — root client component; manages `activeId`, `toast`, all mutation handlers
-- `Body` — responsive grid layout: picks sidebar vs. chip row by `isMobile`
-- `WatchlistSidebar` — desktop: `WatchlistRow` list with hover-reveal up/down/rename/delete. Mobile: pill chips.
-- `WatchlistRow` — single sidebar entry; inline rename input on edit; `IconBtn` controls for reorder/rename/delete
-- `WatchlistTable` — `TerminalTable` with cols `["", symbol, name, type, ""]`; up/down arrows for STOCK/INDEX; remove button for all item types (calls `onRemoveSector` for SECTOR items)
-- `AddSymbolInput` — plain text input (uppercase transform) + Add button; Enter to submit
-- `EmptyState` — editorial layout with inline create form; shown when user has no watchlists
-- `ToastBar` — 3-second flash message bar
-
-**Hooks:**
-- `useWatchlists()` — SWR on `/api/watchlist`; returns `{ data: WatchlistListResponse | undefined, hasLoaded, isValidating, error, mutate }`
-- `useWatchlist(id: number | null)` — SWR on `/api/watchlist/${id}` when id non-null; same shape
-
-**Interfaces (`app/lib/api/watchlists.ts`):**
-```ts
-WatchlistItemResponse  // item_type, symbol | null, name, sector_id | null, position
-WatchlistResponse      // watchlist_id, name, position, items, symbols, created_at
-WatchlistListResponse  // watchlists, total
-WatchlistMutationResponse // success, watchlist_id?, watchlist?, message?, symbol?
-```
+> **Removed 2026-05-18:** `/alerts` and `/watchlists` pages plus their BFF routes (`api/alerts/*`, `api/watchlist/*`), hooks (`use-alerts.ts`, `use-watchlists.ts`), and clients (`lib/api/alerts.ts`, `lib/api/watchlists.ts`) were deleted from psx-ui. Backend routers (`backend/app/routers/alerts.py`, `backend/app/routers/watchlists.py`) and their DB tables remain live but unreachable from the deployed UI — cheap to revive if either surface returns. Decision: alerts collapse into strategies (user expresses any rule as a strategy and deploys it); watchlists deprioritised to keep nav focused on the signal → strategy → bot loop.
