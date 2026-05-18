@@ -115,12 +115,29 @@ Allows callers to supply a per-row background color. Used by `backtest-view.tsx`
 
 ### `/backtests/[id]` — `app/app/backtest/backtest-view.tsx`
 
-Backtest result detail page. Shows metrics, trade log, and price chart.
+Backtest result detail page. Shows verdict, performance charts, trade economics, and trade log.
+
+**Page structure (revamped 2026-05-18, A5 + B2 + C1):**
+
+1. **Verdict** — `VerdictCard` renders an editorial one-line read driven by `computeVerdict(result)`. Tone (`positive` / `neutral` / `mixed` / `negative` / `insufficient`) maps to a colored left rail. A quiet 5-stat strip beneath: Return · Sharpe · Max DD · Win rate · Profit factor. Replaces the old two-row 14-metric wall.
+2. **Performance** — Price chart with symbol pill-tabs, equity curve, drawdown ribbon, monthly returns, and right-rail (Effective Risk panel + Deploy CTA). A `+ show additional metrics` toggle reveals Sortino / CAGR / Volatility / DD duration on demand (state: `showAllMetrics`).
+3. **Trade Economics** — Quiet 5-stat strip (Avg win / Avg loss / Largest win / Largest loss / Avg hold) followed by interactive charts: `PnLHistogram`, `HoldTimeHistogram`, `ExitReasonDonut`. Clicking a bar or slice cross-filters the trade log; click the same element again to clear. State: `pnlBinFilter`, `holdBucketFilter`, `exitReasonFilter`. `clearAllCrossFilters()` resets all three.
+4. **Trade Log** — `TerminalTable` with `all / wins / losses` pills. Pill counts reflect the cross-filtered set so the totals stay coherent when histogram/donut filters are active.
+
+**Editorial verdict — `computeVerdict(result)`:**
+- < 10 trades → `Insufficient sample.`
+- Return > 0, Sharpe > 1, MaxDD < 10% → `Promising strategy.`
+- Return > 0, Sharpe ≥ 0 → `Marginal strategy.`
+- Return > 0, Sharpe < 0 → `Profitable but volatile.`
+- Return ≤ 0, Profit factor > 1 → `Losing run, but trade quality holds.`
+- Return ≤ 0 otherwise → `Strategy underperforms.`
+
+**B2 cross-filter chain (`crossFilteredIndices`):** filters compose AND-style. Predicates match the bucketers in `computePnlHistogram` / `computeHoldBuckets` / `computeExitReasonBreakdown` so clicking a chart bar selects exactly the trades that bar represents. The outcome filter (`all`/`wins`/`losses`) applies last.
 
 **BT5/BT7/BT8 integration (2026-05-16):**
 - `useBacktestChartSeries(strategyId, backtestId)` fetches chart data
 - `focusedTradeIndex: number | null` state threads from the trade log click handler into `BacktestPriceChart`
-- `BacktestPriceChart` is dynamically imported (`ssr: false`) and rendered below the trade log
+- `BacktestPriceChart` is dynamically imported (`ssr: false`)
 - Pill-tab symbol selector: when `chartData.series.length > 1`, renders symbol tabs; selected symbol's `bars` + filtered `trades` are passed to `BacktestPriceChart`
 - `getRowBackground` on `TerminalTable` highlights the focused trade row with a subtle tint
 

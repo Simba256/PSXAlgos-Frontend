@@ -252,6 +252,85 @@ function computeExitReasonBreakdown(
   return { segments, total };
 }
 
+type VerdictTone = "positive" | "neutral" | "mixed" | "negative" | "insufficient";
+
+interface Verdict {
+  tone: VerdictTone;
+  headline: string;
+  sub: string;
+}
+
+// Editorial one-line read on a finished backtest. The verdict card replaces
+// the old wall of metrics at the top of the page — it gives a reader the
+// answer first, then the numbers underneath. Branches are ordered so the
+// first matching rule wins; tune carefully when changing.
+function computeVerdict(result: BacktestResultResponse | null): Verdict | null {
+  if (!result) return null;
+  const totalTrades = result.total_trades ?? 0;
+  if (totalTrades < 10) {
+    return {
+      tone: "insufficient",
+      headline: "Insufficient sample.",
+      sub:
+        totalTrades === 0
+          ? "No trades closed in this window — the strategy didn't fire."
+          : `Only ${totalTrades} trade${totalTrades === 1 ? "" : "s"} — results are noise, not signal. Try a longer date range or a wider universe.`,
+    };
+  }
+  const totalReturn = num(result.total_return_pct);
+  const sharpe = num(result.sharpe_ratio);
+  const maxDd = num(result.max_drawdown);
+  const pfRaw = result.profit_factor;
+  const pfInfinite =
+    (pfRaw === null || pfRaw === undefined) &&
+    (result.winning_trades ?? 0) > 0 &&
+    (result.losing_trades ?? 0) === 0;
+  const pf = num(pfRaw);
+  const winRate = num(result.win_rate);
+  const pfText = pfInfinite ? "∞" : pf.toFixed(2);
+
+  if (totalReturn > 0 && sharpe > 1 && maxDd < 10) {
+    return {
+      tone: "positive",
+      headline: "Promising strategy.",
+      sub: `${fmtPctSigned(totalReturn)} return at Sharpe ${sharpe.toFixed(2)} with ${maxDd.toFixed(1)}% max drawdown. ${winRate.toFixed(0)}% win rate, profit factor ${pfText} — worth paper-trading.`,
+    };
+  }
+  if (totalReturn > 0 && sharpe >= 0) {
+    return {
+      tone: "neutral",
+      headline: "Marginal strategy.",
+      sub: `Positive ${fmtPctSigned(totalReturn)} return but Sharpe ${sharpe.toFixed(2)} sits below 1 — risk-adjusted, you're barely beating cash. Profit factor ${pfText}.`,
+    };
+  }
+  if (totalReturn > 0 && sharpe < 0) {
+    return {
+      tone: "mixed",
+      headline: "Profitable but volatile.",
+      sub: `${fmtPctSigned(totalReturn)} return with negative Sharpe ${sharpe.toFixed(2)} — volatility is eating most of the gain. ${winRate.toFixed(0)}% win rate, profit factor ${pfText}.`,
+    };
+  }
+  if (totalReturn <= 0 && pf > 1) {
+    return {
+      tone: "mixed",
+      headline: "Losing run, but trade quality holds.",
+      sub: `${fmtPctSigned(totalReturn)} overall but profit factor ${pfText} > 1 — winners beat losers on average. May need a wider universe or longer window.`,
+    };
+  }
+  if (totalReturn <= 0) {
+    return {
+      tone: "negative",
+      headline: "Strategy underperforms.",
+      sub: `${fmtPctSigned(totalReturn)} return, profit factor ${pfText}, ${maxDd.toFixed(1)}% max drawdown. Edge is unproven on this window.`,
+    };
+  }
+  return {
+    tone: "neutral",
+    headline: "Mixed result.",
+    sub: `${fmtPctSigned(totalReturn)} return at Sharpe ${sharpe.toFixed(2)}. Review the trade log for pattern.`,
+  };
+}
+
 function resultToTrades(result: BacktestResultResponse | null): Trade[] {
   if (!result?.trades) return [];
   return result.trades.map((t, i) => {
@@ -300,8 +379,15 @@ export function BacktestView({
   const [benchmarkSaved, setBenchmarkSaved] = useState(false);
   const [deployed, setDeployed] = useState(false);
   const [filter, setFilter] = useState<TradeFilter>("all");
+  // B2 cross-filters: clicking a histogram bar / hold bucket / donut slice
+  // narrows the trade log. null = no filter from that source. Click the
+  // same item again to clear.
+  const [pnlBinFilter, setPnlBinFilter] = useState<{ lower: number; upper: number; idx: number } | null>(null);
+  const [holdBucketFilter, setHoldBucketFilter] = useState<string | null>(null);
+  const [exitReasonFilter, setExitReasonFilter] = useState<string | null>(null);
   const [focusedTradeIndex, setFocusedTradeIndex] = useState<number | null>(null);
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const [showAllMetrics, setShowAllMetrics] = useState(false);
   const { flash, setFlash } = useFlash();
 
   const backtestId = result?.id ?? null;
@@ -372,19 +458,65 @@ export function BacktestView({
 
   const allTrades = useMemo(() => resultToTrades(result), [result]);
   const totalTrades = result?.total_trades ?? 0;
-  const wins = result?.winning_trades ?? 0;
-  const losses = result?.losing_trades ?? 0;
+  const verdict = useMemo(() => computeVerdict(result), [result]);
+
+  // Cross-filter chain (B2): pnl bin → hold bucket → exit reason. Operates
+  // on raw BacktestTrade payload so filters key on the same fields the
+  // histograms were computed from. The outcome filter (all/wins/losses)
+  // composes on top — applied last.
+  const rawTrades = useMemo(() => result?.trades ?? [], [result?.trades]);
+  const crossFilteredIndices = useMemo<Set<number>>(() => {
+    const keep = new Set<number>();
+    rawTrades.forEach((t, i) => {
+      if (pnlBinFilter) {
+        const p = num(t.pnl);
+        const { lower, upper, idx } = pnlBinFilter;
+        // Last bin is inclusive on both ends to mirror computePnlHistogram's
+        // clamp; earlier bins are [lower, upper).
+        const isLast = idx === 19;
+        const inBin = isLast ? p >= lower && p <= upper : p >= lower && p < upper;
+        if (!inBin) return;
+      }
+      if (holdBucketFilter) {
+        const h = num(t.holding_days);
+        const match =
+          (holdBucketFilter === "<1d" && h < 1) ||
+          (holdBucketFilter === "1–5d" && h >= 1 && h < 6) ||
+          (holdBucketFilter === "5–20d" && h >= 6 && h < 21) ||
+          (holdBucketFilter === "20d+" && h >= 21);
+        if (!match) return;
+      }
+      if (exitReasonFilter && t.exit_reason !== exitReasonFilter) return;
+      keep.add(i);
+    });
+    return keep;
+  }, [rawTrades, pnlBinFilter, holdBucketFilter, exitReasonFilter]);
+
+  const crossFilteredTrades = useMemo(
+    () => allTrades.filter((_, i) => crossFilteredIndices.has(i)),
+    [allTrades, crossFilteredIndices],
+  );
+  const crossWins = crossFilteredTrades.filter((t) => t.outcome === "win").length;
+  const crossLosses = crossFilteredTrades.filter((t) => t.outcome === "loss").length;
 
   const visibleTrades = useMemo(() => {
-    if (filter === "wins") return allTrades.filter((t) => t.outcome === "win");
-    if (filter === "losses") return allTrades.filter((t) => t.outcome === "loss");
-    return allTrades;
-  }, [allTrades, filter]);
+    if (filter === "wins") return crossFilteredTrades.filter((t) => t.outcome === "win");
+    if (filter === "losses") return crossFilteredTrades.filter((t) => t.outcome === "loss");
+    return crossFilteredTrades;
+  }, [crossFilteredTrades, filter]);
 
   const filterCounts: Record<TradeFilter, number> = {
-    all: totalTrades,
-    wins,
-    losses,
+    all: crossFilteredTrades.length,
+    wins: crossWins,
+    losses: crossLosses,
+  };
+
+  const hasActiveCrossFilter =
+    pnlBinFilter !== null || holdBucketFilter !== null || exitReasonFilter !== null;
+  const clearAllCrossFilters = () => {
+    setPnlBinFilter(null);
+    setHoldBucketFilter(null);
+    setExitReasonFilter(null);
   };
 
   // Convenience values for the Lede tiles.
@@ -530,128 +662,19 @@ export function BacktestView({
           {result && result.warnings && result.warnings.length > 0 && (
             <WarningsBanner warnings={result.warnings} />
           )}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: pick(bp, {
-                mobile: "1fr 1fr",
-                tablet: "repeat(3, 1fr)",
-                desktop: "repeat(6, 1fr)",
-              }),
-              gap: pick(bp, { mobile: 22, desktop: 40 }),
-              paddingBottom: 28,
-              borderBottom: `1px solid ${T.outlineFaint}`,
-            }}
-          >
-            <Lede
-              label="Total return"
-              value={result ? `${totalReturnPct >= 0 ? "+" : ""}${totalReturnPct.toFixed(1)}%` : "—"}
-              color={totalReturnPct >= 0 ? T.gain : T.loss}
-              sub="strategy"
-            />
-            <Lede
-              label="Sharpe"
-              value={result ? sharpe.toFixed(2) : "—"}
-              sub="risk-adjusted"
-            />
-            <Lede
-              label="Max DD"
-              value={result ? `${maxDd.toFixed(1)}%` : "—"}
-              color={T.loss}
-              sub="peak-to-trough"
-            />
-            <Lede
-              label="Win rate"
-              value={result && totalTrades > 0 ? `${winRate.toFixed(0)}%` : "—"}
-              sub={totalTrades > 0 ? `${wins} / ${totalTrades} trades` : "no trades"}
-            />
-            <Lede
-              label="Profit factor"
-              value={
-                !result
-                  ? "—"
-                  : profitFactorInfinite
-                    ? "∞"
-                    : profitFactorRaw === null || profitFactorRaw === undefined
-                      ? "—"
-                      : profitFactor.toFixed(2)
-              }
-              sub={profitFactorInfinite ? "no losing trades" : "gross win ÷ loss"}
-            />
-            <Lede
-              label="Avg hold"
-              value={result ? `${avgHold.toFixed(0)}d` : "—"}
-              sub="trading days"
-            />
-          </div>
-
-          {result && (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: pick(bp, {
-                  mobile: "1fr 1fr",
-                  tablet: "repeat(4, 1fr)",
-                  desktop: "repeat(6, 1fr)",
-                }),
-                gap: pick(bp, { mobile: 22, desktop: 40 }),
-                paddingTop: 28,
-                paddingBottom: 28,
-                borderBottom: `1px solid ${T.outlineFaint}`,
-              }}
-            >
-              <Lede
-                label="Sortino"
-                value={result.sortino_ratio == null ? "—" : num(result.sortino_ratio).toFixed(2)}
-                sub="downside-risk-adjusted"
-              />
-              <Lede
-                label="CAGR"
-                value={result.cagr == null ? "—" : fmtPctSigned(num(result.cagr))}
-                color={result.cagr == null ? undefined : num(result.cagr) >= 0 ? T.gain : T.loss}
-                sub="annualized return"
-              />
-              <Lede
-                label="Volatility"
-                value={result.volatility == null ? "—" : fmtPctAbs(num(result.volatility))}
-                sub="annualized stdev"
-              />
-              <Lede
-                label="DD duration"
-                value={
-                  result.max_drawdown_duration == null
-                    ? "—"
-                    : `${Math.round(num(result.max_drawdown_duration)).toLocaleString()}d`
-                }
-                color={T.loss}
-                sub="longest underwater run"
-              />
-              <Lede
-                label="Avg win"
-                value={result.avg_win == null ? "—" : fmtPkr(num(result.avg_win))}
-                color={T.gain}
-                sub="mean PKR per win"
-              />
-              <Lede
-                label="Avg loss"
-                value={result.avg_loss == null ? "—" : fmtPkr(num(result.avg_loss))}
-                color={T.loss}
-                sub="mean PKR per loss"
-              />
-              <Lede
-                label="Largest win"
-                value={result.largest_win == null ? "—" : fmtPkr(num(result.largest_win))}
-                color={T.gain}
-                sub="best single trade"
-              />
-              <Lede
-                label="Largest loss"
-                value={result.largest_loss == null ? "—" : fmtPkr(num(result.largest_loss))}
-                color={T.loss}
-                sub="worst single trade"
-              />
-            </div>
-          )}
+          {/* ─── SECTION 1 · VERDICT ─────────────────────────────── */}
+          <VerdictCard
+            verdict={verdict}
+            totalReturnPct={totalReturnPct}
+            sharpe={sharpe}
+            maxDd={maxDd}
+            winRate={winRate}
+            totalTrades={totalTrades}
+            profitFactor={profitFactor}
+            profitFactorInfinite={profitFactorInfinite}
+            profitFactorRaw={profitFactorRaw}
+            hasResult={result != null}
+          />
 
           {result && chartData && (
             <div style={{ marginTop: 32 }}>
@@ -923,6 +946,191 @@ export function BacktestView({
             </div>
           </div>
 
+          {/* "+ show all metrics" — Sortino / CAGR / Volatility / DD duration
+              live behind a toggle so the page leads with the verdict instead
+              of a wall of numbers. Power users one click away. */}
+          {result && (
+            <div style={{ marginTop: 32 }}>
+              <button
+                type="button"
+                onClick={() => setShowAllMetrics((v) => !v)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: 0,
+                  fontFamily: T.fontMono,
+                  fontSize: 10.5,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                  color: T.primaryLight,
+                }}
+              >
+                {showAllMetrics ? "− hide additional metrics" : "+ show additional metrics"}
+              </button>
+              {showAllMetrics && (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: pick(bp, {
+                      mobile: "1fr 1fr",
+                      tablet: "repeat(4, 1fr)",
+                      desktop: "repeat(4, 1fr)",
+                    }),
+                    gap: pick(bp, { mobile: 22, desktop: 40 }),
+                    marginTop: 16,
+                    paddingTop: 20,
+                    borderTop: `1px solid ${T.outlineFaint}`,
+                  }}
+                >
+                  <Lede
+                    label="Sortino"
+                    value={result.sortino_ratio == null ? "—" : num(result.sortino_ratio).toFixed(2)}
+                    sub="downside-risk-adjusted"
+                  />
+                  <Lede
+                    label="CAGR"
+                    value={result.cagr == null ? "—" : fmtPctSigned(num(result.cagr))}
+                    color={result.cagr == null ? undefined : num(result.cagr) >= 0 ? T.gain : T.loss}
+                    sub="annualized return"
+                  />
+                  <Lede
+                    label="Volatility"
+                    value={result.volatility == null ? "—" : fmtPctAbs(num(result.volatility))}
+                    sub="annualized stdev"
+                  />
+                  <Lede
+                    label="DD duration"
+                    value={
+                      result.max_drawdown_duration == null
+                        ? "—"
+                        : `${Math.round(num(result.max_drawdown_duration)).toLocaleString()}d`
+                    }
+                    color={T.loss}
+                    sub="longest underwater run"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ─── SECTION 3 · TRADE ECONOMICS ─────────────────────── */}
+          {result && (
+            <div style={{ marginTop: 48 }}>
+              <Ribbon
+                kicker="trade economics"
+                right={
+                  hasActiveCrossFilter ? (
+                    <button
+                      type="button"
+                      onClick={clearAllCrossFilters}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        cursor: "pointer",
+                        padding: 0,
+                        fontFamily: T.fontMono,
+                        fontSize: 10.5,
+                        color: T.primaryLight,
+                      }}
+                    >
+                      clear filters ×
+                    </button>
+                  ) : (
+                    <span style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3 }}>
+                      click a bar or slice to filter
+                    </span>
+                  )
+                }
+              />
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: pick(bp, {
+                    mobile: "1fr 1fr",
+                    tablet: "repeat(5, 1fr)",
+                    desktop: "repeat(5, 1fr)",
+                  }),
+                  gap: pick(bp, { mobile: 18, desktop: 32 }),
+                  marginTop: 16,
+                  paddingBottom: 24,
+                }}
+              >
+                <Lede
+                  label="Avg win"
+                  value={result.avg_win == null ? "—" : fmtPkr(num(result.avg_win))}
+                  color={T.gain}
+                  sub="mean PKR per win"
+                />
+                <Lede
+                  label="Avg loss"
+                  value={result.avg_loss == null ? "—" : fmtPkr(num(result.avg_loss))}
+                  color={T.loss}
+                  sub="mean PKR per loss"
+                />
+                <Lede
+                  label="Largest win"
+                  value={result.largest_win == null ? "—" : fmtPkr(num(result.largest_win))}
+                  color={T.gain}
+                  sub="best single trade"
+                />
+                <Lede
+                  label="Largest loss"
+                  value={result.largest_loss == null ? "—" : fmtPkr(num(result.largest_loss))}
+                  color={T.loss}
+                  sub="worst single trade"
+                />
+                <Lede
+                  label="Avg hold"
+                  value={`${avgHold.toFixed(0)}d`}
+                  sub="trading days"
+                />
+              </div>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: pick(bp, {
+                    mobile: "1fr",
+                    tablet: "1fr 1fr",
+                    desktop: "1fr 1fr 1fr",
+                  }),
+                  gap: pick(bp, { mobile: 28, tablet: 28, desktop: 32 }),
+                  paddingTop: 24,
+                  borderTop: `1px solid ${T.outlineFaint}`,
+                }}
+              >
+                <PnLHistogram
+                  histogram={pnlHistogram}
+                  hasTrades={hasTrades}
+                  selectedIdx={pnlBinFilter?.idx ?? null}
+                  onSelectBin={(idx, lower, upper) => {
+                    setPnlBinFilter((cur) =>
+                      cur && cur.idx === idx ? null : { idx, lower, upper },
+                    );
+                  }}
+                />
+                <HoldTimeHistogram
+                  buckets={holdBuckets.buckets}
+                  maxCount={holdBuckets.maxCount}
+                  hasTrades={hasTrades}
+                  selectedLabel={holdBucketFilter}
+                  onSelectBucket={(label) =>
+                    setHoldBucketFilter((cur) => (cur === label ? null : label))
+                  }
+                />
+                <ExitReasonDonut
+                  segments={exitBreakdown.segments}
+                  total={exitBreakdown.total}
+                  hasTrades={hasTrades}
+                  selectedReason={exitReasonFilter}
+                  onSelectReason={(reason) =>
+                    setExitReasonFilter((cur) => (cur === reason ? null : reason))
+                  }
+                />
+              </div>
+            </div>
+          )}
+
           <div style={{ marginTop: 44 }}>
             <Ribbon
               kicker="trade log"
@@ -979,36 +1187,8 @@ export function BacktestView({
             >
               showing {visibleTrades.length} of {filterCounts[filter]} trade
               {filterCounts[filter] === 1 ? "" : "s"}
+              {hasActiveCrossFilter && " (filtered)"}
             </div>
-
-            {result && (
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: pick(bp, {
-                    mobile: "1fr",
-                    tablet: "1fr 1fr",
-                    desktop: "1fr 1fr 1fr",
-                  }),
-                  gap: pick(bp, { mobile: 28, tablet: 28, desktop: 32 }),
-                  marginTop: 36,
-                  paddingTop: 28,
-                  borderTop: `1px solid ${T.outlineFaint}`,
-                }}
-              >
-                <PnLHistogram histogram={pnlHistogram} hasTrades={hasTrades} />
-                <HoldTimeHistogram
-                  buckets={holdBuckets.buckets}
-                  maxCount={holdBuckets.maxCount}
-                  hasTrades={hasTrades}
-                />
-                <ExitReasonDonut
-                  segments={exitBreakdown.segments}
-                  total={exitBreakdown.total}
-                  hasTrades={hasTrades}
-                />
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -1252,12 +1432,166 @@ function WarningsBanner({
   );
 }
 
+// Editorial verdict card — replaces the old 14-metric wall at the top of
+// the page. Big serif headline, sans-serif sub, quiet 5-stat strip beneath.
+// Tone is driven by computeVerdict() so the colored rail on the left tells
+// you the story before you read the words.
+function VerdictCard({
+  verdict,
+  totalReturnPct,
+  sharpe,
+  maxDd,
+  winRate,
+  totalTrades,
+  profitFactor,
+  profitFactorInfinite,
+  profitFactorRaw,
+  hasResult,
+}: {
+  verdict: Verdict | null;
+  totalReturnPct: number;
+  sharpe: number;
+  maxDd: number;
+  winRate: number;
+  totalTrades: number;
+  profitFactor: number;
+  profitFactorInfinite: boolean;
+  profitFactorRaw: number | string | null | undefined;
+  hasResult: boolean;
+}) {
+  const T = useT();
+  if (!hasResult) {
+    return (
+      <div
+        style={{
+          padding: "28px 0",
+          borderBottom: `1px solid ${T.outlineFaint}`,
+          fontFamily: T.fontHead,
+          fontStyle: "italic",
+          fontSize: 22,
+          color: T.text3,
+        }}
+      >
+        no run yet — kick off a backtest to see a verdict.
+      </div>
+    );
+  }
+  const toneColor =
+    verdict?.tone === "positive"
+      ? T.gain
+      : verdict?.tone === "mixed"
+        ? T.warning
+        : verdict?.tone === "negative"
+          ? T.loss
+          : verdict?.tone === "insufficient"
+            ? T.text3
+            : T.primaryLight;
+
+  const pfDisplay = profitFactorInfinite
+    ? "∞"
+    : profitFactorRaw === null || profitFactorRaw === undefined
+      ? "—"
+      : profitFactor.toFixed(2);
+
+  const winRateDisplay = totalTrades > 0 ? `${winRate.toFixed(0)}%` : "—";
+
+  // Quiet 5-stat strip — neutral type, no boxes. Reads like a magazine deck.
+  const strip: Array<{ label: string; value: string; color?: string }> = [
+    {
+      label: "Return",
+      value: `${totalReturnPct >= 0 ? "+" : ""}${totalReturnPct.toFixed(1)}%`,
+      color: totalReturnPct >= 0 ? T.gain : T.loss,
+    },
+    { label: "Sharpe", value: sharpe.toFixed(2) },
+    { label: "Max DD", value: `${maxDd.toFixed(1)}%`, color: T.loss },
+    { label: "Win rate", value: winRateDisplay },
+    { label: "Profit factor", value: pfDisplay },
+  ];
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "3px 1fr",
+        gap: 20,
+        paddingBottom: 28,
+        borderBottom: `1px solid ${T.outlineFaint}`,
+      }}
+    >
+      <div style={{ background: toneColor, borderRadius: 2 }} />
+      <div>
+        <div
+          style={{
+            fontFamily: T.fontHead,
+            fontSize: 28,
+            lineHeight: 1.15,
+            color: T.text,
+            letterSpacing: -0.2,
+          }}
+        >
+          <span style={{ fontStyle: "italic", color: toneColor }}>
+            {verdict?.headline ?? "Result."}
+          </span>
+        </div>
+        <div
+          style={{
+            marginTop: 10,
+            fontFamily: T.fontSans,
+            fontSize: 15,
+            lineHeight: 1.55,
+            color: T.text2,
+            maxWidth: 780,
+          }}
+        >
+          {verdict?.sub}
+        </div>
+        <div
+          style={{
+            marginTop: 18,
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "6px 22px",
+            fontFamily: T.fontMono,
+            fontSize: 12,
+            color: T.text3,
+          }}
+        >
+          {strip.map((s, i) => (
+            <span key={s.label} style={{ display: "inline-flex", gap: 8, alignItems: "baseline" }}>
+              <span
+                style={{
+                  fontSize: 10,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                  color: T.text3,
+                }}
+              >
+                {s.label}
+              </span>
+              <span style={{ color: s.color ?? T.text, fontVariantNumeric: "tabular-nums" }}>
+                {s.value}
+              </span>
+              {i < strip.length - 1 && (
+                <span style={{ color: T.outlineFaint, marginLeft: 14 }}>·</span>
+              )}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PnLHistogram({
   histogram,
   hasTrades,
+  selectedIdx,
+  onSelectBin,
 }: {
   histogram: ReturnType<typeof computePnlHistogram>;
   hasTrades: boolean;
+  selectedIdx?: number | null;
+  onSelectBin?: (idx: number, lower: number, upper: number) => void;
 }) {
   const T = useT();
   const summary =
@@ -1285,12 +1619,23 @@ function PnLHistogram({
               const binWidth = 200 / bins.length;
               const zeroIn = min <= 0 && max >= 0;
               const zeroX = zeroIn ? ((0 - min) / (max - min)) * 200 : null;
+              const hasSelection = selectedIdx != null;
               return (
                 <>
                   {bins.map((b, i) => {
                     const h = maxCount > 0 ? (b.count / maxCount) * 90 : 0;
                     const mid = (b.lower + b.upper) / 2;
                     const fill = mid >= 0 ? T.gain : T.loss;
+                    const isSelected = selectedIdx === i;
+                    // Empty bins always fade. With a selection, non-selected
+                    // bins fade so the chosen bucket pops; without one,
+                    // every populated bin reads at full strength.
+                    const opacity =
+                      b.count === 0
+                        ? 0.2
+                        : hasSelection && !isSelected
+                          ? 0.3
+                          : 0.85;
                     return (
                       <rect
                         key={i}
@@ -1299,7 +1644,15 @@ function PnLHistogram({
                         width={Math.max(0, binWidth - 1)}
                         height={h}
                         fill={fill}
-                        opacity={b.count === 0 ? 0.2 : 0.85}
+                        opacity={opacity}
+                        onClick={
+                          onSelectBin && b.count > 0
+                            ? () => onSelectBin(i, b.lower, b.upper)
+                            : undefined
+                        }
+                        style={{
+                          cursor: onSelectBin && b.count > 0 ? "pointer" : "default",
+                        }}
                       />
                     );
                   })}
@@ -1342,12 +1695,17 @@ function HoldTimeHistogram({
   buckets,
   maxCount,
   hasTrades,
+  selectedLabel,
+  onSelectBucket,
 }: {
   buckets: HoldBucket[];
   maxCount: number;
   hasTrades: boolean;
+  selectedLabel?: string | null;
+  onSelectBucket?: (label: string) => void;
 }) {
   const T = useT();
+  const hasSelection = selectedLabel != null;
   return (
     <div>
       <Ribbon kicker="hold time" />
@@ -1369,6 +1727,13 @@ function HoldTimeHistogram({
               const startX = (200 - total) / 2;
               const x = startX + i * (barWidth + gap);
               const h = (b.count / maxCount) * 90;
+              const isSelected = selectedLabel === b.label;
+              const opacity =
+                b.count === 0
+                  ? 0.2
+                  : hasSelection && !isSelected
+                    ? 0.3
+                    : 0.85;
               return (
                 <rect
                   key={b.label}
@@ -1377,7 +1742,15 @@ function HoldTimeHistogram({
                   width={barWidth}
                   height={h}
                   fill={b.color}
-                  opacity={b.count === 0 ? 0.2 : 0.85}
+                  opacity={opacity}
+                  onClick={
+                    onSelectBucket && b.count > 0
+                      ? () => onSelectBucket(b.label)
+                      : undefined
+                  }
+                  style={{
+                    cursor: onSelectBucket && b.count > 0 ? "pointer" : "default",
+                  }}
                 />
               );
             })}
@@ -1394,12 +1767,35 @@ function HoldTimeHistogram({
               textAlign: "center",
             }}
           >
-            {buckets.map((b) => (
-              <div key={b.label}>
-                <div>{b.label}</div>
-                <div style={{ color: T.text2, marginTop: 2 }}>{b.count}</div>
-              </div>
-            ))}
+            {buckets.map((b) => {
+              const isSelected = selectedLabel === b.label;
+              return (
+                <button
+                  key={b.label}
+                  type="button"
+                  onClick={
+                    onSelectBucket && b.count > 0
+                      ? () => onSelectBucket(b.label)
+                      : undefined
+                  }
+                  disabled={!onSelectBucket || b.count === 0}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    padding: 0,
+                    cursor: onSelectBucket && b.count > 0 ? "pointer" : "default",
+                    fontFamily: "inherit",
+                    fontSize: "inherit",
+                    color: isSelected ? T.text : T.text3,
+                  }}
+                >
+                  <div>{b.label}</div>
+                  <div style={{ color: isSelected ? T.text : T.text2, marginTop: 2 }}>
+                    {b.count}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </>
       )}
@@ -1411,12 +1807,17 @@ function ExitReasonDonut({
   segments,
   total,
   hasTrades,
+  selectedReason,
+  onSelectReason,
 }: {
   segments: ExitSegment[];
   total: number;
   hasTrades: boolean;
+  selectedReason?: string | null;
+  onSelectReason?: (reason: string) => void;
 }) {
   const T = useT();
+  const hasSelection = selectedReason != null;
   return (
     <div>
       <Ribbon kicker="exit breakdown" />
@@ -1440,6 +1841,8 @@ function ExitReasonDonut({
                 let offset = 0;
                 const arcs = segments.map((s) => {
                   const len = (s.count / total) * circ;
+                  const isSelected = selectedReason === s.reason;
+                  const opacity = hasSelection && !isSelected ? 0.3 : 1;
                   const node = (
                     <circle
                       key={s.reason}
@@ -1452,6 +1855,11 @@ function ExitReasonDonut({
                       strokeDasharray={`${len} ${circ - len}`}
                       strokeDashoffset={-offset}
                       transform={`rotate(-90 ${cx} ${cy})`}
+                      opacity={opacity}
+                      onClick={
+                        onSelectReason ? () => onSelectReason(s.reason) : undefined
+                      }
+                      style={{ cursor: onSelectReason ? "pointer" : "default" }}
                     />
                   );
                   offset += len;
@@ -1505,10 +1913,29 @@ function ExitReasonDonut({
           >
             {segments.map((s) => {
               const pct = total > 0 ? (s.count / total) * 100 : 0;
+              const isSelected = selectedReason === s.reason;
               return (
-                <div
+                <button
                   key={s.reason}
-                  style={{ display: "flex", alignItems: "center", gap: 6 }}
+                  type="button"
+                  onClick={
+                    onSelectReason ? () => onSelectReason(s.reason) : undefined
+                  }
+                  disabled={!onSelectReason}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: "transparent",
+                    border: "none",
+                    padding: 0,
+                    cursor: onSelectReason ? "pointer" : "default",
+                    fontFamily: "inherit",
+                    fontSize: "inherit",
+                    textAlign: "left",
+                    width: "100%",
+                    opacity: hasSelection && !isSelected ? 0.5 : 1,
+                  }}
                 >
                   <span
                     style={{
@@ -1520,11 +1947,13 @@ function ExitReasonDonut({
                       flexShrink: 0,
                     }}
                   />
-                  <span style={{ flex: 1, color: T.text2 }}>{s.label}</span>
+                  <span style={{ flex: 1, color: isSelected ? T.text : T.text2 }}>
+                    {s.label}
+                  </span>
                   <span style={{ color: T.text3 }}>
                     {s.count} · {pct.toFixed(0)}%
                   </span>
-                </div>
+                </button>
               );
             })}
           </div>
