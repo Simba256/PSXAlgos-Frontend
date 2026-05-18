@@ -101,9 +101,20 @@ export default async function PortfolioPage() {
   // journal_service.py only applies LIMIT when limit > 0). If render cost
   // becomes a problem at scale, switch the table to server-side pagination
   // and source totals from /portfolio/summary instead of capping here.
+  // Both journal calls were previously unwrapped, so a transient Railway
+  // 5xx or network blip would render Next.js's global error boundary and
+  // wipe the portfolio entirely. Each call now degrades to an empty list
+  // with a fetchFailed flag the view consumes for a flash toast on mount.
+  let journalFailed = false;
   const [openRes, closedRes, stocks, strategies] = await Promise.all([
-    getOpenPositions(jwt),
-    getClosedTrades(jwt),
+    getOpenPositions(jwt).catch(() => {
+      journalFailed = true;
+      return { positions: [], total: 0 };
+    }),
+    getClosedTrades(jwt).catch(() => {
+      journalFailed = true;
+      return { trades: [], total: 0 };
+    }),
     getAllStocks().catch(() => []),
     getStrategies(jwt).catch(() => ({ items: [], total: 0, page: 1, page_size: 0, total_pages: 0 })),
   ]);
@@ -133,6 +144,8 @@ export default async function PortfolioPage() {
       symbolOptions={symbolOptions}
       strategyOptions={strategyOptions}
       sectorMap={sectorMap}
+      fetchFailed={journalFailed}
+      fetchedAt={new Date().toISOString()}
     />
   );
 }

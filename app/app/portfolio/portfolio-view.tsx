@@ -129,15 +129,29 @@ function buildCreateBody(p: Omit<OpenPosition, "id">): OpenPositionCreateBody {
 }
 
 async function readError(resp: Response): Promise<string> {
+  // For 4xx the backend's `detail` is intentionally curated, user-actionable
+  // text (e.g. "Insufficient quantity for this position"). 5xx responses can
+  // leak internal error formatting, so we collapse those to a generic
+  // "something broke" line and log the raw payload for debugging instead.
+  let raw: unknown = undefined;
   try {
-    const data = await resp.json();
-    if (typeof data?.detail === "string") return data.detail;
-    if (typeof data?.error === "string") return data.error;
-    if (data?.detail?.message) return String(data.detail.message);
+    raw = await resp.json();
   } catch {
     /* fallthrough */
   }
-  return `HTTP ${resp.status}`;
+  if (resp.status >= 500) {
+    console.warn(`[portfolio] ${resp.status} response`, raw);
+    return "server error — please try again";
+  }
+  if (typeof (raw as { detail?: unknown })?.detail === "string") {
+    return (raw as { detail: string }).detail;
+  }
+  if (typeof (raw as { error?: unknown })?.error === "string") {
+    return (raw as { error: string }).error;
+  }
+  const detailMsg = (raw as { detail?: { message?: unknown } })?.detail?.message;
+  if (detailMsg) return String(detailMsg);
+  return `request failed (${resp.status})`;
 }
 
 /* ────────── Sector palette ──────────
@@ -176,6 +190,11 @@ interface PortfolioViewProps {
   strategyOptions: StrategyOption[];
   // symbol → sector_name from /stocks. Missing entries fall back to "Other".
   sectorMap: Record<string, string>;
+  fetchFailed?: boolean;
+  // ISO timestamp from the server component representing when the data was
+  // fetched. Used to render an honest "last loaded N min ago" string in the
+  // header instead of the prior hardcoded "just now".
+  fetchedAt?: string;
 }
 
 export function PortfolioView({
@@ -184,6 +203,8 @@ export function PortfolioView({
   symbolOptions,
   strategyOptions,
   sectorMap,
+  fetchFailed = false,
+  fetchedAt,
 }: PortfolioViewProps) {
   const [positions, setPositions] = useState<OpenPosition[]>(initialPositions);
   const [closed, setClosed] = useState<ClosedTrade[]>(initialClosed);
@@ -191,6 +212,11 @@ export function PortfolioView({
   const [closeTarget, setCloseTarget] = useState<OpenPosition | null>(null);
   const { flash, setFlash } = useFlash();
   const importRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (fetchFailed) setFlash("Couldn't load your portfolio — showing partial data");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchFailed]);
 
   const empty = positions.length === 0 && closed.length === 0;
 
@@ -425,6 +451,7 @@ export function PortfolioView({
         onDeleteTrade={handleDeleteTrade}
         flash={flash}
         sectorMap={sectorMap}
+        fetchedAt={fetchedAt}
       />
       {logOpen && (
         <LogTradeModal
@@ -467,6 +494,7 @@ interface BodyProps {
   onDeleteTrade: (trade: ClosedTrade) => Promise<void>;
   flash: string | null;
   sectorMap: Record<string, string>;
+  fetchedAt?: string;
 }
 
 function Body({
@@ -481,6 +509,7 @@ function Body({
   onDeleteTrade,
   flash,
   sectorMap,
+  fetchedAt,
 }: BodyProps) {
   const T = useT();
   const { bp, isMobile } = useBreakpoint();
@@ -509,6 +538,26 @@ function Body({
     () => buildSectors(positions, T, sectorMap),
     [positions, T, sectorMap],
   );
+
+  // Re-render every 60s so the "loaded N min ago" label stays honest without
+  // hammering. fetchedAt is set once when the server component renders; the
+  // label degrades from "just now" → "1 min ago" → "5 min ago" etc.
+  const [, setNowTick] = useState(0);
+  useEffect(() => {
+    if (!fetchedAt) return;
+    const id = setInterval(() => setNowTick((n) => n + 1), 60_000);
+    return () => clearInterval(id);
+  }, [fetchedAt]);
+  const loadedAgo = useMemo(() => {
+    if (!fetchedAt) return null;
+    const t = new Date(fetchedAt).getTime();
+    if (!Number.isFinite(t)) return null;
+    const mins = Math.max(0, Math.floor((Date.now() - t) / 60_000));
+    if (mins < 1) return "loaded just now";
+    if (mins < 60) return `loaded ${mins} min ago`;
+    const hrs = Math.floor(mins / 60);
+    return `loaded ${hrs}h ago`;
+  }, [fetchedAt]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
@@ -545,7 +594,7 @@ function Body({
                   {unpricedCount} awaiting price
                 </span>
               )}
-              <span style={{ color: T.text3 }}>last updated manually · just now</span>
+              {loadedAgo && <span style={{ color: T.text3 }}>{loadedAgo}</span>}
             </>
           )
         }
@@ -1095,9 +1144,16 @@ function OpenPositionsTable({
                   onClick={(e) => {
                     e.stopPropagation();
                     setKebab((prev) => ({ ...prev, [pos.id]: "deleting" }));
-                    void onDeletePosition(pos).then(() => {
-                      setKebab((prev) => ({ ...prev, [pos.id]: "closed" }));
-                    });
+                    void onDeletePosition(pos)
+                      .then(() => {
+                        setKebab((prev) => ({ ...prev, [pos.id]: "closed" }));
+                      })
+                      .catch(() => {
+                        // Failed delete: drop back to "confirm" so the user
+                        // can retry rather than silently leaving the row in
+                        // the "deleting…" state forever.
+                        setKebab((prev) => ({ ...prev, [pos.id]: "confirm" }));
+                      });
                   }}
                   style={{
                     background: "none",
@@ -1362,9 +1418,16 @@ function ClosedTable({
                   onClick={(e) => {
                     e.stopPropagation();
                     setKebab((prev) => ({ ...prev, [trade.id]: "deleting" }));
-                    void onDeleteTrade(trade).then(() => {
-                      setKebab((prev) => ({ ...prev, [trade.id]: "closed" }));
-                    });
+                    void onDeleteTrade(trade)
+                      .then(() => {
+                        setKebab((prev) => ({ ...prev, [trade.id]: "closed" }));
+                      })
+                      .catch(() => {
+                        // Failed delete: drop back to "confirm" so the user
+                        // can retry rather than silently leaving the row in
+                        // the "deleting…" state forever.
+                        setKebab((prev) => ({ ...prev, [trade.id]: "confirm" }));
+                      });
                   }}
                   style={{
                     background: "none",
