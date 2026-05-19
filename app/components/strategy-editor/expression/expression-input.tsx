@@ -433,6 +433,10 @@ export function ExpressionInput({
   const isTouch = useTouchPointer();
   const showChips =
     showOperatorChips === "always" || (showOperatorChips === "auto" && isTouch);
+  // Preset + operator chip strips are advanced shortcuts — power users
+  // appreciate them, first-timers find the chip wall overwhelming. Default
+  // collapsed; users opt in via a single "Show shortcuts" toggle.
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
   // Debounced parse — 150ms idle window. Fires `onParse` with the same result
   // pushed into local state so the inline error renders.
@@ -659,9 +663,38 @@ export function ExpressionInput({
 
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
-      <PresetChipStrip onCommit={commitExpression} isExitRules={isExitRules} />
-      {showChips && (
-        <OperatorChipStrip onInsert={insertAtCaret} />
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "flex-end",
+          marginBottom: 6,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setShowShortcuts((v) => !v)}
+          aria-expanded={showShortcuts}
+          style={{
+            padding: "4px 10px",
+            borderRadius: 999,
+            border: `1px solid ${T.outlineFaint}`,
+            background: "transparent",
+            color: T.text3,
+            fontFamily: T.fontMono,
+            fontSize: 10,
+            letterSpacing: 0.4,
+            textTransform: "uppercase",
+            cursor: "pointer",
+          }}
+        >
+          {showShortcuts ? "Hide shortcuts" : "Show shortcuts"}
+        </button>
+      </div>
+      {showShortcuts && (
+        <>
+          <PresetChipStrip onCommit={commitExpression} isExitRules={isExitRules} />
+          {showChips && <OperatorChipStrip onInsert={insertAtCaret} />}
+        </>
       )}
       <input
         ref={inputRef}
