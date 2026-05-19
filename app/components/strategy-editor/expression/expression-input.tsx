@@ -809,8 +809,10 @@ export { expressionToSource };
 
 // ── OperatorChipStrip ───────────────────────────────────────────────────
 
-// Horizontal scrollable bar above the input on touch devices. Tapping a chip
-// inserts its literal at the caret. WCAG 2.5.5 target size: 44×44 px chips.
+// Wrapping chip bar above the input. Tapping a chip inserts its literal at
+// the caret. WCAG 2.5.5 target size: 44×44 px chips. Wraps onto multiple
+// rows instead of horizontal scroll so the drawer never grows a sideways
+// scrollbar on the expression node editor.
 function OperatorChipStrip({ onInsert }: { onInsert: (text: string) => void }) {
   const T = useT();
   return (
@@ -819,11 +821,10 @@ function OperatorChipStrip({ onInsert }: { onInsert: (text: string) => void }) {
       aria-label="Expression operators"
       style={{
         display: "flex",
+        flexWrap: "wrap",
         gap: 6,
-        overflowX: "auto",
         paddingBottom: 8,
         marginBottom: 6,
-        WebkitOverflowScrolling: "touch",
       }}
     >
       {OPERATOR_CHIPS.map((chip) => (
@@ -876,11 +877,10 @@ function PresetChipStrip({
       aria-label="Indicator presets"
       style={{
         display: "flex",
+        flexWrap: "wrap",
         gap: 6,
-        overflowX: "auto",
         paddingBottom: 8,
         marginBottom: 6,
-        WebkitOverflowScrolling: "touch",
       }}
     >
       {visibleChips.map((preset) => (

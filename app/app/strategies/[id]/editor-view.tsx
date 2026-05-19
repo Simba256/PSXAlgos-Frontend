@@ -2344,6 +2344,7 @@ function Canvas({
                   key={`slot-entry-${slot.parentId}-${slot.index}`}
                   slot={slot}
                   isTreeEmpty={isTreeEmpty && slot.parentId === root.id}
+                  branch="entry"
                   autoOpen={
                     pendingPicker !== null &&
                     pendingPicker.source === "entry" &&
@@ -2410,6 +2411,7 @@ function Canvas({
                   key={`slot-exit-${slot.parentId}-${slot.index}`}
                   slot={slot}
                   isTreeEmpty={isExitTreeEmpty && slot.parentId === exitRoot.id}
+                  branch="exit"
                   autoOpen={
                     pendingPicker !== null &&
                     pendingPicker.source === "exit" &&
@@ -2803,6 +2805,7 @@ function InsertSlot({
   onAutoOpenConsumed,
   onAddCondition,
   onAddGroup,
+  branch,
 }: {
   slot: InsertionSlot;
   // True only for the root group when the entire tree is empty —
@@ -2812,6 +2815,9 @@ function InsertSlot({
   onAutoOpenConsumed: () => void;
   onAddCondition: () => void;
   onAddGroup: (logic: ConditionLogic) => void;
+  // Drives the button label so left-tree shows "Add entry condition" and
+  // right-tree shows "Add exit condition" instead of the generic "Add input".
+  branch: "entry" | "exit";
 }) {
   const T = useT();
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -2873,7 +2879,11 @@ function InsertSlot({
           }}
         >
           <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
-          <span>{slot.isEmpty ? "Add first input" : "Add input"}</span>
+          <span>
+            {slot.isEmpty
+              ? `Add first ${branch} condition`
+              : `Add ${branch} condition`}
+          </span>
         </button>
         {pickerOpen && (
           <InsertPicker
@@ -3375,6 +3385,10 @@ function ConditionDrawer({
     return r.ok;
   });
   const [forceInvalid, setForceInvalid] = useState<boolean>(false);
+  // Templates panel is opt-in chrome: shown by default on a fresh condition,
+  // but dismissable so users who want to author custom logic aren't forced to
+  // scroll past the chip pile every time they edit a condition.
+  const [templatesDismissed, setTemplatesDismissed] = useState<boolean>(false);
   // Bar resolution. Backend defaults absent values to "1D"; if a legacy
   // condition was saved before the field existed we surface "1D" so the
   // chip row reflects the live evaluation behavior.
@@ -3583,10 +3597,43 @@ function ConditionDrawer({
       </div>
 
       <div style={{ flex: 1, overflowX: "hidden", overflowY: "auto", padding: 22, paddingTop: 16 }}>
-        {/* Templates — only on a fresh condition with nothing typed yet */}
-        {!expressionText.trim() && !isExitRules && (
+        {/* Templates — only on a fresh condition with nothing typed yet.
+            Shown expanded by default and dismissable; once dismissed the
+            user can re-open via the "Browse templates" pill. */}
+        {!expressionText.trim() && !isExitRules && !templatesDismissed && (
           <div style={{ marginBottom: 18 }}>
-            <Kicker>start from a template</Kicker>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+              }}
+            >
+              <Kicker>start from a template</Kicker>
+              <button
+                type="button"
+                onClick={() => setTemplatesDismissed(true)}
+                aria-label="Hide templates"
+                title="Hide templates"
+                style={{
+                  width: 22,
+                  height: 22,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: 6,
+                  color: T.text3,
+                  cursor: "pointer",
+                  fontSize: 14,
+                  lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
+            </div>
             <div
               style={{
                 display: "flex",
@@ -3622,6 +3669,32 @@ function ConditionDrawer({
             <div style={{ marginTop: 8, fontSize: 11, color: T.text3 }}>
               Or fill in the fields below.
             </div>
+          </div>
+        )}
+
+        {/* Re-open affordance when templates were dismissed but the user
+            still has a blank condition. Stays out of the way once they
+            start authoring. */}
+        {!expressionText.trim() && !isExitRules && templatesDismissed && (
+          <div style={{ marginBottom: 14 }}>
+            <button
+              type="button"
+              onClick={() => setTemplatesDismissed(false)}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 999,
+                border: `1px solid ${T.outlineFaint}`,
+                background: "transparent",
+                color: T.text3,
+                fontFamily: T.fontMono,
+                fontSize: 10,
+                letterSpacing: 0.4,
+                textTransform: "uppercase",
+                cursor: "pointer",
+              }}
+            >
+              Browse templates
+            </button>
           </div>
         )}
 
