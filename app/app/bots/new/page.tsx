@@ -35,7 +35,11 @@ interface StrategyPreview {
   defaultRisk: DefaultRisk | null;
 }
 
-const DEFAULT_NAME = `Bot ${new Date().toISOString().slice(0, 10)}`;
+// Computed lazily per-mount so a wizard opened after midnight uses today's
+// date instead of the date the module was first evaluated.
+function defaultBotName(): string {
+  return `Bot ${new Date().toISOString().slice(0, 10)}`;
+}
 
 // Unwraps the Next proxy / FastAPI error envelope into a single readable
 // sentence. FastAPI 422s arrive as `{detail: [{loc, msg}, ...]}` — without
@@ -76,6 +80,10 @@ export default function BotWizardPage() {
   const [strategyId, setStrategyId] = useState<number | null>(null);
   const [strategy, setStrategy] = useState<StrategyPreview | null>(null);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
+  // useTransition's `pending` only flips once the post-fetch router.push
+  // runs inside startTransition, so it can't guard the fetch itself.
+  // `submitting` covers the network round-trip.
+  const [submitting, setSubmitting] = useState(false);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
   const T = useT();
@@ -83,7 +91,7 @@ export default function BotWizardPage() {
   const padX = pick(bp, PAD.page);
 
   // Wizard form state — single source of truth for all three stages.
-  const [name, setName] = useState(DEFAULT_NAME);
+  const [name, setName] = useState(defaultBotName);
   const [allocatedCapital, setAllocatedCapital] = useState<number>(1_000_000);
   const [maxPositions, setMaxPositions] = useState<number>(5);
   const [universeAndRisk, setUniverseAndRisk] = useState<UniverseAndRiskValue>(
@@ -168,6 +176,7 @@ export default function BotWizardPage() {
   }, []);
 
   async function onLaunch() {
+    if (submitting) return;
     setSubmitErr(null);
     if (!strategyId) {
       setSubmitErr("Open a strategy and use 'Spin up bot' to bind one.");
@@ -211,6 +220,7 @@ export default function BotWizardPage() {
       stale_universe_halt_pct: riskControls.stale_universe_halt_pct,
       max_per_sector_pct: riskControls.max_per_sector_pct,
     } satisfies BotCreateBody;
+    setSubmitting(true);
     let bot: BotResponse;
     try {
       const res = await fetch("/api/bots", {
@@ -222,15 +232,18 @@ export default function BotWizardPage() {
         const err = await res.json().catch(() => ({}));
         if (res.status === 403) {
           setSubmitErr("Creating bots requires the Pro+ plan. Upgrade to continue.");
+          setSubmitting(false);
           return;
         }
         const msg = formatLaunchError(err, res.status);
         setSubmitErr(msg);
+        setSubmitting(false);
         return;
       }
       bot = (await res.json()) as BotResponse;
     } catch (err) {
       setSubmitErr(err instanceof Error ? err.message : "Network error");
+      setSubmitting(false);
       return;
     }
     startTransition(() => router.push(`/bots/${bot.id}`));
@@ -452,12 +465,14 @@ export default function BotWizardPage() {
               size="md"
               icon={Icon.spark}
               onClick={() => {
-                if (pending) return;
+                if (pending || submitting) return;
                 void onLaunch();
               }}
-              style={pending ? { opacity: 0.6, cursor: "wait" } : undefined}
+              style={
+                pending || submitting ? { opacity: 0.6, cursor: "wait" } : undefined
+              }
             >
-              {pending ? "Launching…" : "Launch bot →"}
+              {pending || submitting ? "Launching…" : "Launch bot →"}
             </Btn>
           )}
         </div>
@@ -508,6 +523,7 @@ function CapitalStep({
           value={name}
           onChange={(e) => onName(e.target.value)}
           placeholder="e.g. Momentum · live"
+          aria-label="Bot name"
           style={{
             marginTop: 10,
             background: T.surface,
@@ -544,6 +560,7 @@ function CapitalStep({
             value={allocatedCapital}
             min={1}
             step={10000}
+            aria-label="Starting capital in PKR"
             onChange={(e) => {
               const n = parseFloat(e.target.value);
               if (Number.isFinite(n) && n > 0) onAllocatedCapital(n);
@@ -601,6 +618,7 @@ function CapitalStep({
           min={1}
           max={20}
           step={1}
+          aria-label="Max concurrent positions"
           onChange={(e) => {
             const n = parseInt(e.target.value, 10);
             if (Number.isFinite(n) && n >= 1 && n <= 20) onMaxPositions(n);
