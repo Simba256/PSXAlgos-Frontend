@@ -41,7 +41,7 @@ function tierPricing(
   billing: Billing,
   prices: PriceTable,
 ): Pick<Tier, "price" | "period" | "footnote"> {
-  if (name === "Free") return { price: "PKR 0", period: "forever" };
+  if (name === "Free") return { price: "PKR 0", period: "free" };
 
   const live = name === "Pro" ? prices.pro : prices.quant;
   const fallbackMonthly = name === "Pro" ? FALLBACK_MONTHLY.pro : FALLBACK_MONTHLY.quant;
@@ -552,7 +552,7 @@ export function PricingView({ prices }: { prices: PriceTable }) {
                 ],
                 [
                   "Can I pay annually?",
-                  "Yes — 20% off and local bank transfer is accepted for annual plans.",
+                  "Yes — around 17% off, and local bank transfer is accepted for annual plans.",
                 ],
               ] as const
             ).map(([q, a], i) => (
@@ -608,7 +608,8 @@ export function PricingView({ prices }: { prices: PriceTable }) {
         >
           Start free →
         </Link>
-        <span
+        <a
+          href="mailto:hello@psxalgos.com"
           style={{
             fontFamily: T.fontHead,
             fontSize: 14,
@@ -619,10 +620,11 @@ export function PricingView({ prices }: { prices: PriceTable }) {
             boxShadow: `inset 0 0 0 1px ${T.outlineFaint}`,
             borderRadius: 6,
             textAlign: "center",
+            textDecoration: "none",
           }}
         >
           Talk to us
-        </span>
+        </a>
       </div>
       </main>
     </div>
