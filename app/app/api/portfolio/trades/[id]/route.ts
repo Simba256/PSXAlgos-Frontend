@@ -13,13 +13,15 @@ export async function DELETE(
   _req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const { id: raw } = await ctx.params;
-  const id = parseId(raw);
-  if (id === null) return NextResponse.json({ error: "bad id" }, { status: 400 });
+  // Auth before parse — never leak whether an ID is valid to unauthenticated
+  // callers.
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
+  const { id: raw } = await ctx.params;
+  const id = parseId(raw);
+  if (id === null) return NextResponse.json({ error: "bad id" }, { status: 400 });
   const jwt = signBackendJwt({
     sub: session.user.id,
     email: session.user.email,

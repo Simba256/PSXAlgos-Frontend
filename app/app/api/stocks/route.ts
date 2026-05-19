@@ -51,9 +51,13 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err) {
+    // Log the real reason server-side; never leak hostnames or DNS detail
+    // through `Error.message` to the browser.
+    console.warn("[stocks proxy] upstream fetch failed:", err);
+    const isAbort = err instanceof DOMException && err.name === "AbortError";
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "fetch failed" },
-      { status: 502 },
+      { error: isAbort ? "upstream timeout" : "upstream unavailable" },
+      { status: isAbort ? 504 : 502 },
     );
   } finally {
     clearTimeout(t);

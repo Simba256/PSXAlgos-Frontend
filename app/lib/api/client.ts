@@ -30,13 +30,20 @@ export interface ApiFetchOptions extends Omit<RequestInit, "headers"> {
   // Cache control for server-fetch. Default no-store for live data.
   // Pass { revalidate: N } to enable ISR.
   next?: { revalidate?: number; tags?: string[] }
+  // Per-request timeout in ms. Defaults to DEFAULT_TIMEOUT_MS. Pass 0 to
+  // disable. Ignored if `signal` is provided — caller controls cancellation.
+  timeoutMs?: number
 }
+
+// Comfortably under Vercel Pro's 60s function ceiling and Railway's typical
+// p99 (~3-5s). Stops indefinite hangs when Railway is unreachable.
+const DEFAULT_TIMEOUT_MS = 20_000
 
 export async function apiFetch<T>(
   path: string,
   options: ApiFetchOptions = {},
 ): Promise<T> {
-  const { jwt, headers, next, cache, ...rest } = options
+  const { jwt, headers, next, cache, timeoutMs, signal, ...rest } = options
   const url = `${baseUrl()}${path.startsWith("/") ? path : `/${path}`}`
 
   const finalHeaders: Record<string, string> = {
@@ -48,11 +55,18 @@ export async function apiFetch<T>(
     finalHeaders["Content-Type"] = "application/json"
   }
 
+  // Caller-supplied signal wins; otherwise attach a timeout. timeoutMs=0
+  // explicitly disables the default (rare, e.g. for backtest long-polls).
+  const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const effectiveSignal =
+    signal ?? (effectiveTimeout > 0 ? AbortSignal.timeout(effectiveTimeout) : undefined)
+
   const res = await fetch(url, {
     ...rest,
     headers: finalHeaders,
     cache: cache ?? (next ? undefined : "no-store"),
     next,
+    signal: effectiveSignal,
   })
 
   if (!res.ok) {
