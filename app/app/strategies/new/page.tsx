@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useState, useTransition, type KeyboardEvent } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT, type Tokens } from "@/components/theme";
 import { Btn, DotRow, EditorialHeader, Kicker, Ribbon } from "@/components/atoms";
@@ -169,6 +169,50 @@ function presetToEntryRules(key: PresetKey): EntryRules {
   return { conditions: { kind: "group", logic: "AND", conditions } };
 }
 
+// ARIA roving-tabindex handler for a radio group. The grids below use
+// role="radiogroup" and role="radio" on buttons, so the spec requires arrow
+// keys to move between options (Tab only enters/exits the group). Each radio
+// button must carry data-radio-key={String(key)} and tabIndex={sel ? 0 : -1}
+// for focus to follow selection.
+function makeRadioKeyDown<K extends string>(
+  keys: readonly K[],
+  selected: K,
+  onSelect: (next: K) => void,
+) {
+  return (e: KeyboardEvent<HTMLDivElement>) => {
+    const idx = keys.indexOf(selected);
+    if (idx < 0) return;
+    let next = idx;
+    switch (e.key) {
+      case "ArrowRight":
+      case "ArrowDown":
+        next = (idx + 1) % keys.length;
+        break;
+      case "ArrowLeft":
+      case "ArrowUp":
+        next = (idx - 1 + keys.length) % keys.length;
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = keys.length - 1;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    const nextKey = keys[next];
+    onSelect(nextKey);
+    const container = e.currentTarget;
+    requestAnimationFrame(() => {
+      container
+        .querySelector<HTMLButtonElement>(`[data-radio-key="${nextKey}"]`)
+        ?.focus();
+    });
+  };
+}
+
 // Slug preview only — the backend assigns the canonical strategy_id on create
 // and returns it. We show this so the user has a sense of what the URL will
 // look like; we don't send it.
@@ -199,6 +243,10 @@ export default function WizardPage() {
   const [presetKey, setPresetKey] = useState<PresetKey>("mean_reversion");
   const [afterKey, setAfterKey] = useState<AfterKey>("editor");
   const [submitErr, setSubmitErr] = useState<string | null>(null);
+  // useTransition's `pending` only flips after the post-fetch router.push
+  // runs inside startTransition. `submitting` covers the network round-trip
+  // so a double-tap can't dispatch two POST /api/strategies.
+  const [submitting, setSubmitting] = useState(false);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
   const T = useT();
@@ -217,7 +265,9 @@ export default function WizardPage() {
   }, [preset.key, preset.defaultName, preset.desc]);
 
   async function onCreate() {
+    if (submitting) return;
     setSubmitErr(null);
+    setSubmitting(true);
     const body = buildCreateBody(preset, name, description);
     let result: StrategyCreateResponse;
     try {
@@ -231,14 +281,17 @@ export default function WizardPage() {
         // 403 means user isn't on the `pro` plan — surface clearly.
         if (res.status === 403) {
           setSubmitErr("Creating strategies requires the Pro plan. Upgrade to continue.");
+          setSubmitting(false);
           return;
         }
         setSubmitErr(typeof err?.error === "string" ? err.error : `Create failed (${res.status})`);
+        setSubmitting(false);
         return;
       }
       result = (await res.json()) as StrategyCreateResponse;
     } catch (err) {
       setSubmitErr(err instanceof Error ? err.message : "Network error");
+      setSubmitting(false);
       return;
     }
     const newId = result.strategy_id;
@@ -421,12 +474,14 @@ export default function WizardPage() {
               size="md"
               icon={Icon.spark}
               onClick={() => {
-                if (pending) return;
+                if (pending || submitting) return;
                 void onCreate();
               }}
-              style={pending ? { opacity: 0.6, cursor: "wait" } : undefined}
+              style={
+                pending || submitting ? { opacity: 0.6, cursor: "wait" } : undefined
+              }
             >
-              {pending
+              {pending || submitting
                 ? "Creating…"
                 : `Create & ${afterKey === "backtest" ? "run backtest" : "open editor"} →`}
             </Btn>
@@ -478,6 +533,11 @@ function Step1({
       <div
         role="radiogroup"
         aria-label="Starting preset"
+        onKeyDown={makeRadioKeyDown(
+          PRESETS.map((p) => p.key),
+          selected,
+          onSelect,
+        )}
         style={{
           display: "grid",
           gridTemplateColumns: pick(bp, {
@@ -498,6 +558,8 @@ function Step1({
               type="button"
               role="radio"
               aria-checked={sel}
+              tabIndex={sel ? 0 : -1}
+              data-radio-key={p.key}
               onClick={() => onSelect(p.key)}
               style={{
                 background: sel ? T.surfaceLow : T.surface,
@@ -739,6 +801,11 @@ function Step2({
           <div
             role="radiogroup"
             aria-label="After creating"
+            onKeyDown={makeRadioKeyDown(
+              afterOpts.map((o) => o.key),
+              afterKey,
+              onAfter,
+            )}
             style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}
           >
             {afterOpts.map((opt) => {
@@ -749,6 +816,8 @@ function Step2({
                   type="button"
                   role="radio"
                   aria-checked={sel}
+                  tabIndex={sel ? 0 : -1}
+                  data-radio-key={opt.key}
                   onClick={() => onAfter(opt.key)}
                   style={{
                     padding: 14,
