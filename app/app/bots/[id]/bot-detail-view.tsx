@@ -96,6 +96,15 @@ export function BotDetailView({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { flash, setFlash } = useFlash();
 
+  // Tick every 60s so uptime() in the header ages live ("12m" → "13m" →
+  // "1h") instead of freezing at the value computed on first render and
+  // only refreshing on unrelated re-renders.
+  const [, setNowTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setNowTick((n) => n + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const running = bot.status === "ACTIVE";
   const stopped = bot.status === "STOPPED";
 
@@ -315,7 +324,9 @@ export function BotDetailView({
           >
             <div>
               <Ribbon
-                kicker="equity curve · 12 days"
+                kicker={`equity curve · ${initialPerformance?.equity_curve.length ?? 0} ${
+                  (initialPerformance?.equity_curve.length ?? 0) === 1 ? "day" : "days"
+                }`}
                 right={
                   <span style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3 }}>
                     <span style={{ color: T.gain }}>━</span> bot &nbsp;{" "}
@@ -354,7 +365,7 @@ export function BotDetailView({
                   kicker="open positions"
                   right={
                     <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
-                      {initialPositions.length} of {bot.max_positions}
+                      {openCount} of {bot.max_positions}
                     </span>
                   }
                 />
