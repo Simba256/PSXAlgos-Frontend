@@ -159,7 +159,7 @@ export default function LandingContent() {
               flexWrap: "wrap",
             }}
           >
-            <span>✓ Free forever tier</span>
+            <span>✓ Free tier</span>
             <span>✓ No card needed</span>
             <span>✓ PKR pricing</span>
           </div>
@@ -190,8 +190,8 @@ export default function LandingContent() {
               marginBottom: 18,
             }}
           >
-            <span>live · rsi_bounce_v1</span>
-            <span style={{ color: T.gain }}>● running</span>
+            <span>demo · rsi_bounce_v1</span>
+            <span style={{ color: T.text3 }}>● example</span>
           </div>
           <svg
             viewBox="0 0 380 280"
@@ -504,10 +504,10 @@ export default function LandingContent() {
         >
           {(
             [
-              ["Active strategies", "2,847", "across the platform"],
-              ["Signals fired", "412 today", "10am market open"],
+              ["PSX coverage", "All listed", "EOD + intraday"],
+              ["Indicators", "30+", "MACD · RSI · BB · ATR …"],
               ["Data since", "2015", "10+ years of PSX history"],
-              ["Running bots", "184", "paper-trading now"],
+              ["Backtest engine", "10 yrs / run", "or any subset"],
             ] as const
           ).map(([l, v, s]) => (
             <div key={l}>
@@ -607,7 +607,7 @@ export default function LandingContent() {
             Terms
           </button>
           <button type="button" onClick={() => comingSoon("Status page")} style={footerLinkStyle(T)}>
-            Status · <span style={{ color: T.gain }}>●</span>
+            Status
           </button>
         </div>
       </div>
