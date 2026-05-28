@@ -29,11 +29,23 @@ interface JobUpdateMessage {
 // path should resolve well before this for any normal-shaped backtest.
 const POLL_INTERVAL_MS = 5000;
 const POLL_MAX_ATTEMPTS = 60;
-const POLL_MAX_CONSECUTIVE_FAILURES = 4;
+// Consecutive transient failures (5xx, network, "Failed to fetch") we
+// tolerate before bailing. Bumped from 4 → 8 because a CPU-heavy backtest
+// can starve the Railway event loop for short bursts even with periodic
+// asyncio.sleep(0) yields — a single burst of 5xx shouldn't terminate
+// the watcher when the job itself is still progressing. 4xx still aborts
+// immediately (auth / bad id / expired job won't recover with retries).
+const POLL_MAX_CONSECUTIVE_FAILURES = 8;
+
+export interface WatchBacktestJobOptions {
+  /** Called when polling sees an updated progress_pct from the backend. */
+  onProgress?: (status: BacktestJobStatus) => void;
+}
 
 export async function watchBacktestJob(
   stratId: number,
   jobId: string,
+  opts: WatchBacktestJobOptions = {},
 ): Promise<BacktestJobStatus> {
   const controller = new AbortController();
 
@@ -45,7 +57,7 @@ export async function watchBacktestJob(
     },
   );
 
-  const pollPromise = slowPoll(stratId, jobId, controller.signal);
+  const pollPromise = slowPoll(stratId, jobId, controller.signal, opts.onProgress);
 
   try {
     const winner = await Promise.race([wsPromise, pollPromise]);
@@ -122,6 +134,7 @@ async function slowPoll(
   stratId: number,
   jobId: string,
   signal: AbortSignal,
+  onProgress?: (status: BacktestJobStatus) => void,
 ): Promise<BacktestJobStatus> {
   let consecutiveFailures = 0;
   let lastError = "Poll failed";
@@ -147,6 +160,15 @@ async function slowPoll(
         const status = (await res.json()) as BacktestJobStatus;
         if (status.status === "completed" || status.status === "failed") {
           return status;
+        }
+        // Still pending/running — surface progress to caller so the UI
+        // can render a percentage / bar count instead of a blank spinner.
+        if (onProgress) {
+          try {
+            onProgress(status);
+          } catch {
+            // progress is best-effort; never let a UI callback abort the watcher
+          }
         }
       }
     } catch (err) {

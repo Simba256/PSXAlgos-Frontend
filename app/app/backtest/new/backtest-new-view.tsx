@@ -275,6 +275,7 @@ export function BacktestNewView({
   const [strategyDefaults, setStrategyDefaults] = useState<DefaultRisk | null>(null);
 
   const [running, setRunning] = useState(false);
+  const [progressPct, setProgressPct] = useState<number | null>(null);
 
   const selectedStrategy = strategies.find((s) => s.id === strategyId) ?? null;
 
@@ -489,6 +490,7 @@ export function BacktestNewView({
     }
 
     setRunning(true);
+    setProgressPct(null);
     try {
       const startRes = await fetch(`/api/strategies/${strategyId}/backtest`, {
         method: "POST",
@@ -524,7 +526,11 @@ export function BacktestNewView({
         return;
       }
 
-      const final = await watchBacktestJob(strategyId, started.job_id);
+      const final = await watchBacktestJob(strategyId, started.job_id, {
+        onProgress: (s) => {
+          if (typeof s.progress_pct === "number") setProgressPct(s.progress_pct);
+        },
+      });
       if (final.status === "failed") {
         throw new Error(final.error ?? "Backtest failed");
       }
@@ -538,6 +544,7 @@ export function BacktestNewView({
     } catch (err) {
       setFlash(err instanceof Error ? err.message : "Backtest failed");
       setRunning(false);
+      setProgressPct(null);
     }
   }
 
@@ -700,7 +707,11 @@ export function BacktestNewView({
                       disabled={running || !strategyId || universeScope === null}
                       style={{ width: "100%", justifyContent: "center" }}
                     >
-                      {running ? "Running…" : "Run backtest"}
+                      {running
+                        ? progressPct !== null
+                          ? `Running… ${progressPct}%`
+                          : "Running…"
+                        : "Run backtest"}
                     </Btn>
                   </div>
                 )}
@@ -726,6 +737,7 @@ export function BacktestNewView({
                   strategyDefaults={strategyDefaults}
                   riskIsDefault={usingDefaultRisk}
                   running={running}
+                  progressPct={progressPct}
                   onRun={handleRun}
                 />
               )}
@@ -802,6 +814,7 @@ function RunRail({
   strategyDefaults,
   riskIsDefault,
   running,
+  progressPct,
   onRun,
 }: {
   strategy: StrategyOption | null;
@@ -821,6 +834,7 @@ function RunRail({
   strategyDefaults: DefaultRisk | null;
   riskIsDefault: boolean;
   running: boolean;
+  progressPct: number | null;
   onRun: () => void;
 }) {
   const T = useT();
@@ -1023,7 +1037,11 @@ function RunRail({
             padding: "12px 18px",
           }}
         >
-          {running ? "Running…" : "Run backtest"}
+          {running
+            ? progressPct !== null
+              ? `Running… ${progressPct}%`
+              : "Running…"
+            : "Run backtest"}
         </Btn>
         {!strategy && (
           <div

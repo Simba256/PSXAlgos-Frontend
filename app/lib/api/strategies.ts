@@ -647,6 +647,9 @@ export interface BacktestJobStatus {
   started_at?: string | null;
   completed_at?: string | null;
   failed_at?: string | null;
+  progress_pct?: number | null;
+  bars_done?: number | null;
+  total_bars?: number | null;
 }
 
 export async function startBacktest(
