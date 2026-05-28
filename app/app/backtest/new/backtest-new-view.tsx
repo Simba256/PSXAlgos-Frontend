@@ -406,12 +406,41 @@ export function BacktestNewView({
   /* ────────── Run ────────── */
 
   async function pollJob(stratId: number, jobId: string): Promise<BacktestJobStatus> {
+    // The job runs on Railway regardless of whether any single poll succeeds —
+    // one transient 5xx or browser-side "Failed to fetch" blip shouldn't kill
+    // the run. Tolerate up to MAX_CONSECUTIVE_FAILURES before bailing. 4xx
+    // (auth, bad id, job expired) aborts immediately because retrying won't
+    // help. Counter resets on every successful poll.
+    const MAX_CONSECUTIVE_FAILURES = 4;
+    let consecutiveFailures = 0;
+    let lastError = "Poll failed";
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 1500));
-      const res = await fetch(`/api/strategies/${stratId}/backtest/job/${jobId}`);
-      if (!res.ok) throw new Error(`Poll failed (${res.status})`);
-      const status = (await res.json()) as BacktestJobStatus;
-      if (status.status === "completed" || status.status === "failed") return status;
+      let transientFailure = false;
+      try {
+        const res = await fetch(`/api/strategies/${stratId}/backtest/job/${jobId}`);
+        if (!res.ok) {
+          if (res.status >= 400 && res.status < 500) {
+            throw new Error(`Poll failed (${res.status})`);
+          }
+          lastError = `Poll failed (${res.status})`;
+          transientFailure = true;
+        } else {
+          consecutiveFailures = 0;
+          const status = (await res.json()) as BacktestJobStatus;
+          if (status.status === "completed" || status.status === "failed") return status;
+        }
+      } catch (err) {
+        // 4xx re-thrown above ends the loop; everything else (network errors,
+        // TypeError "Failed to fetch") is treated as transient.
+        if (err instanceof Error && /^Poll failed \(4/.test(err.message)) throw err;
+        lastError = err instanceof Error ? err.message : "Poll failed";
+        transientFailure = true;
+      }
+      if (transientFailure) {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) throw new Error(lastError);
+      }
     }
     throw new Error("Backtest taking longer than expected — try again later.");
   }
