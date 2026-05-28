@@ -594,6 +594,22 @@ export default function LandingContent() {
         >
           Try it →
         </Link>
+        <div
+          style={{
+            marginTop: 20,
+            fontFamily: T.fontMono,
+            fontSize: 12,
+            color: T.text3,
+          }}
+        >
+          Questions or feedback:{" "}
+          <a
+            href="mailto:support@psxalgos.com"
+            style={{ color: T.primaryLight, textDecoration: "none" }}
+          >
+            support@psxalgos.com
+          </a>
+        </div>
       </div>
 
       {/* Footer */}
@@ -612,7 +628,29 @@ export default function LandingContent() {
       >
         <span>© 2026 PSX Algos · Karachi</span>
         <div style={{ flex: 1 }} />
-        <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
+          <a
+            href="mailto:support@psxalgos.com"
+            style={{
+              fontFamily: T.fontMono,
+              fontSize: 11,
+              color: T.text3,
+              textDecoration: "none",
+            }}
+          >
+            support@psxalgos.com
+          </a>
+          <Link
+            href="/contact"
+            style={{
+              fontFamily: T.fontMono,
+              fontSize: 11,
+              color: T.text3,
+              textDecoration: "none",
+            }}
+          >
+            Contact
+          </Link>
           <button type="button" onClick={() => comingSoon("Privacy policy")} style={footerLinkStyle(T)}>
             Privacy
           </button>

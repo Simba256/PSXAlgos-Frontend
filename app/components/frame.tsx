@@ -279,6 +279,22 @@ export function TopNav({ route }: { route?: string }) {
                 </span>
               </span>
             )}
+            <Link
+              href="/contact"
+              style={{
+                fontFamily: T.fontMono,
+                fontSize: 11,
+                padding: "6px 12px",
+                borderRadius: 999,
+                background: "transparent",
+                color: T.text2,
+                border: `1px solid ${T.outlineFaint}`,
+                whiteSpace: "nowrap",
+                textDecoration: "none",
+              }}
+            >
+              Feedback
+            </Link>
             <NotificationBell size={26} />
             <UserMenu size={26} />
           </div>
@@ -311,6 +327,22 @@ export function TopNav({ route }: { route?: string }) {
                   </span>
                 </div>
               )}
+              <Link
+                href="/contact"
+                onClick={() => setOpen(false)}
+                style={{
+                  fontFamily: T.fontMono,
+                  fontSize: 12,
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  border: `1px solid ${T.outlineFaint}`,
+                  color: T.text2,
+                  textAlign: "center",
+                  textDecoration: "none",
+                }}
+              >
+                Feedback
+              </Link>
             </div>
           }
         />
@@ -386,6 +418,25 @@ export function MarketingNav({ badge }: { badge?: string }) {
 
         <div style={{ display: "flex", gap: compact ? 6 : 10, alignItems: "center" }}>
           {!compact && <ThemeToggle variant="inline" />}
+          {!compact && (
+            <Link
+              href="/contact"
+              style={{
+                fontFamily: T.fontMono,
+                fontSize: 11.5,
+                padding: "8px 14px",
+                borderRadius: 999,
+                background: "transparent",
+                color: T.text2,
+                border: `1px solid ${T.outlineFaint}`,
+                fontWeight: 500,
+                whiteSpace: "nowrap",
+                textDecoration: "none",
+              }}
+            >
+              Feedback
+            </Link>
+          )}
           <UserMenu
             size={30}
             fallback={
