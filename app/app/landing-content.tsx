@@ -87,8 +87,10 @@ export default function LandingContent() {
             >
               BETA
             </span>
-            <span style={{ width: 20, height: 1, background: T.primaryLight }} />
-            Built for the PSX · Karachi, Lahore, Islamabad
+            {!isMobile && (
+              <span style={{ width: 20, height: 1, background: T.primaryLight }} />
+            )}
+            {isMobile ? "Built for the PSX" : "Built for the PSX · Karachi, Lahore, Islamabad"}
           </div>
           <h1
             style={{
