@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef } from "react";
 import { useT } from "@/components/theme";
 import { MarketingNav, SkipLink } from "@/components/frame";
-import { useFlash } from "@/components/atoms";
 import { useBreakpoint, PAD, pick, clampPx } from "@/components/responsive";
 
 export default function LandingContent() {
@@ -12,7 +11,6 @@ export default function LandingContent() {
   const { bp, isMobile } = useBreakpoint();
   const padX = pick(bp, PAD.pageMarketing);
   const howItWorksRef = useRef<HTMLDivElement>(null);
-  const { flash, setFlash } = useFlash();
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -23,10 +21,6 @@ export default function LandingContent() {
 
   const scrollToHowItWorks = useCallback(() => {
     howItWorksRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, []);
-
-  const comingSoon = useCallback((feature: string) => {
-    setFlash(`${feature} — coming soon`);
   }, []);
 
   return (
@@ -630,85 +624,19 @@ export default function LandingContent() {
       >
         <span>© 2026 PSX Algos · Karachi</span>
         <div style={{ flex: 1 }} />
-        <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
-          <a
-            href="mailto:support@psxalgos.com"
-            style={{
-              fontFamily: T.fontMono,
-              fontSize: 11,
-              color: T.text3,
-              textDecoration: "none",
-            }}
-          >
-            support@psxalgos.com
-          </a>
-          <Link
-            href="/contact"
-            style={{
-              fontFamily: T.fontMono,
-              fontSize: 11,
-              color: T.text3,
-              textDecoration: "none",
-            }}
-          >
-            Contact
-          </Link>
-          <button type="button" onClick={() => comingSoon("Privacy policy")} style={footerLinkStyle(T)}>
-            Privacy
-          </button>
-          <button type="button" onClick={() => comingSoon("Terms of service")} style={footerLinkStyle(T)}>
-            Terms
-          </button>
-          <button type="button" onClick={() => comingSoon("Status page")} style={footerLinkStyle(T)}>
-            Status
-          </button>
-        </div>
+        <Link
+          href="/contact"
+          style={{
+            fontFamily: T.fontMono,
+            fontSize: 11,
+            color: T.text3,
+            textDecoration: "none",
+          }}
+        >
+          Contact
+        </Link>
       </div>
       </main>
-
-      {flash && <LandingFlashToast message={flash} />}
-    </div>
-  );
-}
-
-function footerLinkStyle(T: ReturnType<typeof useT>) {
-  return {
-    background: "transparent",
-    border: "none",
-    padding: 0,
-    fontFamily: T.fontMono,
-    fontSize: 11,
-    color: T.text3,
-    cursor: "pointer",
-  } as const;
-}
-
-function LandingFlashToast({ message }: { message: string }) {
-  const T = useT();
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      style={{
-        position: "fixed",
-        bottom: 72,
-        left: "50%",
-        transform: "translateX(-50%)",
-        background: T.surface2,
-        color: T.text,
-        padding: "10px 18px",
-        borderRadius: 999,
-        boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 12px 40px -12px rgba(0,0,0,0.5)`,
-        fontFamily: T.fontMono,
-        fontSize: 12,
-        zIndex: 1000,
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-      }}
-    >
-      <span style={{ color: T.primaryLight }}>◉</span>
-      {message}
     </div>
   );
 }
