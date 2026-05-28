@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { MarketingNav, SkipLink } from "@/components/frame";
 import { useT } from "@/components/theme";
 import { useBreakpoint, PAD, pick, clampPx } from "@/components/responsive";
@@ -26,18 +27,92 @@ const CHANNELS: ReadonlyArray<{
     for: "info",
   },
   {
-    label: "Phone (Pakistan business hours)",
+    label: "WhatsApp / phone",
     value: "+92 334 2153065",
-    href: "tel:+923342153065",
-    meta: "Text or WhatsApp work too.",
+    href: "https://wa.me/923342153065",
+    meta: "Tap to chat on WhatsApp — fastest for quick back-and-forth.",
     for: "phone",
   },
 ];
+
+type Status =
+  | { kind: "idle" }
+  | { kind: "sending" }
+  | { kind: "success" }
+  | { kind: "error"; message: string };
 
 export default function ContactPage() {
   const T = useT();
   const { bp } = useBreakpoint();
   const padX = pick(bp, PAD.pageMarketing);
+
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [subject, setSubject] = useState("");
+  const [message, setMessage] = useState("");
+  // Honeypot — must stay empty. If a bot fills it, the API silently drops
+  // the request. Hidden via inline styles so screen readers ignore it.
+  const [website, setWebsite] = useState("");
+  const [status, setStatus] = useState<Status>({ kind: "idle" });
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (status.kind === "sending") return;
+    setStatus({ kind: "sending" });
+    try {
+      const res = await fetch("/api/contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, subject, message, website }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !data.ok) {
+        setStatus({
+          kind: "error",
+          message:
+            data.error ||
+            "Couldn't send your message. Please email support@psxalgos.com directly.",
+        });
+        return;
+      }
+      setStatus({ kind: "success" });
+      setName("");
+      setEmail("");
+      setSubject("");
+      setMessage("");
+    } catch {
+      setStatus({
+        kind: "error",
+        message:
+          "Network error while sending. Please email support@psxalgos.com directly.",
+      });
+    }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    background: T.surface2,
+    border: `1px solid ${T.outlineFaint}`,
+    borderRadius: 8,
+    padding: "12px 14px",
+    fontSize: 14,
+    color: T.text,
+    fontFamily: T.fontSans,
+    outline: "none",
+    boxSizing: "border-box",
+  };
+
+  const labelStyle: React.CSSProperties = {
+    display: "block",
+    fontFamily: T.fontMono,
+    fontSize: 11,
+    color: T.text3,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    marginBottom: 6,
+  };
+
+  const sending = status.kind === "sending";
 
   return (
     <div
@@ -55,8 +130,8 @@ export default function ContactPage() {
         id="main-content"
         style={{
           padding: pick(bp, {
-            mobile: `48px ${padX} 80px`,
-            desktop: `80px ${padX} 120px`,
+            mobile: `40px ${padX} 80px`,
+            desktop: `72px ${padX} 120px`,
           }),
           maxWidth: 880,
           margin: "0 auto",
@@ -95,7 +170,7 @@ export default function ContactPage() {
             fontSize: pick(bp, { mobile: 15, desktop: 16.5 }),
             color: T.text2,
             lineHeight: 1.6,
-            margin: "0 0 40px",
+            margin: "0 0 36px",
             maxWidth: 620,
           }}
         >
@@ -104,6 +179,142 @@ export default function ContactPage() {
           requests, complaints about the colour scheme. All of it.
         </p>
 
+        {/* Contact form */}
+        <form
+          onSubmit={onSubmit}
+          style={{
+            background: T.surfaceLow,
+            border: `1px solid ${T.outlineFaint}`,
+            borderRadius: 12,
+            padding: pick(bp, { mobile: 20, desktop: 28 }),
+            marginBottom: 48,
+          }}
+        >
+          <div style={{ display: "grid", gridTemplateColumns: pick(bp, { mobile: "1fr", desktop: "1fr 1fr" }), gap: 16 }}>
+            <div>
+              <label htmlFor="contact-name" style={labelStyle}>Your name</label>
+              <input
+                id="contact-name"
+                type="text"
+                required
+                maxLength={100}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={sending}
+                style={inputStyle}
+              />
+            </div>
+            <div>
+              <label htmlFor="contact-email" style={labelStyle}>Email</label>
+              <input
+                id="contact-email"
+                type="email"
+                required
+                maxLength={200}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={sending}
+                style={inputStyle}
+              />
+            </div>
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <label htmlFor="contact-subject" style={labelStyle}>Subject (optional)</label>
+            <input
+              id="contact-subject"
+              type="text"
+              maxLength={200}
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              disabled={sending}
+              style={inputStyle}
+            />
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <label htmlFor="contact-message" style={labelStyle}>Message</label>
+            <textarea
+              id="contact-message"
+              required
+              minLength={10}
+              maxLength={5000}
+              rows={7}
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              disabled={sending}
+              style={{ ...inputStyle, resize: "vertical", minHeight: 140, fontFamily: T.fontSans }}
+              placeholder="Bug report? Feature idea? Strategy question? Anything."
+            />
+          </div>
+
+          {/* Honeypot — hidden from humans, bots fill it and get silently dropped */}
+          <div
+            aria-hidden="true"
+            style={{ position: "absolute", left: "-10000px", width: 1, height: 1, overflow: "hidden" }}
+          >
+            <label htmlFor="contact-website">Website</label>
+            <input
+              id="contact-website"
+              type="text"
+              tabIndex={-1}
+              autoComplete="off"
+              value={website}
+              onChange={(e) => setWebsite(e.target.value)}
+            />
+          </div>
+
+          <div
+            style={{
+              marginTop: 20,
+              display: "flex",
+              alignItems: "center",
+              gap: 16,
+              flexWrap: "wrap",
+            }}
+          >
+            <button
+              type="submit"
+              disabled={sending}
+              style={{
+                fontFamily: T.fontHead,
+                fontSize: 14,
+                fontWeight: 600,
+                padding: "12px 22px",
+                borderRadius: 6,
+                background: sending ? T.outline : T.primary,
+                color: T.surface,
+                border: "none",
+                cursor: sending ? "wait" : "pointer",
+                opacity: sending ? 0.8 : 1,
+              }}
+            >
+              {sending ? "Sending…" : "Send message →"}
+            </button>
+            {status.kind === "success" && (
+              <span style={{ color: T.gain, fontSize: 13, fontFamily: T.fontMono }}>
+                ✓ Sent. I'll get back to you.
+              </span>
+            )}
+            {status.kind === "error" && (
+              <span style={{ color: T.loss, fontSize: 13, fontFamily: T.fontMono }}>
+                {status.message}
+              </span>
+            )}
+          </div>
+        </form>
+
+        {/* Direct channels as backup */}
+        <div
+          style={{
+            fontFamily: T.fontMono,
+            fontSize: 11,
+            color: T.text3,
+            letterSpacing: 0.6,
+            textTransform: "uppercase",
+            marginBottom: 14,
+          }}
+        >
+          ── or reach me directly
+        </div>
         <div
           style={{
             display: "grid",
@@ -118,13 +329,14 @@ export default function ContactPage() {
             <a
               key={ch.for}
               href={ch.href}
+              target={ch.href.startsWith("http") ? "_blank" : undefined}
+              rel={ch.href.startsWith("http") ? "noopener noreferrer" : undefined}
               style={{
                 display: "block",
                 background: T.surface,
-                padding: pick(bp, { mobile: "20px 22px", desktop: "26px 28px" }),
+                padding: pick(bp, { mobile: "18px 20px", desktop: "22px 26px" }),
                 textDecoration: "none",
                 color: "inherit",
-                transition: "background 120ms",
               }}
             >
               <div
@@ -142,7 +354,7 @@ export default function ContactPage() {
               <div
                 style={{
                   fontFamily: T.fontHead,
-                  fontSize: pick(bp, { mobile: 20, desktop: 24 }),
+                  fontSize: pick(bp, { mobile: 18, desktop: 22 }),
                   fontWeight: 500,
                   letterSpacing: -0.3,
                   color: T.primaryLight,
@@ -167,8 +379,8 @@ export default function ContactPage() {
 
         <div
           style={{
-            marginTop: 48,
-            padding: pick(bp, { mobile: 20, desktop: 24 }),
+            marginTop: 32,
+            padding: pick(bp, { mobile: 18, desktop: 22 }),
             background: T.surfaceLow,
             borderRadius: 10,
             border: `1px solid ${T.outlineFaint}`,
