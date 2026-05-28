@@ -417,7 +417,7 @@ export function MarketingNav({ badge }: { badge?: string }) {
         <div style={{ flex: 1 }} />
 
         <div style={{ display: "flex", gap: compact ? 6 : 10, alignItems: "center" }}>
-          {!compact && <ThemeToggle variant="inline" />}
+          <ThemeToggle variant="inline" />
           {!compact && (
             <Link
               href="/contact"

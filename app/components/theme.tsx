@@ -117,30 +117,20 @@ const Ctx = createContext<ThemeCtx | null>(null);
 
 const STORAGE_KEY = "psxalgos-theme";
 
-function osPrefersDark(): boolean {
-  return typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  // Initialise to "light" so the SSR output and the first client render match —
-  // any other initial value would cause a hydration mismatch for inline-styled
-  // components reading useT() (e.g. the Sign in button), leaving them stuck on
-  // the server-rendered theme until something else triggered a re-render.
-  // The themeInit script in app/layout.tsx has already written the correct
-  // `data-theme` attribute to <html> from localStorage / OS preference before
-  // React hydrates, so we sync React state to that attribute below via a
-  // layout effect — runs synchronously before the first paint, so CSS-var
-  // surfaces (background, borders) and inline-token surfaces (button bg, text
-  // color) land on the same theme in the first visible frame.
+  // Paper is the default for everyone — no OS preference following. The
+  // themeInit script in app/layout.tsx writes data-theme="light" by default
+  // (or whatever localStorage holds) before React hydrates. We initialise
+  // state to "light" so SSR output and first client render match, then sync
+  // to the attribute via a layout effect — runs synchronously before first
+  // paint so CSS-var surfaces and inline-token surfaces stay aligned.
   const [mode, setModeState] = useState<Mode>("light");
 
   useIsomorphicLayoutEffect(() => {
     const attr = document.documentElement.getAttribute("data-theme");
     if (attr === "dark" || attr === "light") {
       setModeState(attr);
-      return;
     }
-    if (osPrefersDark()) setModeState("dark");
   }, []);
 
   useEffect(() => {
@@ -158,20 +148,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       link.href = href;
     });
   }, [mode]);
-
-  // Live-update when OS preference changes, but only if the user hasn't
-  // explicitly chosen a theme yet (localStorage empty = no manual choice).
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => {
-      try {
-        if (localStorage.getItem(STORAGE_KEY)) return;
-      } catch {}
-      setModeState(e.matches ? "dark" : "light");
-    };
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
 
   const setMode = useCallback((m: Mode) => {
     setModeState(m);

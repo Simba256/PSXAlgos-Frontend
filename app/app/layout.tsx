@@ -48,11 +48,12 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-// Runs synchronously before React hydrates so dark-mode users don't see a
-// Paper → Amber flash on every load. Sets data-theme on <html> so the CSS
-// cascade in globals.css picks the right token values before first paint.
-// Keep the payload tiny — the script is inline and blocks first paint.
-const themeInit = `(function(){try{var m=localStorage.getItem("psxalgos-theme");if(m==="dark"||m==="light"){document.documentElement.setAttribute("data-theme",m);}else if(window.matchMedia("(prefers-color-scheme: dark)").matches){document.documentElement.setAttribute("data-theme","dark");}}catch(e){}})();`;
+// Runs synchronously before React hydrates so first paint matches the
+// user's chosen site theme. Paper is the default for everyone; we no longer
+// follow OS prefers-color-scheme — too many users on dark-mode phones were
+// landing on Amber without realising there was a Paper option. Anyone who
+// wants Amber clicks the toggle once and localStorage pins it forever.
+const themeInit = `(function(){try{var m=localStorage.getItem("psxalgos-theme");if(m==="dark"||m==="light"){document.documentElement.setAttribute("data-theme",m);}else{document.documentElement.setAttribute("data-theme","light");}}catch(e){document.documentElement.setAttribute("data-theme","light");}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
