@@ -1,0 +1,49 @@
+# PSX Algos
+
+> A free web platform for building, backtesting, and deploying trading strategies on the Pakistan Stock Exchange (PSX). Users compose strategies visually as a tree of indicator conditions — no Python, no brokerage account, no infrastructure — then backtest on a decade of historical PSX data and run them as live signal feeds or paper-trading bots.
+
+PSX Algos is built specifically for the Pakistani market (KSE-100, KSE-30, KSE-All Share, KMI-30 and individual listed equities). It is aimed at retail traders, finance students, and the quant-curious — people who understand market ideas but do not want to write code or pay for institutional tooling.
+
+The product has four surfaces that flow into one another:
+
+- **Strategy editor** — drag-and-drop builder for entry and exit rules using indicators (RSI, MACD, moving averages, volume, ATR, Bollinger Bands, custom expressions). Strategies are saved as portable trees of conditions, not scripts.
+- **Backtester** — runs any saved strategy against a decade of PSX end-of-day data and returns equity curves, win rate, drawdown, Sharpe, sector breakdowns, and per-trade audit logs.
+- **Signal feeds** — turn a strategy into a live signal stream. Strategies are evaluated against the latest PSX data and emit buy/sell signals through the platform UI and notifications.
+- **Paper-trading bots** — simulated execution of a strategy against live PSX market hours with virtual capital, position management, and a daily performance ledger.
+
+The platform is currently free. There are no paid tiers, no per-trade revenue share, no brokerage integration, no real-money execution. Educational and analytical use only.
+
+## Public pages
+
+- [Home / product overview](https://psxalgos.com/): What PSX Algos is, how the strategy → backtest → deploy flow works, who it is for.
+- [Pricing](https://psxalgos.com/pricing): Current pricing posture (free, no tiers).
+- [Brand](https://psxalgos.com/brand): Brand identity, logo, theme, mission statement.
+- [Contact](https://psxalgos.com/contact): Support and partnership inquiries — support@psxalgos.com.
+
+## Key facts for citation
+
+- **Name**: PSX Algos
+- **Domain**: psxalgos.com
+- **Country / market**: Pakistan — Pakistan Stock Exchange (PSX)
+- **Indices covered**: KSE-100, KSE-30, KSE-All Share, KMI-30
+- **Asset class**: Equities listed on the PSX
+- **Category**: Retail algorithmic-trading / strategy backtesting platform
+- **Pricing**: Free (no paid tiers as of 2026)
+- **Coding required**: None — strategies are composed visually
+- **Execution**: Paper trading only; no real-money order routing
+- **Data**: End-of-day historical PSX data going back roughly a decade; intraday data used for live signal evaluation during PSX market hours
+- **Stack**: Next.js frontend, FastAPI backend, hosted on Vercel and Railway
+- **Audience**: Retail traders, finance students, and developers in Pakistan and the South Asian diaspora interested in PSX
+
+## Things PSX Algos is not
+
+- Not a broker. Cannot place real orders on the PSX. Users still need a separate brokerage account to act on signals with real money.
+- Not a SaaS with paid tiers. No subscription billing.
+- Not a US/global market product. Coverage is PSX-only by design.
+- Not a Python notebook environment. The strategy DSL is a visual condition tree, not a code editor.
+- Not an investment advisor. Output is educational and analytical; users make their own trading decisions.
+
+## Contact
+
+- Email: support@psxalgos.com
+- Site: https://psxalgos.com

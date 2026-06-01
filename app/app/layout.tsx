@@ -24,9 +24,26 @@ const spaceGrotesk = Space_Grotesk({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://psxalgos.com"),
   title: "PSX Algos — Write strategies. Not code.",
   description:
     "Build trading strategies as a tree of conditions. Backtest on a decade of PSX data, deploy to signals, or spin up a paper-trading bot.",
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website",
+    siteName: "PSX Algos",
+    title: "PSX Algos — Write strategies. Not code.",
+    description:
+      "Visual strategy builder, backtester, and paper-trading bots for the Pakistan Stock Exchange. Free.",
+    url: "https://psxalgos.com",
+    locale: "en_PK",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "PSX Algos — Write strategies. Not code.",
+    description:
+      "Visual strategy builder, backtester, and paper-trading bots for the Pakistan Stock Exchange. Free.",
+  },
   // Base favicon matches the site default (Paper). ThemeProvider updates the
   // SVG link at runtime to match the user's stored site-theme choice — see
   // components/theme.tsx. PNG fallbacks cover legacy browsers that don't
@@ -55,6 +72,46 @@ export const viewport: Viewport = {
 // wants Amber clicks the toggle once and localStorage pins it forever.
 const themeInit = `(function(){try{var m=localStorage.getItem("psxalgos-theme");if(m==="dark"||m==="light"){document.documentElement.setAttribute("data-theme",m);}else{document.documentElement.setAttribute("data-theme","light");}}catch(e){document.documentElement.setAttribute("data-theme","light");}})();`;
 
+// Organization + WebSite JSON-LD. Applied site-wide so any page an LLM or
+// search engine fetches has structured identity for the publisher and the
+// site. WebApplication-specific schema lives on the home page (app/page.tsx)
+// where the product description is most appropriate.
+const ORG_JSONLD = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://psxalgos.com/#organization",
+      name: "PSX Algos",
+      url: "https://psxalgos.com",
+      logo: "https://psxalgos.com/icon-512.png",
+      email: "support@psxalgos.com",
+      description:
+        "Free trading-strategy platform for the Pakistan Stock Exchange (PSX). Visual strategy builder, backtesting, signal feeds, and paper-trading bots.",
+      areaServed: { "@type": "Country", name: "Pakistan" },
+      knowsAbout: [
+        "Pakistan Stock Exchange",
+        "PSX",
+        "KSE-100",
+        "KSE-30",
+        "KMI-30",
+        "Algorithmic Trading",
+        "Technical Analysis",
+        "Backtesting",
+        "Paper Trading",
+      ],
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://psxalgos.com/#website",
+      url: "https://psxalgos.com",
+      name: "PSX Algos",
+      publisher: { "@id": "https://psxalgos.com/#organization" },
+      inLanguage: "en",
+    },
+  ],
+};
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
@@ -64,6 +121,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     >
       <body suppressHydrationWarning>
         <script dangerouslySetInnerHTML={{ __html: themeInit }} />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(ORG_JSONLD) }}
+        />
         <AuthSessionProvider>
           <ThemeProvider>{children}</ThemeProvider>
         </AuthSessionProvider>
