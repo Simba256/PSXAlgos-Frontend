@@ -130,6 +130,23 @@ Allows callers to supply a per-row background color. Used by `backtest-view.tsx`
 
 ## Pages Reference
 
+### `/learn` + `/learn/[slug]` — content layer (GEO)
+
+Public, unauth, SEO/answer-engine-oriented glossary. Built so LLMs and answer engines cite PSX Algos on "what is X" PSX queries. **Content is data, not MDX** — each entry is a typed object, rendered inside the inline-token design system, with JSON-LD generated from the same source of truth (no human-vs-crawler drift).
+
+**Files:**
+- `app/app/learn/_content/types.ts` — `GlossaryEntry` model + `Block` union (`para` / `heading` / `list` / `table` / `callout`). `LearnEntry` union is glossary-only for now (guides land in Phase 2).
+- `app/app/learn/_content/index.ts` — registry. `ENTRIES` array + `getEntry` / `allSlugs` / `glossaryEntries`. **Author a module + add it to `ENTRIES` = routing, sitemap, and hub all pick it up automatically.**
+- `app/app/learn/_content/glossary/*.ts` — one module per term (e.g. `kse-100.ts`, `free-float-market-cap.ts`).
+- `app/app/learn/page.tsx` — server hub. Emits `CollectionPage` + `BreadcrumbList` JSON-LD, renders `<LearnHub>`.
+- `app/app/learn/[slug]/page.tsx` — server SSG term page. `generateStaticParams` from the registry, per-page `generateMetadata` (title/description/canonical/OG), and 4× JSON-LD: `Article` + `DefinedTerm` + `FAQPage` + `BreadcrumbList`, then renders `<LearnArticle>`.
+
+**Per-page template** (`<LearnArticle>`): breadcrumb → H1 → TL;DR card (the one-line definition answer engines lift) → body blocks → optional product tie-in card with configurable CTA (`productTieIn.cta`, defaults to `/strategies/new`) → FAQ → related-term chips → byline. Inline `**bold**` and `[label](/href)` supported via a minimal parser; hard terms cross-link to their own glossary entries.
+
+**Schema builders:** `app/lib/seo/schema.ts` — `articleSchema` / `definedTermSchema` / `faqSchema` / `breadcrumbSchema`, all linked to the site-wide Organization/WebSite `@id` from `app/app/layout.tsx`. `app/components/json-ld.tsx` is a server-component `<script type="application/ld+json">` emitter.
+
+**Sitemap:** `app/app/sitemap.ts` enumerates `/learn` + every entry from `ENTRIES`.
+
 ### `/contact` — `app/app/contact/page.tsx`
 
 Public feedback page. Renders in-page form + a fallback list of direct channels. No auth required.
