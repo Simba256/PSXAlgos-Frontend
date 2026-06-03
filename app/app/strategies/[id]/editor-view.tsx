@@ -3604,6 +3604,12 @@ function ConditionDrawer({
   const opWrapRef = useRef<HTMLDivElement>(null);
   const rhsWrapRef = useRef<HTMLDivElement>(null);
   const templatesWrapRef = useRef<HTMLDivElement>(null);
+  // The LHS / operator / RHS editors now render as one inline panel below the
+  // token row instead of three floating popovers (which were clipped at the
+  // screen edge on the right-hand tokens — the drawer is only 380px wide and
+  // pinned to the right). `panelRef` lets the outside-click handler treat a
+  // click inside that panel as "inside the open popover".
+  const panelRef = useRef<HTMLDivElement>(null);
 
   // Close popover on outside click or Escape.
   useEffect(() => {
@@ -3616,7 +3622,12 @@ function ConditionDrawer({
     };
     const activeRef = refs[openPopover];
     const handleMouseDown = (e: MouseEvent) => {
-      if (activeRef?.current && !activeRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const insideAnchor = activeRef?.current?.contains(target) ?? false;
+      // lhs/op/rhs render their editor in the shared inline panel, which lives
+      // outside the pill wrapper — a click there must NOT close the editor.
+      const insidePanel = panelRef.current?.contains(target) ?? false;
+      if (!insideAnchor && !insidePanel) {
         setOpenPopover(null);
       }
     };
@@ -3643,18 +3654,34 @@ function ConditionDrawer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [op]);
 
-  // Popover shared style helper — keeps the inline style objects DRY.
+  // The Templates dropdown still floats from its button in the header strip.
+  // Anchored to the RIGHT edge so it opens leftward and never runs past the
+  // drawer's right side. (The LHS / op / RHS editors no longer use this — they
+  // render in the inline `panelStyle` card below the token row.)
   const { isMobile } = useBreakpoint();
   const popoverStyle: React.CSSProperties = {
     position: "absolute",
     top: "calc(100% + 6px)",
-    left: 0,
-    zIndex: 10,
+    right: 0,
+    left: "auto",
+    zIndex: 20,
     minWidth: isMobile ? undefined : 280,
     maxWidth: isMobile ? undefined : 360,
     width: isMobile ? "100%" : undefined,
     background: T.surface2 ?? T.surface,
     boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 8px 24px rgba(0,0,0,0.18)`,
+    borderRadius: 10,
+    padding: 14,
+  };
+
+  // Inline editor card for the LHS / operator / RHS tokens. Rendered in normal
+  // flow directly below the token row, so it always spans the drawer's full
+  // width and can never overflow the viewport — this is what replaced the
+  // floating popovers that were getting clipped off the right edge.
+  const panelStyle: React.CSSProperties = {
+    marginTop: 14,
+    background: T.surface2 ?? T.surface,
+    boxShadow: `0 0 0 1px ${T.outlineFaint}`,
     borderRadius: 10,
     padding: 14,
   };
@@ -3800,13 +3827,44 @@ function ConditionDrawer({
               ariaLabel="Edit indicator"
               isOpen={openPopover === "lhs"}
             />
+          </div>
+
+          {/* Token 2 — Operator */}
+          <div ref={opWrapRef} style={{ position: "relative" }}>
+            <TokenPill
+              label={OPERATOR_PILL[op]}
+              onClick={() => setOpenPopover(openPopover === "op" ? null : "op")}
+              ariaLabel="Edit operator"
+              isOpen={openPopover === "op"}
+            />
+          </div>
+
+          {/* Token 3 — RHS value */}
+          <div ref={rhsWrapRef} style={{ position: "relative" }}>
+            <TokenPill
+              label={rhsPillLabel}
+              onClick={() => setOpenPopover(openPopover === "rhs" ? null : "rhs")}
+              ariaLabel="Edit comparison value"
+              isOpen={openPopover === "rhs"}
+            />
+          </div>
+
+          {/* Trailing period to complete the sentence visually */}
+          <span
+            aria-hidden
+            style={{ fontFamily: T.fontSans, fontSize: 13, color: T.text3 }}
+          >
+            .
+          </span>
+        </div>
+
+        {/* Inline editor card — opens in normal flow below the sentence for
+            whichever pill is active. Spans the drawer's full width, so unlike
+            the old floating popovers it can never run off the right edge. */}
+        {openPopover && openPopover !== "templates" && (
+          <div ref={panelRef} role="dialog" aria-modal="false" style={panelStyle}>
             {openPopover === "lhs" && (
-              <div
-                role="dialog"
-                aria-modal="false"
-                aria-label="Indicator settings"
-                style={popoverStyle}
-              >
+              <>
                 {/* Indicator picker */}
                 <Kicker info={FIELD_INFO.indicator}>indicator</Kicker>
                 <div style={{ marginTop: 8 }}>
@@ -3900,25 +3958,11 @@ function ConditionDrawer({
                     backfilling history.
                   </div>
                 </div>
-              </div>
+              </>
             )}
-          </div>
 
-          {/* Token 2 — Operator */}
-          <div ref={opWrapRef} style={{ position: "relative" }}>
-            <TokenPill
-              label={OPERATOR_PILL[op]}
-              onClick={() => setOpenPopover(openPopover === "op" ? null : "op")}
-              ariaLabel="Edit operator"
-              isOpen={openPopover === "op"}
-            />
             {openPopover === "op" && (
-              <div
-                role="dialog"
-                aria-modal="false"
-                aria-label="Operator picker"
-                style={{ ...popoverStyle, minWidth: 260 }}
-              >
+              <>
                 {/* Two-tab strip: Compare | Cross */}
                 <div
                   style={{
@@ -4026,25 +4070,11 @@ function ConditionDrawer({
                     })}
                   </div>
                 )}
-              </div>
+              </>
             )}
-          </div>
 
-          {/* Token 3 — RHS value */}
-          <div ref={rhsWrapRef} style={{ position: "relative" }}>
-            <TokenPill
-              label={rhsPillLabel}
-              onClick={() => setOpenPopover(openPopover === "rhs" ? null : "rhs")}
-              ariaLabel="Edit comparison value"
-              isOpen={openPopover === "rhs"}
-            />
             {openPopover === "rhs" && (
-              <div
-                role="dialog"
-                aria-modal="false"
-                aria-label="Comparison value"
-                style={popoverStyle}
-              >
+              <>
                 {/* Three-tab strip: Number | Indicator | Expression */}
                 <div
                   role="tablist"
@@ -4165,30 +4195,25 @@ function ConditionDrawer({
                     />
                   )}
                 </div>
-              </div>
+              </>
             )}
           </div>
+        )}
 
-          {/* Trailing period to complete the sentence visually */}
-          <span
-            aria-hidden
-            style={{ fontFamily: T.fontSans, fontSize: 13, color: T.text3 }}
+        {/* Helper line below the token row — hidden while an editor panel is
+            open (the panel itself is the active affordance). */}
+        {!openPopover && (
+          <div
+            style={{
+              marginTop: 18,
+              fontSize: 11,
+              color: T.text3,
+              fontFamily: T.fontSans,
+            }}
           >
-            .
-          </span>
-        </div>
-
-        {/* Helper line below the token row */}
-        <div
-          style={{
-            marginTop: 18,
-            fontSize: 11,
-            color: T.text3,
-            fontFamily: T.fontSans,
-          }}
-        >
-          Click any pill to edit. Press Apply when you&apos;re done.
-        </div>
+            Click any pill to edit. Press Apply when you&apos;re done.
+          </div>
+        )}
       </div>
 
       {/* ── Footer: Delete · spacer · Duplicate · Apply ── */}
