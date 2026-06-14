@@ -26,9 +26,11 @@ export interface RelatedRef {
 }
 
 export type GlossaryCategory =
+  | "basics" // what is a stock, an index, a strategy, a backtest
   | "index" // KSE-100, KSE-30, KMI-30, KSE All-Share
   | "structure" // T+2, circuit breaker, free float
   | "indicator" // RSI, MACD, ATR, ...
+  | "strategy" // golden cross, mean reversion, momentum breakout
   | "tax" // capital gains tax on PSX
   | "account"; // CDC account, broker account
 
