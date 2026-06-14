@@ -84,6 +84,7 @@ export default function BotWizardPage() {
   // runs inside startTransition, so it can't guard the fetch itself.
   // `submitting` covers the network round-trip.
   const [submitting, setSubmitting] = useState(false);
+  const [nameError, setNameError] = useState(false);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
   const T = useT();
@@ -232,6 +233,14 @@ export default function BotWizardPage() {
         const err = await res.json().catch(() => ({}));
         if (res.status === 403) {
           setSubmitErr("Creating bots requires the Pro+ plan. Upgrade to continue.");
+          setSubmitting(false);
+          return;
+        }
+        if (res.status === 409) {
+          const msg = (err as { error?: string }).error ?? `A bot named "${name.trim()}" already exists — pick a different name.`;
+          setSubmitErr(msg);
+          setNameError(true);
+          setStep(1);
           setSubmitting(false);
           return;
         }
@@ -395,11 +404,12 @@ export default function BotWizardPage() {
             {step === 1 && (
               <CapitalStep
                 name={name}
-                onName={setName}
+                onName={(v) => { setName(v); setNameError(false); setSubmitErr(null); }}
                 allocatedCapital={allocatedCapital}
                 onAllocatedCapital={setAllocatedCapital}
                 maxPositions={maxPositions}
                 onMaxPositions={setMaxPositions}
+                nameError={nameError}
               />
             )}
             {step === 2 && (
@@ -503,6 +513,7 @@ function CapitalStep({
   onAllocatedCapital,
   maxPositions,
   onMaxPositions,
+  nameError = false,
 }: {
   name: string;
   onName: (v: string) => void;
@@ -510,6 +521,7 @@ function CapitalStep({
   onAllocatedCapital: (v: number) => void;
   maxPositions: number;
   onMaxPositions: (v: number) => void;
+  nameError?: boolean;
 }) {
   const T = useT();
   const presets = [100_000, 500_000, 1_000_000, 5_000_000, 10_000_000];
@@ -529,15 +541,28 @@ function CapitalStep({
             background: T.surface,
             color: T.text,
             border: "none",
-            boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+            boxShadow: `0 0 0 1px ${nameError ? T.loss : T.outlineFaint}`,
             borderRadius: 6,
             padding: "10px 14px",
             fontFamily: T.fontSans,
             fontSize: 15,
             width: "100%",
             maxWidth: 420,
+            outline: nameError ? `2px solid ${T.loss}` : "none",
           }}
         />
+        {nameError && (
+          <div
+            style={{
+              marginTop: 6,
+              fontSize: 12,
+              color: T.loss,
+              fontFamily: "inherit",
+            }}
+          >
+            This name is already taken — enter a different one.
+          </div>
+        )}
       </div>
 
       <div>

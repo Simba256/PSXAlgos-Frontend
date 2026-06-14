@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { signBackendJwt } from "@/lib/api/jwt";
 import { ApiError } from "@/lib/api/client";
-import { createBot, type BotCreateBody } from "@/lib/api/bots";
+import { getBots, createBot, type BotCreateBody } from "@/lib/api/bots";
 
 export async function POST(req: Request) {
   const session = await auth();
@@ -20,6 +20,16 @@ export async function POST(req: Request) {
     email: session.user.email,
   });
   try {
+    const existing = await getBots(jwt).catch(() => null);
+    if (existing) {
+      const conflict = existing.items.find((b) => b.name === body.name);
+      if (conflict) {
+        return NextResponse.json(
+          { error: `A bot named "${body.name}" already exists — pick a different name.` },
+          { status: 409 },
+        );
+      }
+    }
     return NextResponse.json(await createBot(jwt, body));
   } catch (err) {
     if (err instanceof ApiError) {

@@ -172,7 +172,7 @@ export function BacktestIndexView({
           actions={
             hasStrategies ? (
               <Link href="/backtest/new" style={{ textDecoration: "none" }}>
-                <Btn variant="primary" size="sm" icon={Icon.plus}>
+                <Btn variant="primary" size="sm" icon={Icon.plus} style={{ boxShadow: `0 3px 10px ${T.primary}99` }}>
                   Run new backtest
                 </Btn>
               </Link>
@@ -246,7 +246,7 @@ function EmptyState({ hasStrategies }: { hasStrategies: boolean }) {
       <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
         {hasStrategies ? (
           <Link href="/backtest/new" style={{ textDecoration: "none" }}>
-            <Btn variant="primary" size="sm" icon={Icon.plus}>
+            <Btn variant="primary" size="sm" icon={Icon.plus} style={{ boxShadow: `0 3px 10px ${T.primary}99` }}>
               Run new backtest
             </Btn>
           </Link>

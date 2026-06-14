@@ -705,7 +705,7 @@ export function BacktestNewView({
                       icon={Icon.spark}
                       onClick={handleRun}
                       disabled={running || !strategyId || universeScope === null}
-                      style={{ width: "100%", justifyContent: "center" }}
+                      style={{ width: "100%", justifyContent: "center", boxShadow: `0 4px 16px 2px ${T.primary}99` }}
                     >
                       {running
                         ? progressPct !== null
@@ -1035,6 +1035,7 @@ function RunRail({
             justifyContent: "center",
             fontSize: 14,
             padding: "12px 18px",
+            boxShadow: `0 4px 16px 2px ${T.primary}99`,
           }}
         >
           {running
@@ -1729,21 +1730,16 @@ function UniverseSection({
 
   return (
     <Section
-      label="universe"
-      hint="Pick the universe this run targets. Required — there's no implicit default, so the run button stays disabled until you choose."
+      label="stocks"
+      hint="Pick the stocks this run targets. Required — the run button stays disabled until you choose."
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-        <UniverseSubsection
-          kicker="scope"
-          info="One choice required. 'All active' uses every active PSX symbol; 'By sector' restricts to the sectors you pick; 'By ticker' restricts to the exact tickers you list."
-        >
-          <ScopePicker
-            scope={scope}
-            onChange={onScope}
-            totalActive={totalActive}
-            disabled={disabled}
-          />
-        </UniverseSubsection>
+        <ScopePicker
+          scope={scope}
+          onChange={onScope}
+          totalActive={totalActive}
+          disabled={disabled}
+        />
 
         {(scope === "by_sector" || scope === "by_sector_and_ticker") && (
           <UniverseSubsection
@@ -1883,77 +1879,73 @@ function ScopePicker({
     },
   ];
   return (
-    <div
-      role="radiogroup"
-      aria-label="Universe scope"
-      style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 540 }}
-    >
-      {options.map((opt) => {
-        const active = scope === opt.value;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            disabled={disabled}
-            onClick={() => onChange(opt.value)}
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: 12,
-              padding: "12px 14px",
-              background: active ? T.surface3 : T.surface,
-              color: T.text,
-              border: "none",
-              boxShadow: `0 0 0 1px ${active ? T.outlineVariant : T.outlineFaint}`,
-              borderRadius: 8,
-              cursor: disabled ? "not-allowed" : "pointer",
-              opacity: disabled ? 0.6 : 1,
-              fontFamily: "inherit",
-              textAlign: "left",
-              transition: "background 120ms ease, box-shadow 120ms ease",
-            }}
-          >
-            <span
-              aria-hidden="true"
-              style={{
-                marginTop: 3,
-                width: 14,
-                height: 14,
-                borderRadius: 999,
-                border: `2px solid ${active ? T.text : T.outlineFaint}`,
-                background: active ? T.text : "transparent",
-                flexShrink: 0,
-              }}
-            />
-            <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              <span style={{ fontSize: 13.5, color: T.text }}>{opt.label}</span>
-              <span
-                style={{
-                  fontFamily: T.fontMono,
-                  fontSize: 11,
-                  color: T.text3,
-                  lineHeight: 1.4,
-                }}
-              >
-                {opt.hint}
-              </span>
-            </span>
-          </button>
-        );
-      })}
-      {scope === null && (
-        <div
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 380 }}>
+      <div
+        style={{
+          position: "relative",
+          display: "flex",
+          alignItems: "center",
+        }}
+      >
+        <select
+          value={scope ?? ""}
+          disabled={disabled}
+          onChange={(e) => {
+            const v = e.target.value as "all_active" | "by_sector" | "by_ticker" | "by_sector_and_ticker";
+            if (v) onChange(v);
+          }}
+          style={{
+            width: "100%",
+            appearance: "none",
+            WebkitAppearance: "none",
+            padding: "9px 36px 9px 12px",
+            borderRadius: 8,
+            border: `1px solid ${scope ? T.outlineVariant : T.outlineFaint}`,
+            background: T.surface,
+            color: scope ? T.text : T.text3,
+            fontFamily: "inherit",
+            fontSize: 13.5,
+            cursor: disabled ? "not-allowed" : "pointer",
+            opacity: disabled ? 0.6 : 1,
+            outline: "none",
+          }}
+        >
+          <option value="" disabled>pick scope…</option>
+          {options.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+        <svg
+          aria-hidden
+          width="12" height="12" viewBox="0 0 12 12"
+          fill="none" stroke="currentColor" strokeWidth="1.6"
+          strokeLinecap="round" strokeLinejoin="round"
+          style={{
+            position: "absolute",
+            right: 12,
+            pointerEvents: "none",
+            color: T.text3,
+          }}
+        >
+          <path d="M2 4l4 4 4-4" />
+        </svg>
+      </div>
+      {scope && (
+        <span
           style={{
             fontFamily: T.fontMono,
             fontSize: 11,
             color: T.text3,
-            marginTop: 4,
+            lineHeight: 1.4,
           }}
         >
+          {options.find((o) => o.value === scope)?.hint}
+        </span>
+      )}
+      {scope === null && (
+        <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
           nothing picked — run blocked until you choose
-        </div>
+        </span>
       )}
     </div>
   );
@@ -1996,135 +1988,87 @@ function RiskSection({
   strategyDefaults: DefaultRisk | null;
 }) {
   const T = useT();
-  const activePreset: "balanced" | "aggressive" | "none" | "custom" = (() => {
-    if (risksEqual(value, RISK_DEFAULTS)) return "balanced";
-    if (risksEqual(value, RISK_AGGRESSIVE)) return "aggressive";
-    if (risksEqual(value, RISK_NONE)) return "none";
-    return "custom";
+  const [riskOpen, setRiskOpen] = useSessionStorage<boolean>("psx:bt:risk-open", false);
+
+  const riskSummary = (() => {
+    const parts: string[] = [];
+    if (value.stop_loss_pct != null) parts.push(`stop ${value.stop_loss_pct}%`);
+    if (value.take_profit_pct != null) parts.push(`take ${value.take_profit_pct}%`);
+    if (value.max_positions != null) parts.push(`max ${value.max_positions} pos`);
+    return parts.length ? parts.join(" · ") : "defaults";
   })();
 
   return (
-    <Section
+    <Disclosure
       label="risk caps"
-      hint={
-        strategyDefaults
-          ? "The strategy authored defaults — leave a field on Inherit to follow the strategy, or click Override to set a per-backtest cap. Presets below override every field at once."
-          : "Hard exits applied to every simulated trade. Sensible defaults are pre-filled — tune or switch presets."
-      }
+      summary={riskSummary}
+      open={riskOpen}
+      onToggle={() => setRiskOpen((v) => !v)}
+      tone="muted"
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {(
-            [
-              { key: "balanced", label: "Balanced", caps: RISK_DEFAULTS, sub: "stop 5% · max 5 pos" },
-              { key: "aggressive", label: "Aggressive", caps: RISK_AGGRESSIVE, sub: "stop 8% · take 20% · max 8" },
-              { key: "none", label: "No caps", caps: RISK_NONE, sub: "raw strategy signals" },
-            ] as const
-          ).map((p) => {
-            const active = activePreset === p.key;
-            return (
-              <button
-                key={p.key}
-                type="button"
-                onClick={() => onChange(p.caps)}
-                disabled={disabled}
-                aria-pressed={active}
-                className="psx-press"
-                style={{
-                  background: active ? T.surface3 : "transparent",
-                  color: active ? T.text : T.text2,
-                  border: `1px solid ${active ? T.outlineVariant : T.outlineFaint}`,
-                  borderRadius: 6,
-                  padding: "7px 12px",
-                  cursor: disabled ? "not-allowed" : "pointer",
-                  opacity: disabled ? 0.5 : 1,
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "flex-start",
-                  gap: 1,
-                  fontFamily: T.fontSans,
-                }}
-              >
-                <span style={{ fontSize: 12, fontWeight: 500 }}>{p.label}</span>
-                <span
-                  style={{
-                    fontFamily: T.fontMono,
-                    fontSize: 9.5,
-                    color: T.text3,
-                    letterSpacing: 0.4,
-                  }}
-                >
-                  {p.sub}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: 14,
-            maxWidth: 720,
-          }}
-        >
-          <InheritableField
-            label="stop loss %"
-            caption="Exit if a trade loses more than this."
-            defaultFromStrategy={strategyDefaults?.stop_loss_pct}
-            value={value.stop_loss_pct}
-            onChange={(v) => onChange({ ...value, stop_loss_pct: v })}
-            disabled={disabled}
-            unit="%"
-            min={0}
-            max={100}
-          />
-          <InheritableField
-            label="take profit %"
-            caption="Exit when a trade gains more than this."
-            defaultFromStrategy={strategyDefaults?.take_profit_pct}
-            value={value.take_profit_pct}
-            onChange={(v) => onChange({ ...value, take_profit_pct: v })}
-            disabled={disabled}
-            unit="%"
-            min={0}
-            max={100}
-          />
-          <InheritableField
-            label="trailing stop %"
-            caption="Lock in gains as price rises."
-            defaultFromStrategy={strategyDefaults?.trailing_stop_pct}
-            value={value.trailing_stop_pct}
-            onChange={(v) => onChange({ ...value, trailing_stop_pct: v })}
-            disabled={disabled}
-            unit="%"
-            min={0}
-            max={100}
-          />
-          <InheritableField
-            label="max holding days"
-            caption="Force-close trades after this many days."
-            defaultFromStrategy={strategyDefaults?.max_holding_days}
-            value={value.max_holding_days}
-            onChange={(v) => onChange({ ...value, max_holding_days: v })}
-            disabled={disabled}
-            unit="d"
-            min={1}
-            integer
-          />
-          <RiskField
-            label="max concurrent positions"
-            caption="How many open trades at once."
-            value={value.max_positions}
-            onChange={(v) => onChange({ ...value, max_positions: v })}
-            disabled={disabled}
-            integer
-            max={50}
-          />
-        </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+          gap: 14,
+          maxWidth: 720,
+        }}
+      >
+        <InheritableField
+          label="stop loss %"
+          caption="Exit if a trade loses more than this."
+          defaultFromStrategy={strategyDefaults?.stop_loss_pct}
+          value={value.stop_loss_pct}
+          onChange={(v) => onChange({ ...value, stop_loss_pct: v })}
+          disabled={disabled}
+          unit="%"
+          min={0}
+          max={100}
+        />
+        <InheritableField
+          label="take profit %"
+          caption="Exit when a trade gains more than this."
+          defaultFromStrategy={strategyDefaults?.take_profit_pct}
+          value={value.take_profit_pct}
+          onChange={(v) => onChange({ ...value, take_profit_pct: v })}
+          disabled={disabled}
+          unit="%"
+          min={0}
+          max={100}
+        />
+        <InheritableField
+          label="trailing stop %"
+          caption="Lock in gains as price rises."
+          defaultFromStrategy={strategyDefaults?.trailing_stop_pct}
+          value={value.trailing_stop_pct}
+          onChange={(v) => onChange({ ...value, trailing_stop_pct: v })}
+          disabled={disabled}
+          unit="%"
+          min={0}
+          max={100}
+        />
+        <InheritableField
+          label="max holding days"
+          caption="Force-close trades after this many days."
+          defaultFromStrategy={strategyDefaults?.max_holding_days}
+          value={value.max_holding_days}
+          onChange={(v) => onChange({ ...value, max_holding_days: v })}
+          disabled={disabled}
+          unit="d"
+          min={1}
+          integer
+        />
+        <RiskField
+          label="max concurrent positions"
+          caption="How many open trades at once."
+          value={value.max_positions}
+          onChange={(v) => onChange({ ...value, max_positions: v })}
+          disabled={disabled}
+          integer
+          max={50}
+        />
       </div>
-    </Section>
+    </Disclosure>
   );
 }
 

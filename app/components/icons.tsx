@@ -129,4 +129,24 @@ export const Icon: Record<string, ReactElement> = {
       <path d="M3.5 4.5V3.2a1.5 1.5 0 0 1 3 0v1.3" />
     </svg>
   ),
+  import: (
+    <svg width="12" height="12" viewBox="0 0 12 12" {...stroke} {...ariaHide} strokeWidth="1.4" strokeLinejoin="round">
+      <path d="M6 1.5v6M3.5 5.5L6 8l2.5-2.5M2 10.5h8" />
+    </svg>
+  ),
+  export: (
+    <svg width="12" height="12" viewBox="0 0 12 12" {...stroke} {...ariaHide} strokeWidth="1.4" strokeLinejoin="round">
+      <path d="M6 8.5V2.5M3.5 5L6 2.5l2.5 2.5M2 10.5h8" />
+    </svg>
+  ),
+  archive: (
+    <svg width="12" height="12" viewBox="0 0 12 12" {...stroke} {...ariaHide} strokeWidth="1.4" strokeLinejoin="round">
+      <path d="M1.5 3.5h9v1.5H1.5zM2 5h8v5.5H2zM4.5 7.5h3" />
+    </svg>
+  ),
+  pen: (
+    <svg width="12" height="12" viewBox="0 0 12 12" {...stroke} {...ariaHide} strokeWidth="1.4" strokeLinejoin="round">
+      <path d="M8 1.5l2.5 2.5-6 6L2 11l.5-2.5 6-7z" />
+    </svg>
+  ),
 };

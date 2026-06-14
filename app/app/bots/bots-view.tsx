@@ -43,9 +43,7 @@ export function BotsView({
   initialBots: Bot[];
   fetchFailed?: boolean;
 }) {
-  const [empty, setEmpty] = useState(false);
   const [bots] = useState<Bot[]>(initialBots);
-  const [refreshing, setRefreshing] = useState(false);
   const { flash, setFlash } = useFlash();
   const router = useRouter();
 
@@ -53,18 +51,6 @@ export function BotsView({
     if (fetchFailed) setFlash("Couldn't load your bots — showing empty list");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchFailed]);
-
-  const handleRefresh = () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    setFlash("Refreshing bots…");
-    // router.refresh() schedules a server-component re-fetch. We can't await
-    // its completion; settle the spinner after a short minimum so the user
-    // sees the state change, and trust the parent to flow new initialBots
-    // back in once the re-fetch lands.
-    router.refresh();
-    setTimeout(() => setRefreshing(false), 600);
-  };
 
   const runningCount = bots.filter((b) => b.status === "RUNNING").length;
   const pausedAll = runningCount === 0 && bots.some((b) => b.status === "PAUSED");
@@ -112,13 +98,9 @@ export function BotsView({
   return (
     <AppFrame route="/bots">
       <Body
-        empty={empty}
         bots={bots}
-        refreshing={refreshing}
         runningCount={runningCount}
         pausedAll={pausedAll}
-        toggle={() => setEmpty((e) => !e)}
-        onRefresh={handleRefresh}
         onPauseAll={handlePauseAll}
       />
       {flash && <FlashToast message={flash} />}
@@ -127,26 +109,18 @@ export function BotsView({
 }
 
 function Body({
-  empty,
   bots,
-  refreshing,
   runningCount,
   pausedAll,
-  toggle,
-  onRefresh,
   onPauseAll,
 }: {
-  empty: boolean;
   bots: Bot[];
-  refreshing: boolean;
   runningCount: number;
   pausedAll: boolean;
-  toggle: () => void;
-  onRefresh: () => void;
   onPauseAll: () => void;
 }) {
   const T = useT();
-  const visibleBots = empty ? [] : bots;
+  const empty = bots.length === 0;
   const totalEquity = bots.reduce((s, b) => s + b.equity, 0);
   const todayTotal = bots.reduce((s, b) => s + b.today, 0);
 
@@ -186,25 +160,15 @@ function Body({
           )
         }
         actions={
-          <>
-            <Btn variant="ghost" size="sm" onClick={toggle}>
-              {empty ? "Show populated" : "Show empty"}
+          !empty ? (
+            <Btn variant="outline" size="sm" onClick={onPauseAll} style={{ boxShadow: "0 2px 6px rgba(0,0,0,0.14)" }}>
+              {pausedAll ? "Resume all" : "Pause all"}
             </Btn>
-            {!empty && (
-              <>
-                <Btn variant="ghost" size="sm" onClick={onRefresh}>
-                  {refreshing ? "Refreshing…" : "Refresh"}
-                </Btn>
-                <Btn variant="outline" size="sm" onClick={onPauseAll}>
-                  {pausedAll ? "Resume all" : "Pause all"}
-                </Btn>
-              </>
-            )}
-          </>
+          ) : null
         }
       />
 
-      {empty ? <EmptyState /> : <Populated bots={visibleBots} />}
+      {empty ? <EmptyState /> : <Populated bots={bots} />}
     </div>
   );
 }

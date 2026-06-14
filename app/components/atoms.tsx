@@ -362,6 +362,8 @@ export function DotRow({
 
 export interface Col {
   label: string;
+  /** Optional ReactNode rendered in the desktop header instead of `label`. Useful for adding icons or tooltips without changing the plain-string `label` (which drives mobile layout logic). */
+  headerNode?: ReactNode;
   align?: "left" | "center" | "right";
   width?: string;
   mono?: boolean;
@@ -449,12 +451,13 @@ export function TerminalTable<R>({
               textAlign: c.align || "left",
               padding: "0 12px",
               minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
+              overflow: c.headerNode ? "visible" : "hidden",
+              textOverflow: c.headerNode ? undefined : "ellipsis",
               whiteSpace: "nowrap",
+              position: c.headerNode ? "relative" : undefined,
             }}
           >
-            {c.label}
+            {c.headerNode ?? c.label}
           </div>
         ))}
       </div>
@@ -1029,8 +1032,18 @@ export function Combobox({
   // null = not actively filtering (display `value`, show all options).
   // string = user is typing (display query, filter by it).
   const [query, setQuery] = useState<string | null>(null);
+  const [dropdownRect, setDropdownRect] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  function measureDropdown() {
+    if (wrapRef.current) {
+      const r = wrapRef.current.getBoundingClientRect();
+      const top = r.bottom + 4;
+      const maxHeight = Math.min(240, window.innerHeight - top - 16);
+      setDropdownRect({ top, left: r.left, width: r.width, maxHeight });
+    }
+  }
 
   const displayValue = query ?? value;
 
@@ -1071,6 +1084,7 @@ export function Combobox({
   }, [open]);
 
   function openDropdown() {
+    measureDropdown();
     setOpen(true);
     setHighlight(0);
     // Reset query so the full option list is visible. The committed value
@@ -1139,6 +1153,7 @@ export function Combobox({
             // pickers) keep their existing "submit as typed" behavior.
             setQuery(next);
             onChange(next);
+            if (!open) measureDropdown();
             setOpen(true);
             setHighlight(0);
           }}
@@ -1194,21 +1209,20 @@ export function Combobox({
           {Icon.chev}
         </button>
       </div>
-      {showDropdown && (
+      {showDropdown && dropdownRect && (
         <div
           role="listbox"
           style={{
-            position: "absolute",
-            top: "100%",
-            left: 0,
-            right: 0,
-            marginTop: 4,
+            position: "fixed",
+            top: dropdownRect.top,
+            left: dropdownRect.left,
+            width: dropdownRect.width,
             background: T.surface2,
             borderRadius: 8,
             boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 12px 32px -12px rgba(0,0,0,0.5)`,
-            maxHeight: 240,
+            maxHeight: dropdownRect.maxHeight,
             overflowY: "auto",
-            zIndex: 10,
+            zIndex: 1100,
           }}
         >
           {matches.length === 0 && emptyHint ? (

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppFrame } from "@/components/frame";
-import { useT } from "@/components/theme";
+import { useT, type Tokens } from "@/components/theme";
 import {
   Btn,
   Combobox,
@@ -92,6 +92,55 @@ import {
   walkGroups,
   walkLeaves,
 } from "@/lib/strategy/layout";
+
+// ── Template library ──────────────────────────────────────────────────────
+type LibPresetKey =
+  | "mean_reversion" | "momentum_breakout" | "golden_cross"
+  | "bollinger_squeeze" | "macd_cross" | "blank";
+
+interface LibPreset {
+  key: LibPresetKey;
+  glyph: string;
+  tint: (T: Tokens) => string;
+  name: string;
+  desc: string;
+  stats: string;
+  popular?: boolean;
+}
+
+const LIB_PRESETS: LibPreset[] = [
+  { key: "mean_reversion", glyph: "⟲", tint: (T) => T.primary, name: "Mean reversion", desc: "RSI oversold bounce with volume confirmation", stats: "+14.2% bt · 1.84 sharpe", popular: true },
+  { key: "momentum_breakout", glyph: "↗", tint: (T) => T.gain, name: "Momentum breakout", desc: "Price breaks 20-day high on volume surge", stats: "+22.7% bt · 2.11 sharpe" },
+  { key: "golden_cross", glyph: "✕", tint: (T) => T.accent, name: "Golden cross", desc: "SMA(50) crosses above SMA(200), trend follow", stats: "+8.1% bt · 1.12 sharpe" },
+  { key: "bollinger_squeeze", glyph: "⬚", tint: (T) => T.primaryLight, name: "Bollinger squeeze", desc: "Volatility contraction then directional breakout", stats: "new · no backtest yet" },
+  { key: "macd_cross", glyph: "∿", tint: (T) => T.warning, name: "MACD cross", desc: "Classic 12/26/9 momentum trend filter", stats: "+6.4% bt · 0.92 sharpe" },
+  { key: "blank", glyph: "◯", tint: (T) => T.text2, name: "Blank canvas", desc: "Start from nothing and wire conditions yourself", stats: "for advanced users" },
+];
+
+function presetConditions(key: LibPresetKey): { kind: "group"; logic: "AND"; conditions: SingleCondition[] } {
+  let conditions: SingleCondition[];
+  switch (key) {
+    case "mean_reversion":
+      conditions = [{ kind: "condition", indicator: "rsi", operator: "<", value: { type: "constant", value: 30 }, value_source: "30" }];
+      break;
+    case "momentum_breakout":
+      conditions = [{ kind: "condition", indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "sma_20" }, value_source: "sma_20" }];
+      break;
+    case "golden_cross":
+      conditions = [{ kind: "condition", indicator: "sma_50", operator: "crosses_above", value: { type: "indicator", indicator: "sma_200" }, value_source: "sma_200" }];
+      break;
+    case "bollinger_squeeze":
+      conditions = [{ kind: "condition", indicator: "close_price", operator: ">", value: { type: "indicator", indicator: "bb_upper" }, value_source: "bb_upper" }];
+      break;
+    case "macd_cross":
+      conditions = [{ kind: "condition", indicator: "macd", operator: "crosses_above", value: { type: "indicator", indicator: "macd_signal" }, value_source: "macd_signal" }];
+      break;
+    default:
+      conditions = [];
+  }
+  return { kind: "group", logic: "AND", conditions };
+}
+// ──────────────────────────────────────────────────────────────────────────
 
 type SelKind = "condition" | "group";
 // Phase 4b — selection is now scoped to the tree it belongs to (`entry`
@@ -310,6 +359,36 @@ export function EditorView({
     return Date.now();
   });
   const [flash, setFlash] = useState<string | null>(null);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const T = useT();
+
+  // Lock page scroll while the editor is mounted — the canvas handles its own scrolling.
+  useEffect(() => {
+    const prevBody = document.body.style.overflow;
+    const prevHtml = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevBody;
+      document.documentElement.style.overflow = prevHtml;
+    };
+  }, []);
+
+  // Open library automatically when navigated from "New strategy" (?lib=1)
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("lib") === "1") setLibraryOpen(true);
+    }
+  }, []);
+
+  function applyPreset(key: LibPresetKey) {
+    setTree(fromBackend(presetConditions(key)));
+    setDirty(true);
+    setLibraryOpen(false);
+    const preset = LIB_PRESETS.find((p) => p.key === key);
+    setFlash(`Applied "${preset?.name ?? key}" template · entry rules replaced`);
+  }
 
   // Lifted graph state. Post-Phase B the canvas reads off a single recursive
   // `tree`, hydrated once from `initialStrategy` with stable client-side IDs
@@ -354,6 +433,8 @@ export function EditorView({
   // "save"   = pre-save impact warning (F8)
   // "delete" = delete-confirmation modal (F7)
   const [confirmModal, setConfirmModal] = useState<null | "save" | "delete">(null);
+  // null = closed; non-null = the name that collided (pre-filled in the rename dialog)
+  const [nameConflict, setNameConflict] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   // Phase E: confirmation state for group-level ops. `kind: "ungroup"` fires
   // the BEFORE/AFTER modal when the inner group's logic differs from the
@@ -469,10 +550,6 @@ export function EditorView({
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        // Proxy returns `{error: "<message>"}` on non-2xx (see
-        // app/api/strategies/[id]/route.ts). Parse the JSON envelope so the
-        // toast shows the human message (e.g. the 409 on duplicate names)
-        // instead of dumping the raw `{"error":"..."}` text at the user.
         const text = await res.text().catch(() => "");
         let message = `Save failed (${res.status})`;
         if (text) {
@@ -483,6 +560,12 @@ export function EditorView({
           } catch {
             message = text;
           }
+        }
+        // 409 = duplicate name — show rename dialog instead of a toast
+        if (res.status === 409) {
+          setNameConflict(name);
+          setSaveStatus("error");
+          return;
         }
         throw new Error(message);
       }
@@ -981,7 +1064,7 @@ export function EditorView({
   useEffect(() => {
     if (!dirty) return;
     if (saveStatus === "saving") return;
-    if (confirmModal !== null || groupModal !== null) return;
+    if (confirmModal !== null || groupModal !== null || nameConflict !== null) return;
     const t = setTimeout(() => {
       void performSave({ silent: true });
     }, 800);
@@ -990,7 +1073,7 @@ export function EditorView({
     // render closure; listing them as deps reschedules the autosave on every
     // keystroke, which is exactly the debounce we want.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dirty, saveStatus, confirmModal, groupModal, tree, exitTree, riskDefaults, name, exit]);
+  }, [dirty, saveStatus, confirmModal, groupModal, nameConflict, tree, exitTree, riskDefaults, name, exit]);
 
   // beforeunload guard: belt-and-suspenders for the autosave window. If the
   // user refreshes or closes the tab inside the 800ms debounce (or during
@@ -1025,7 +1108,7 @@ export function EditorView({
 
   return (
     <AppFrame route="/strategies">
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ flex: 1, height: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <Header
           name={name}
           slug={String(initialStrategy.id)}
@@ -1051,6 +1134,44 @@ export function EditorView({
             minHeight: 0,
           }}
         >
+          {libraryOpen && (
+            <TemplateLibrary
+              onApply={applyPreset}
+            />
+          )}
+          {/* Sidebar toggle tab — always visible on the left edge */}
+          <button
+            type="button"
+            onClick={() => setLibraryOpen((v) => !v)}
+            aria-label={libraryOpen ? "Close template library" : "Open template library"}
+            style={{
+              position: "absolute",
+              left: libraryOpen ? 280 : 0,
+              top: "50%",
+              transform: "translateY(-50%)",
+              zIndex: 20,
+              width: 18,
+              height: 52,
+              background: libraryOpen ? "transparent" : "transparent",
+              border: `1px solid ${T.outlineFaint}`,
+              borderLeft: libraryOpen ? "none" : undefined,
+              borderRight: libraryOpen ? undefined : "none",
+              borderRadius: libraryOpen ? "0 8px 8px 0" : "0 8px 8px 0",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: T.text3,
+              padding: 0,
+              transition: "left 200ms ease, color 120ms ease",
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = T.text; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = T.text3; }}
+          >
+            <svg width="7" height="12" viewBox="0 0 7 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d={libraryOpen ? "M5 1L1 6l4 5" : "M2 1l4 5-4 5"} />
+            </svg>
+          </button>
           <Canvas
             tree={tree}
             exitTree={exitTree}
@@ -1200,6 +1321,19 @@ export function EditorView({
           />
         );
       })()}
+      {nameConflict !== null && (
+        <NameConflictModal
+          kind="strategy"
+          conflicting={nameConflict}
+          onCancel={() => { setNameConflict(null); setSaveStatus("idle"); }}
+          onRename={(newName) => {
+            setName(newName);
+            setDirty(true);
+            setNameConflict(null);
+            setSaveStatus("idle");
+          }}
+        />
+      )}
       {deployModal && (
         <DeployUniverseModal
           value={deployModal.value}
@@ -1616,6 +1750,9 @@ function Header({
                 cursor: "text",
                 textAlign: "left",
                 borderRadius: 4,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
               }}
               onMouseEnter={(e) => {
                 (e.currentTarget as HTMLButtonElement).style.background = T.surfaceLow;
@@ -1625,6 +1762,7 @@ function Header({
               }}
             >
               {name}
+              <span style={{ display: "inline-flex", opacity: 0.4, fontSize: "0.55em" }}>{Icon.pen}</span>
             </button>
           )}
         </h1>
@@ -2833,9 +2971,11 @@ function InsertSlot({
     }
   }, [autoOpen, onAutoOpenConsumed]);
 
-  const x = slot.cx - slot.w / 2;
-  const y = slot.cy - slot.h / 2;
   const showHint = isTreeEmpty && slot.isEmpty;
+  const displayW = showHint ? 280 : Math.max(slot.w, 160);
+  const displayH = showHint ? 64 : slot.h;
+  const x = slot.cx - displayW / 2;
+  const y = slot.cy - displayH / 2;
 
   return (
     <div
@@ -2843,8 +2983,8 @@ function InsertSlot({
         position: "absolute",
         left: x,
         top: y,
-        width: slot.w,
-        height: slot.h,
+        width: displayW,
+        height: displayH,
       }}
     >
       <div style={{ position: "relative", width: "100%", height: "100%" }}>
@@ -2860,26 +3000,42 @@ function InsertSlot({
           style={{
             width: "100%",
             height: "100%",
-            borderRadius: 8,
-            border: `1px dashed ${hover || pickerOpen ? T.outlineVariant : T.outlineFaint}`,
-            background: hover || pickerOpen ? T.surface2 : T.surface2 + "aa",
-            color: T.text2,
+            borderRadius: 10,
+            border: `${showHint ? 2 : 1.5}px dashed ${hover || pickerOpen ? T.outlineVariant : showHint ? T.outlineVariant : T.outlineFaint}`,
+            background: hover || pickerOpen || showHint ? T.surfaceLow : T.surface2,
             cursor: "pointer",
-            padding: "0 12px",
+            padding: 0,
             display: "flex",
+            flexDirection: showHint ? "column" : "row",
             alignItems: "center",
             justifyContent: "center",
-            gap: 6,
-            fontFamily: T.fontMono,
-            fontSize: 12,
-            lineHeight: 1,
-            fontWeight: 500,
-            letterSpacing: 0.2,
+            padding: 0,
+            gap: showHint ? 5 : 4,
             transition: "border-color 120ms ease, background 120ms ease",
           }}
         >
-          <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
-          <span>
+          <span
+            style={{
+              fontSize: showHint ? 18 : 15,
+              lineHeight: 1,
+              display: "inline-block",
+              fontWeight: showHint ? 600 : 400,
+              color: showHint ? T.primary : T.text3,
+              animation: showHint && !pickerOpen ? "psx-pulse-plus 1.6s ease-in-out infinite" : "none",
+            }}
+          >
+            +
+          </span>
+          <span
+            style={{
+              fontFamily: showHint ? T.fontSans : T.fontMono,
+              fontSize: showHint ? 11.5 : 11.5,
+              color: showHint ? T.text2 : T.text3,
+              fontWeight: 400,
+              letterSpacing: 0,
+              lineHeight: 1,
+            }}
+          >
             {slot.isEmpty
               ? `Add first ${branch} condition`
               : `Add ${branch} condition`}
@@ -2887,7 +3043,7 @@ function InsertSlot({
         </button>
         {pickerOpen && (
           <InsertPicker
-            topOffset={ADD_SLOT_H + 6}
+            topOffset={displayH + 6}
             onAddCondition={() => {
               setPickerOpen(false);
               onAddCondition();
@@ -2898,25 +3054,6 @@ function InsertSlot({
             }}
             onClose={() => setPickerOpen(false)}
           />
-        )}
-        {showHint && (
-          <div
-            style={{
-              position: "absolute",
-              top: ADD_SLOT_H + 6,
-              left: 0,
-              width: "100%",
-              fontFamily: T.fontMono,
-              fontSize: 11,
-              color: T.text3,
-              textAlign: "center",
-              lineHeight: 1.4,
-              userSelect: "none",
-              pointerEvents: "none",
-            }}
-          >
-            Click + to add your first condition or group.
-          </div>
         )}
       </div>
     </div>
@@ -3288,6 +3425,243 @@ const CONDITION_TEMPLATES: readonly ConditionTemplate[] = [
   },
 ];
 
+function TemplateLibrary({
+  onApply,
+}: {
+  onApply: (key: LibPresetKey) => void;
+}) {
+  const T = useT();
+  const { isMobile } = useBreakpoint();
+
+  return (
+    <div
+      style={{
+        width: isMobile ? "100%" : 280,
+        flexShrink: 0,
+        alignSelf: "stretch",
+        background: T.surface2,
+        borderRight: `1px solid ${T.outlineFaint}`,
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      {/* Use absolute fill so the scroll area has a guaranteed definite height */}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+      <div
+        style={{
+          padding: "14px 16px 12px",
+          borderBottom: `1px solid ${T.outlineFaint}`,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexShrink: 0,
+        }}
+      >
+        <span
+          style={{
+            fontFamily: T.fontMono,
+            fontSize: 10.5,
+            color: T.text3,
+            letterSpacing: 0.6,
+            textTransform: "uppercase",
+          }}
+        >
+          Templates
+        </span>
+      </div>
+      <p
+        style={{
+          fontFamily: T.fontSans,
+          fontSize: 12,
+          color: T.text3,
+          margin: "12px 16px 4px",
+          lineHeight: 1.5,
+          flexShrink: 0,
+        }}
+      >
+        Pick a starting point — you can always rewire conditions after.
+      </p>
+      <div
+        className="psx-thin-scroll"
+        style={{
+          flex: 1,
+          overflowY: "scroll",
+          overflowX: "hidden",
+          padding: "8px 8px 16px 12px",
+          minHeight: 0,
+        }}
+      >
+        {LIB_PRESETS.map((p) => (
+          <button
+            key={p.key}
+            type="button"
+            onClick={() => onApply(p.key)}
+            style={{
+              width: "100%",
+              textAlign: "left",
+              padding: "12px 14px",
+              marginBottom: 8,
+              borderRadius: 8,
+              background: T.surface,
+              border: `1px solid ${T.outlineFaint}`,
+              cursor: "pointer",
+              transition: "border-color 120ms ease, background 120ms ease",
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = T.outlineVariant;
+              (e.currentTarget as HTMLButtonElement).style.background = T.surfaceLow;
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = T.outlineFaint;
+              (e.currentTarget as HTMLButtonElement).style.background = T.surface;
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <span style={{ fontSize: 16, color: p.tint(T), lineHeight: 1 }}>{p.glyph}</span>
+              <span style={{ fontFamily: T.fontSans, fontSize: 13, color: T.text, fontWeight: 500 }}>{p.name}</span>
+              {p.popular && (
+                <span
+                  style={{
+                    fontFamily: T.fontMono,
+                    fontSize: 9.5,
+                    color: T.primary,
+                    marginLeft: "auto",
+                    letterSpacing: 0.4,
+                  }}
+                >
+                  popular
+                </span>
+              )}
+            </div>
+            <div style={{ fontFamily: T.fontSans, fontSize: 11.5, color: T.text2, lineHeight: 1.4 }}>
+              {p.desc}
+            </div>
+            <div style={{ fontFamily: T.fontMono, fontSize: 10.5, color: T.text3, marginTop: 4 }}>
+              {p.stats}
+            </div>
+          </button>
+        ))}
+      </div>
+      </div>
+    </div>
+  );
+}
+
+function NameConflictModal({
+  kind,
+  conflicting,
+  onCancel,
+  onRename,
+}: {
+  kind: "strategy" | "bot";
+  conflicting: string;
+  onCancel: () => void;
+  onRename: (newName: string) => void;
+}) {
+  const T = useT();
+  const [draft, setDraft] = useState(conflicting);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed === conflicting) return;
+    onRename(trimmed);
+  };
+
+  return (
+    <Modal onClose={onCancel} label="Name already taken">
+      <div style={{ padding: 24, maxWidth: 420 }}>
+        <div
+          style={{
+            fontSize: 18,
+            fontWeight: 500,
+            letterSpacing: -0.2,
+            marginBottom: 10,
+          }}
+        >
+          Name already taken
+        </div>
+        <p style={{ margin: "0 0 18px", fontSize: 13, lineHeight: 1.55 }}>
+          Another {kind} is already named{" "}
+          <strong style={{ color: T.text }}>&ldquo;{conflicting}&rdquo;</strong>.
+          Enter a different name to save.
+        </p>
+        <input
+          ref={inputRef}
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") onCancel();
+          }}
+          style={{
+            width: "100%",
+            padding: "9px 12px",
+            borderRadius: 7,
+            border: `1px solid ${draft.trim() && draft.trim() !== conflicting ? T.outlineVariant : T.outlineFaint}`,
+            background: T.surface,
+            color: T.text,
+            fontFamily: "inherit",
+            fontSize: 14,
+            outline: "none",
+            boxSizing: "border-box",
+          }}
+        />
+        <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
+          <button
+            type="button"
+            onClick={onCancel}
+            style={{
+              padding: "8px 16px",
+              borderRadius: 7,
+              border: `1px solid ${T.outlineFaint}`,
+              background: "transparent",
+              color: T.text2,
+              fontFamily: "inherit",
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!draft.trim() || draft.trim() === conflicting}
+            onClick={commit}
+            style={{
+              padding: "8px 16px",
+              borderRadius: 7,
+              border: "none",
+              background: draft.trim() && draft.trim() !== conflicting ? T.primary : T.outlineFaint,
+              color: draft.trim() && draft.trim() !== conflicting ? "#fff" : T.text3,
+              fontFamily: "inherit",
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: draft.trim() && draft.trim() !== conflicting ? "pointer" : "not-allowed",
+              transition: "background 120ms ease",
+            }}
+          >
+            Rename &amp; Save
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function DrawerContainer({ children }: { children: React.ReactNode }) {
   const T = useT();
   const { isMobile } = useBreakpoint();
@@ -3297,10 +3671,12 @@ function DrawerContainer({ children }: { children: React.ReactNode }) {
         position: "absolute",
         top: isMobile ? 0 : 16,
         right: isMobile ? 0 : 16,
-        bottom: isMobile ? 0 : 16,
+        bottom: isMobile ? 0 : "auto",
         left: isMobile ? 0 : "auto",
         width: isMobile ? "100%" : 380,
         maxWidth: "100%",
+        minHeight: isMobile ? undefined : 420,
+        maxHeight: isMobile ? "100%" : "calc(100% - 32px)",
         background: T.surface2,
         borderRadius: isMobile ? 0 : 12,
         boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 20px 60px -20px rgba(0,0,0,0.7)`,
@@ -3767,7 +4143,7 @@ function ConditionDrawer({
       </div>
 
       {/* ── Body: "Fire when [LHS ▾] [op ▾] [RHS ▾] ." ── */}
-      <div style={{ flex: 1, overflowX: "hidden", overflowY: "auto", padding: "20px 20px 16px" }}>
+      <div className="psx-thin-scroll" style={{ flex: 1, minHeight: 0, overflowX: "hidden", overflowY: "auto", padding: "20px 20px 16px" }}>
 
         {/* Prose line + token pills — the sentence-as-form */}
         <div
@@ -4198,6 +4574,7 @@ function ConditionDrawer({
           borderTop: `1px solid ${T.outlineFaint}`,
           display: "flex",
           gap: 8,
+          flexShrink: 0,
         }}
       >
         {onDelete && (

@@ -21,6 +21,7 @@ type MarketingItem =
 // configured on `/backtest/new` — reachable from the editor's Run backtest
 // button or the index's Run new backtest CTA.
 const NAV_ITEMS: MarketingItem[] = [
+  { kind: "link", href: "/", label: "Home" },
   { kind: "link", href: "/strategies", label: "Strategies" },
   { kind: "link", href: "/backtest", label: "Backtest" },
   { kind: "link", href: "/signals", label: "Signals" },
@@ -32,6 +33,16 @@ const NAV_ITEMS: MarketingItem[] = [
 type BottomTab = { href: string; label: string; icon: ReactNode };
 
 const BOTTOM_PRIMARY: BottomTab[] = [
+  {
+    href: "/",
+    label: "Home",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <path d="M3 9.5L10 3l7 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M5 8.5V17h4v-4h2v4h4V8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
   {
     href: "/strategies",
     label: "Strategies",
@@ -193,7 +204,7 @@ export function TopNav({ route }: { route?: string }) {
           <nav style={{ display: "flex", flex: 1, minWidth: 0 }}>
             {NAV_ITEMS.map((item) => {
               if (item.kind !== "link") return null;
-              const active = activeRoute?.startsWith(item.href);
+              const active = item.href === "/" ? activeRoute === "/" : activeRoute?.startsWith(item.href);
               return (
                 <Link
                   key={item.href}
@@ -542,7 +553,7 @@ function MobileDrawer({
             </button>
           );
         }
-        const active = activeRoute?.startsWith(item.href);
+        const active = item.href === "/" ? activeRoute === "/" : activeRoute?.startsWith(item.href);
         return (
           <Link
             key={item.label}
@@ -763,8 +774,13 @@ function BottomTabBar({ route }: { route?: string }) {
   const activeRoute = route || pathname;
   const [moreOpen, setMoreOpen] = useState(false);
 
+  function tabMatches(href: string, route: string | undefined) {
+    if (!route) return false;
+    return href === "/" ? route === "/" : route.startsWith(href);
+  }
+
   const moreActive =
-    !BOTTOM_PRIMARY.some((t) => activeRoute?.startsWith(t.href)) &&
+    !BOTTOM_PRIMARY.some((t) => tabMatches(t.href, activeRoute)) &&
     MORE_DRAWER_ITEMS.some((t) => activeRoute?.startsWith(t.href));
 
   return (
@@ -787,7 +803,7 @@ function BottomTabBar({ route }: { route?: string }) {
         }}
       >
         {BOTTOM_PRIMARY.map((tab) => {
-          const active = activeRoute?.startsWith(tab.href);
+          const active = tabMatches(tab.href, activeRoute);
           return (
             <Link
               key={tab.href}

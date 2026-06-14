@@ -635,7 +635,7 @@ export function BacktestView({
           actions={
             <>
               <Link href={rerunHref} style={{ textDecoration: "none" }}>
-                <Btn variant="ghost" size="sm">
+                <Btn variant="primary" size="sm" style={{ boxShadow: `0 3px 10px ${T.primary}99` }}>
                   {result ? "Re-run" : "Run backtest"}
                 </Btn>
               </Link>

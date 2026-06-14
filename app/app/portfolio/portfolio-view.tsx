@@ -600,10 +600,10 @@ function Body({
         }
         actions={
           <>
-            <Btn variant="ghost" size="sm" onClick={onExport}>
+            <Btn variant="secondary" size="sm" icon={Icon.export} style={{ background: T.surface, boxShadow: "0 2px 6px rgba(0,0,0,0.14)" }} onClick={onExport}>
               Export CSV
             </Btn>
-            <Btn variant="primary" size="sm" icon={Icon.plus} onClick={onLogClick}>
+            <Btn variant="primary" size="sm" icon={Icon.plus} style={{ boxShadow: `0 3px 10px ${T.primary}99` }} onClick={onLogClick}>
               Log a trade
             </Btn>
           </>
@@ -2173,10 +2173,10 @@ function EmptyState({
             discretionary ones.
           </p>
           <div style={{ marginTop: 22, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <Btn variant="primary" size="lg" icon={Icon.plus} onClick={onLogClick}>
+            <Btn variant="primary" size="lg" icon={Icon.plus} style={{ boxShadow: `0 3px 10px ${T.primary}99` }} onClick={onLogClick}>
               Log a trade
             </Btn>
-            <Btn variant="ghost" size="lg" onClick={onImport}>
+            <Btn variant="secondary" size="sm" icon={Icon.import} style={{ background: T.surface, boxShadow: "0 2px 6px rgba(0,0,0,0.14)" }} onClick={onImport}>
               Import CSV
             </Btn>
           </div>

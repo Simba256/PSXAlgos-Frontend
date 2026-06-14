@@ -222,7 +222,6 @@ export function SignalsView({
         deployedCount={availableStrategies.length}
         marketStatus={marketStatus}
         onLog={setOpenSignal}
-        onOpenFilter={() => setFilterOpen(true)}
         onExport={handleExport}
       />
       {openSignal && (
@@ -245,6 +244,45 @@ export function SignalsView({
   );
 }
 
+const TYPE_FILTERS = [
+  { key: "buy", label: "Buy", dir: "BUY" as const, strong: false },
+  { key: "strongbuy", label: "Strong Buy", dir: "BUY" as const, strong: true },
+  { key: "sell", label: "Sell", dir: "SELL" as const, strong: false },
+  { key: "strongsell", label: "Strong Sell", dir: "SELL" as const, strong: true },
+];
+
+function TypeFilterPill({
+  children,
+  active,
+  onClick,
+}: {
+  children: ReactNode;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const T = useT();
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        padding: "5px 12px",
+        borderRadius: 999,
+        fontSize: 11.5,
+        fontFamily: T.fontMono,
+        background: active ? T.surface3 : "transparent",
+        color: active ? T.text : T.text2,
+        boxShadow: `0 0 0 1px ${active ? T.outlineVariant : T.outlineFaint}`,
+        border: "none",
+        cursor: "pointer",
+        transition: "background 120ms ease, color 120ms ease",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 function Body({
   signals,
   totalCount,
@@ -254,7 +292,6 @@ function Body({
   deployedCount,
   marketStatus,
   onLog,
-  onOpenFilter,
   onExport,
 }: {
   signals: Signal[];
@@ -265,12 +302,32 @@ function Body({
   deployedCount: number;
   marketStatus: { isOpen: boolean; label: string; time: string };
   onLog: (s: Signal) => void;
-  onOpenFilter: () => void;
   onExport: () => void;
 }) {
   const T = useT();
   const { bp } = useBreakpoint();
   const padX = pick(bp, PAD.page);
+  const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
+
+  function toggleType(key: string) {
+    setTypeFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  const displaySignals = useMemo(() => {
+    if (typeFilter.size === 0) return signals;
+    return signals.filter((s) => {
+      const strong = s.conf >= 0.75;
+      for (const f of TYPE_FILTERS) {
+        if (typeFilter.has(f.key) && s.dir === f.dir && strong === f.strong) return true;
+      }
+      return false;
+    });
+  }, [signals, typeFilter]);
+
   // Palette for strategy chips. Stable across renders by indexing into the
   // sorted strategyCounts list, so the same strategy always reads the same
   // color within a session.
@@ -296,7 +353,7 @@ function Body({
     { label: "age", align: "right", width: "60px" },
     { label: "", align: "right", width: "220px" },
   ];
-  const rows: unknown[][] = signals.map((s) => [
+  const rows: unknown[][] = displaySignals.map((s) => [
     s.time,
     s.strategy,
     s.symbol,
@@ -327,41 +384,33 @@ function Body({
               <span style={{ color: T.text2 }}>{marketStatus.time}</span>
             </span>
             <span>
-              {filterActive ? `${signals.length} of ${totalCount}` : `${signals.length}`} signals ·{" "}
-              {new Set(signals.map((s) => s.symbol)).size} symbols
+              {filterActive || typeFilter.size > 0 ? `${displaySignals.length} of ${totalCount}` : `${displaySignals.length}`} signals ·{" "}
+              {new Set(displaySignals.map((s) => s.symbol)).size} symbols
             </span>
             <span>{loggedCount} logged to portfolio</span>
           </>
         }
         actions={
-          <>
-            <Btn
-              variant={filterActive ? "primary" : "ghost"}
-              size="sm"
-              onClick={onOpenFilter}
-              title="Filter signals"
-            >
-              {filterActive ? "Filter ●" : "Filter"}
-            </Btn>
-            <Btn
-              variant="outline"
-              size="sm"
-              onClick={onExport}
-              title="Export signals to CSV"
-              disabled={signals.length === 0}
-            >
-              Export
-            </Btn>
-          </>
+          <Btn
+            variant="secondary"
+            size="sm"
+            icon={Icon.export}
+            onClick={onExport}
+            title="Export signals to CSV"
+            disabled={displaySignals.length === 0}
+            style={{ background: T.surface, boxShadow: "0 2px 6px rgba(0,0,0,0.14)" }}
+          >
+            Export
+          </Btn>
         }
       />
 
       <div
         style={{
-          padding: `14px ${padX}`,
+          padding: `10px ${padX}`,
           borderBottom: `1px solid ${T.outlineFaint}`,
           display: "flex",
-          gap: 20,
+          gap: 6,
           alignItems: "center",
           flexWrap: "wrap",
         }}
@@ -373,25 +422,20 @@ function Body({
             color: T.text3,
             letterSpacing: 0.6,
             textTransform: "uppercase",
+            marginRight: 6,
           }}
         >
-          sourced from
+          filter
         </span>
-        {strategyCounts.length === 0 ? (
-          <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
-            no deployed strategies firing today
-          </span>
-        ) : (
-          strategyCounts.map(({ name, count }) => (
-            <StrategyChip
-              key={name}
-              name={name}
-              count={count}
-              color={strategyColor.get(name) ?? T.text2}
-            />
-          ))
-        )}
-        <div style={{ flex: 1 }} />
+        {TYPE_FILTERS.map((f) => (
+          <TypeFilterPill
+            key={f.key}
+            active={typeFilter.has(f.key)}
+            onClick={() => toggleType(f.key)}
+          >
+            {f.label}
+          </TypeFilterPill>
+        ))}
       </div>
 
       <div

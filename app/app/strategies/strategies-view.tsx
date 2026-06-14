@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppFrame } from "@/components/frame";
@@ -104,7 +105,33 @@ export function StrategiesView({
   // localStorage once on mount; the modal still appears unconditionally when
   // live bots are bound (the bot-warning panel is load-bearing).
   const [skipArchiveConfirm, setSkipArchiveConfirm] = useState(false);
+  const [newPending, setNewPending] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const router = useRouter();
+
+  async function handleNew() {
+    if (newPending) return;
+    setNewPending(true);
+    try {
+      const res = await fetch("/api/strategies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "New Strategy",
+          description: "",
+          entry_rules: { conditions: { kind: "group", logic: "AND", conditions: [] } },
+          exit_rules: {},
+        }),
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { strategy_id: number };
+      router.push(`/strategies/${data.strategy_id}?lib=1`);
+    } catch {
+      // silently fail — user stays on page
+    } finally {
+      setNewPending(false);
+    }
+  }
 
   useEffect(() => {
     try {
@@ -227,6 +254,8 @@ export function StrategiesView({
           setSortKey(k);
           setSortDir(d);
         }}
+        onNew={handleNew}
+        newPending={newPending}
         onImport={onImportClick}
         importMsg={importMsg}
         onArchive={(s) => {
@@ -273,6 +302,8 @@ function ListBody({
   sortKey,
   sortDir,
   onSort,
+  onNew,
+  newPending,
   onImport,
   importMsg,
   onArchive,
@@ -287,6 +318,8 @@ function ListBody({
   sortKey: SortKey;
   sortDir: SortDir;
   onSort: (k: SortKey, d: SortDir) => void;
+  onNew: () => void;
+  newPending: boolean;
   onImport: () => void;
   importMsg: { kind: "ok" | "err"; text: string } | null;
   onArchive: (s: Strategy) => void;
@@ -421,20 +454,25 @@ function ListBody({
                 {importMsg.text}
               </span>
             )}
-            <Btn variant="ghost" size="sm" onClick={onImport}>
-              Import JSON
+            <Btn variant="secondary" size="sm" icon={Icon.import} style={{ background: T.surface, boxShadow: "0 2px 6px rgba(0,0,0,0.14)" }} onClick={onImport}>
+              Import
             </Btn>
-            <Link href="/strategies/new" style={{ textDecoration: "none" }}>
-              <Btn variant="primary" size="sm" icon={Icon.plus}>
-                New strategy
-              </Btn>
-            </Link>
+            <Btn
+              variant="primary"
+              size="sm"
+              icon={Icon.plus}
+              style={{ boxShadow: `0 3px 10px ${T.primary}99` }}
+              onClick={onNew}
+              disabled={newPending}
+            >
+              {newPending ? "Creating…" : "New strategy"}
+            </Btn>
           </>
         }
       />
 
       {isEmpty ? (
-        <EmptyState onImport={onImport} />
+        <EmptyState onImport={onImport} onNew={onNew} newPending={newPending} />
       ) : (
         <FilteredList
           filters={filters}
@@ -814,6 +852,94 @@ function coerceStrategy(raw: unknown, idx: number): Strategy {
   };
 }
 
+function OutputsHeaderLabel({ glyphs }: { glyphs: Record<OutputKind, [string, string, string]> }) {
+  const T = useT();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+      outputs
+      <span
+        style={{ position: "relative", display: "inline-flex" }}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+      >
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 13,
+            height: 13,
+            borderRadius: "50%",
+            border: `1px solid ${T.text3}`,
+            background: "transparent",
+            color: T.text3,
+            fontSize: 8,
+            fontFamily: T.fontSans,
+            fontWeight: 700,
+            cursor: "default",
+            lineHeight: 1,
+            flexShrink: 0,
+          }}
+          aria-label="Output icons legend"
+        >
+          i
+        </span>
+        {open && (
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(100% + 6px)",
+              left: 0,
+              zIndex: 30,
+              background: T.surface2,
+              border: `1px solid ${T.outlineVariant}`,
+              borderRadius: 6,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+              padding: "10px 12px",
+              minWidth: 170,
+              fontFamily: T.fontMono,
+              fontSize: 11,
+              textTransform: "none",
+              letterSpacing: 0,
+            }}
+          >
+            <div style={{ color: T.text3, fontSize: 10, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              output icons
+            </div>
+            {(["bt", "sig", "bot"] as OutputKind[]).map((k) => {
+              const [g, c, label] = glyphs[k];
+              return (
+                <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 18,
+                      height: 18,
+                      borderRadius: 4,
+                      background: c + "22",
+                      color: c,
+                      fontFamily: T.fontHead,
+                      fontSize: 11,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {g}
+                  </span>
+                  <span style={{ color: T.text2 }}>{label}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </span>
+    </span>
+  );
+}
+
 function StrategyTable({
   rows,
   onArchive,
@@ -830,27 +956,25 @@ function StrategyTable({
   archiveBusyId: string | null;
 }) {
   const T = useT();
+  const glyphs: Record<OutputKind, [string, string, string]> = {
+    bt: ["⎈", T.primary, "Backtest"],
+    sig: ["◉", T.deploy, "Signals"],
+    bot: ["◇", T.accent, "Bot"],
+  };
   const cols: Col[] = [
     { label: "name", width: "1.5fr", mono: false, primary: true },
-    { label: "type", width: "140px", mono: false },
     { label: "status", width: "110px" },
     { label: "backtest", align: "right", width: "90px" },
     { label: "sharpe", align: "right", width: "70px" },
-    { label: "outputs", width: "120px", mobileFullWidth: true },
+    { label: "outputs", width: "120px", mobileFullWidth: true, headerNode: <OutputsHeaderLabel glyphs={glyphs} /> },
     { label: "today", align: "right", width: "80px" },
     { label: "updated", align: "right", width: "90px" },
     // Empty-label column auto-flags as mobileFullWidth (see Col docs);
     // on desktop renders an Archive / Restore action per row.
     { label: "", align: "right", width: "90px" },
   ];
-  const glyphs: Record<OutputKind, [string, string, string]> = {
-    bt: ["⎈", T.primary, "Backtest"],
-    sig: ["◉", T.deploy, "Signals"],
-    bot: ["◇", T.accent, "Bot"],
-  };
   const tableRows: unknown[][] = rows.map((s) => [
     s,
-    s.type,
     s.status,
     s.bt,
     s.sharpe,
@@ -883,8 +1007,7 @@ function StrategyTable({
             </Link>
           );
         }
-        if (ci === 1) return <span style={{ color: T.text2 }}>{cell as string}</span>;
-        if (ci === 2) {
+        if (ci === 1) {
           const st = cell as Status;
           const c = { DEPLOYED: T.deploy, DRAFT: T.text3, PAUSED: T.warning, ARCHIVED: T.text3 }[st];
           return (
@@ -911,18 +1034,18 @@ function StrategyTable({
             </span>
           );
         }
-        if (ci === 3) {
+        if (ci === 2) {
           const str = String(cell);
           if (str === "—") return <span style={{ color: T.text3 }}>{str}</span>;
           return <span style={{ color: str.startsWith("+") ? T.gain : T.loss }}>{str}</span>;
         }
-        if (ci === 4)
+        if (ci === 3)
           return cell == null ? (
             <span style={{ color: T.text3 }}>—</span>
           ) : (
             <span style={{ color: T.text2 }}>{(cell as number).toFixed(2)}</span>
           );
-        if (ci === 5) {
+        if (ci === 4) {
           const outs = cell as OutputKind[];
           return (
             <span style={{ display: "inline-flex", gap: 5 }}>
@@ -956,7 +1079,7 @@ function StrategyTable({
             </span>
           );
         }
-        if (ci === 6) {
+        if (ci === 5) {
           const n = cell as number;
           return (
             <span style={{ color: n > 0 ? T.text : T.text3, fontWeight: n > 0 ? 600 : 400 }}>
@@ -964,8 +1087,8 @@ function StrategyTable({
             </span>
           );
         }
-        if (ci === 7) return <span style={{ color: T.text3 }}>{cell as string}</span>;
-        if (ci === 8) {
+        if (ci === 6) return <span style={{ color: T.text3 }}>{cell as string}</span>;
+        if (ci === 7) {
           const s = cell as Strategy;
           const isArchived = s.status === "ARCHIVED";
           // Show the busy indicator for whichever in-flight path applies to
@@ -981,12 +1104,14 @@ function StrategyTable({
               variant="ghost"
               size="sm"
               disabled={busy}
+              title={isArchived ? "Restore" : "Archive"}
+              icon={busy ? undefined : isArchived ? Icon.arrowR : Icon.archive}
               onClick={() => {
                 if (isArchived) onRestore(s);
                 else onArchive(s);
               }}
             >
-              {busy ? "…" : isArchived ? "Restore" : "Archive"}
+              {busy ? "…" : null}
             </Btn>
           );
         }
@@ -1143,7 +1268,7 @@ function ArchiveConfirmModal({
   );
 }
 
-function EmptyState({ onImport }: { onImport: () => void }) {
+function EmptyState({ onImport, onNew, newPending }: { onImport: () => void; onNew: () => void; newPending: boolean }) {
   const T = useT();
   const { bp, isMobile } = useBreakpoint();
   const padX = pick(bp, PAD.page);
@@ -1203,13 +1328,18 @@ function EmptyState({ onImport }: { onImport: () => void }) {
             you trade manually, or bind a paper-trading bot.
           </p>
           <div style={{ marginTop: 22, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <Link href="/strategies/new" style={{ textDecoration: "none" }}>
-              <Btn variant="primary" size="lg" icon={Icon.plus}>
-                New strategy
-              </Btn>
-            </Link>
-            <Btn variant="ghost" size="lg" onClick={onImport}>
-              Import JSON
+            <Btn
+              variant="primary"
+              size="lg"
+              icon={Icon.plus}
+              style={{ boxShadow: `0 3px 10px ${T.primary}99` }}
+              onClick={onNew}
+              disabled={newPending}
+            >
+              {newPending ? "Creating…" : "New strategy"}
+            </Btn>
+            <Btn variant="secondary" size="sm" icon={Icon.import} style={{ background: T.surface, boxShadow: "0 2px 6px rgba(0,0,0,0.14)" }} onClick={onImport}>
+              Import
             </Btn>
           </div>
 
