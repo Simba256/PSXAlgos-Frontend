@@ -109,7 +109,7 @@ function Body({
         }
         actions={
           !empty ? (
-            <Link href="/strategies" style={{ textDecoration: "none" }}>
+            <Link href="/bots/new" style={{ textDecoration: "none" }}>
               <Btn variant="primary" size="sm" icon={Icon.plus} style={{ boxShadow: "0 2px 6px rgba(0,0,0,0.14)" }}>
                 Create bot
               </Btn>
@@ -410,9 +410,9 @@ function EmptyState() {
           money.
         </p>
         <div style={{ display: "inline-flex", gap: 10 }}>
-          <Link href="/strategies" style={{ textDecoration: "none" }}>
+          <Link href="/bots/new" style={{ textDecoration: "none" }}>
             <Btn variant="primary" size="lg" icon={Icon.plus}>
-              Pick a strategy to bind
+              Create a bot
             </Btn>
           </Link>
         </div>

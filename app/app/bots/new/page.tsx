@@ -20,7 +20,12 @@ import {
   type RiskControlsValue,
 } from "@/components/risk-controls-section";
 import type { BotCreateBody, BotResponse } from "@/lib/api/bots";
-import type { DefaultRisk, StrategyResponse } from "@/lib/api/strategies";
+import type {
+  DefaultRisk,
+  StrategyResponse,
+  StrategyListResponse,
+  StrategyStatus,
+} from "@/lib/api/strategies";
 import { getAllStocks, type StockResponse } from "@/lib/api/stocks";
 
 interface StrategyPreview {
@@ -79,6 +84,14 @@ export default function BotWizardPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [strategyId, setStrategyId] = useState<number | null>(null);
   const [strategy, setStrategy] = useState<StrategyPreview | null>(null);
+  // The user's strategies, for the in-wizard picker — so "Create bot" is a
+  // self-contained flow (like /backtest/new) and doesn't require opening a
+  // strategy first. Pre-selected when a strategy_id arrives via the URL
+  // (e.g. the editor's "Spin up bot" pill).
+  const [strategies, setStrategies] = useState<
+    { id: number; name: string; status: StrategyStatus }[]
+  >([]);
+  const [strategiesLoading, setStrategiesLoading] = useState(true);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
   // useTransition's `pending` only flips once the post-fetch router.push
   // runs inside startTransition, so it can't guard the fetch itself.
@@ -176,11 +189,36 @@ export default function BotWizardPage() {
     };
   }, []);
 
+  // Load the user's strategies once for the picker. Non-fatal on failure —
+  // the picker just shows the "no strategies" copy.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/strategies", { cache: "no-store" });
+        if (!res.ok || cancelled) return;
+        const body = (await res.json()) as StrategyListResponse;
+        if (cancelled) return;
+        setStrategies(
+          body.items.map((s) => ({ id: s.id, name: s.name, status: s.status })),
+        );
+      } catch {
+        // swallow — leaves the list empty
+      } finally {
+        if (!cancelled) setStrategiesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function onLaunch() {
     if (submitting) return;
     setSubmitErr(null);
     if (!strategyId) {
-      setSubmitErr("Open a strategy and use 'Spin up bot' to bind one.");
+      setSubmitErr("Pick a strategy to bind this bot to.");
+      setStep(1);
       return;
     }
     if (!name.trim()) {
@@ -402,15 +440,26 @@ export default function BotWizardPage() {
         >
           <div>
             {step === 1 && (
-              <CapitalStep
-                name={name}
-                onName={(v) => { setName(v); setNameError(false); setSubmitErr(null); }}
-                allocatedCapital={allocatedCapital}
-                onAllocatedCapital={setAllocatedCapital}
-                maxPositions={maxPositions}
-                onMaxPositions={setMaxPositions}
-                nameError={nameError}
-              />
+              <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+                <StrategyPickerField
+                  strategies={strategies}
+                  value={strategyId}
+                  loading={strategiesLoading}
+                  onChange={(id) => {
+                    setStrategyId(id);
+                    setSubmitErr(null);
+                  }}
+                />
+                <CapitalStep
+                  name={name}
+                  onName={(v) => { setName(v); setNameError(false); setSubmitErr(null); }}
+                  allocatedCapital={allocatedCapital}
+                  onAllocatedCapital={setAllocatedCapital}
+                  maxPositions={maxPositions}
+                  onMaxPositions={setMaxPositions}
+                  nameError={nameError}
+                />
+              </div>
             )}
             {step === 2 && (
               <UniverseAndRiskFields
@@ -465,7 +514,19 @@ export default function BotWizardPage() {
             </Btn>
           )}
           {step < 3 && (
-            <Btn variant="primary" size="md" onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3)}>
+            <Btn
+              variant="primary"
+              size="md"
+              onClick={() => {
+                // Strategy is chosen on step 1; don't let the user advance
+                // (and fill in everything else) only to be blocked at launch.
+                if (step === 1 && !strategyId) {
+                  setSubmitErr("Pick a strategy to bind this bot to.");
+                  return;
+                }
+                setStep((s) => (s + 1) as 1 | 2 | 3);
+              }}
+            >
               Continue →
             </Btn>
           )}
@@ -503,6 +564,86 @@ export default function BotWizardPage() {
         )}
       </div>
     </AppFrame>
+  );
+}
+
+function StrategyPickerField({
+  strategies,
+  value,
+  loading,
+  onChange,
+}: {
+  strategies: { id: number; name: string; status: StrategyStatus }[];
+  value: number | null;
+  loading: boolean;
+  onChange: (id: number | null) => void;
+}) {
+  const T = useT();
+
+  // No strategies yet — a bot can't exist without one, so point the user at
+  // the strategy builder instead of an empty dropdown.
+  if (!loading && strategies.length === 0) {
+    return (
+      <div>
+        <Kicker info="A bot trades one of your strategies. Build a strategy first, then spin up a bot from it.">
+          strategy
+        </Kicker>
+        <div
+          style={{
+            marginTop: 10,
+            fontFamily: T.fontSans,
+            fontSize: 13,
+            color: T.text3,
+            lineHeight: 1.6,
+            maxWidth: 420,
+          }}
+        >
+          You don&apos;t have any strategies yet.{" "}
+          <Link href="/strategies/new" style={{ color: T.primaryLight }}>
+            Create one
+          </Link>{" "}
+          first, then come back to launch a bot.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Kicker info="The entry/exit rules this bot will trade. Pick one of your strategies.">
+        strategy
+      </Kicker>
+      <select
+        value={value ?? ""}
+        disabled={loading}
+        aria-label="Strategy to bind"
+        onChange={(e) => onChange(e.target.value ? parseInt(e.target.value, 10) : null)}
+        style={{
+          marginTop: 10,
+          background: T.surface,
+          color: value ? T.text : T.text3,
+          border: "none",
+          boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+          borderRadius: 6,
+          padding: "10px 14px",
+          fontFamily: T.fontSans,
+          fontSize: 15,
+          width: "100%",
+          maxWidth: 420,
+          cursor: loading ? "wait" : "pointer",
+        }}
+      >
+        <option value="">
+          {loading ? "Loading strategies…" : "Select a strategy…"}
+        </option>
+        {strategies.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name}
+            {s.status !== "ACTIVE" ? ` · ${s.status.toLowerCase()}` : ""}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }
 
