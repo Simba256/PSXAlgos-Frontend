@@ -175,13 +175,13 @@ export function TopNav({ route }: { route?: string }) {
         flexShrink: 0,
         position: "relative",
         zIndex: 40,
-        // On phones the header otherwise sits flush against the top edge / under
-        // the status-bar notch. Pad the top by the safe-area inset with a 20px
-        // floor (notch-less phones report a 0 inset) so the theme/bell/profile
-        // icons sit comfortably below the top of the window.
-        paddingTop: isMobile
-          ? "max(env(safe-area-inset-top), 20px)"
-          : undefined,
+        // On phones, pad the top only by the device safe-area inset so the
+        // header clears a notch in standalone/PWA mode. We deliberately omit any
+        // extra floor: in a normal browser the inset is 0 and the 48px row below
+        // already centers its content with ~14px of breathing room — matching the
+        // marketing header (MarketingNav) so the signed-in and signed-out headers
+        // never look misaligned.
+        paddingTop: isMobile ? "env(safe-area-inset-top)" : undefined,
       }}
     >
       <div
@@ -204,10 +204,9 @@ export function TopNav({ route }: { route?: string }) {
             flexShrink: 0,
           }}
         >
-          <LogoMark size={20} radius={4} />
-          <span style={{ fontFamily: T.fontHead, fontWeight: 600, fontSize: 14, letterSpacing: -0.2 }}>
-            PSX{" "}
-            <span style={{ fontStyle: "italic", fontWeight: 500, color: T.primaryLight }}>Algos</span>
+          <LogoMark size={28} radius={6} />
+          <span style={{ fontFamily: T.fontHead, fontWeight: 600, fontSize: 17, letterSpacing: -0.3 }}>
+            PSX Algos
           </span>
         </Link>
 
@@ -261,8 +260,8 @@ export function TopNav({ route }: { route?: string }) {
               {/* Paper/Amber theme toggle, icon-only, on phones — tablet keeps it
                   in the hamburger drawer footer. */}
               {isMobile && <ThemeToggle variant="inline" iconOnly />}
-              <NotificationBell size={26} />
-              <UserMenu size={26} />
+              <NotificationBell size={30} />
+              <UserMenu size={30} />
               {/* Hamburger is shown on tablet only; mobile uses BottomTabBar */}
               {!isMobile && (
                 <button
@@ -326,8 +325,8 @@ export function TopNav({ route }: { route?: string }) {
             >
               Feedback
             </Link>
-            <NotificationBell size={26} />
-            <UserMenu size={26} />
+            <NotificationBell size={30} />
+            <UserMenu size={30} />
           </div>
         )}
       </div>
