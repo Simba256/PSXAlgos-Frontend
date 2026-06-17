@@ -38,8 +38,15 @@ export default async function StrategyEditorPage({
     ]);
     return <EditorView initialStrategy={initialStrategy} indicatorMeta={indicatorMeta} />;
   } catch (err) {
-    if (err instanceof ApiError && err.status === 404) {
-      notFound();
+    if (err instanceof ApiError) {
+      if (err.status === 404) notFound();
+      // 401 = the backend rejected our session token (expired or no longer
+      // valid). Mirror the no-session path above and bounce to re-auth instead
+      // of surfacing a raw 401 to the user — a fresh sign-in mints a valid
+      // token. (403 is a genuine authorization error, so let it fall through.)
+      if (err.status === 401) {
+        redirect(`/?auth=required&from=/strategies/${raw}`);
+      }
     }
     throw err;
   }

@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { AppFrame } from "@/components/frame";
@@ -45,7 +44,6 @@ export function BotsView({
 }) {
   const [bots] = useState<Bot[]>(initialBots);
   const { flash, setFlash } = useFlash();
-  const router = useRouter();
 
   useEffect(() => {
     if (fetchFailed) setFlash("Couldn't load your bots — showing empty list");
@@ -53,56 +51,10 @@ export function BotsView({
   }, [fetchFailed]);
 
   const runningCount = bots.filter((b) => b.status === "RUNNING").length;
-  const pausedAll = runningCount === 0 && bots.some((b) => b.status === "PAUSED");
-
-  // Pause-all / resume-all fire one POST per bot via Promise.allSettled.
-  // Partial failures used to be silently swallowed; we now surface the
-  // first concrete error message so the user knows why N of M succeeded.
-  async function bulkAction(
-    targets: Bot[],
-    action: "start" | "pause",
-  ): Promise<{ ok: number; firstErr: string | null }> {
-    const results = await Promise.allSettled(
-      targets.map((b) =>
-        fetch(`/api/bots/${b.id}/${action}`, { method: "POST" }).then((r) => {
-          if (!r.ok) throw new Error(`${b.name}: ${r.status}`);
-          return b.id;
-        }),
-      ),
-    );
-    const ok = results.filter((r) => r.status === "fulfilled").length;
-    const firstRejected = results.find((r) => r.status === "rejected");
-    const firstErr =
-      firstRejected && firstRejected.status === "rejected"
-        ? String((firstRejected.reason as Error)?.message ?? firstRejected.reason)
-        : null;
-    return { ok, firstErr };
-  }
-
-  const handlePauseAll = async () => {
-    if (pausedAll) {
-      const targets = bots.filter((b) => b.status === "PAUSED");
-      const { ok, firstErr } = await bulkAction(targets, "start");
-      const msg = `Resumed ${ok} of ${targets.length} paused bot${targets.length === 1 ? "" : "s"}`;
-      setFlash(ok < targets.length && firstErr ? `${msg} · ${firstErr}` : msg);
-      router.refresh();
-    } else if (runningCount > 0) {
-      const targets = bots.filter((b) => b.status === "RUNNING");
-      const { ok, firstErr } = await bulkAction(targets, "pause");
-      const msg = `Paused ${ok} of ${targets.length} running bot${targets.length === 1 ? "" : "s"}`;
-      setFlash(ok < targets.length && firstErr ? `${msg} · ${firstErr}` : msg);
-      router.refresh();
-    }
-  };
 
   return (
     <AppFrame route="/bots">
-      <Body
-        bots={bots}
-        runningCount={runningCount}
-        pausedAll={pausedAll}
-        onPauseAll={handlePauseAll}
-      />
+      <Body bots={bots} runningCount={runningCount} />
       {flash && <FlashToast message={flash} />}
     </AppFrame>
   );
@@ -111,13 +63,9 @@ export function BotsView({
 function Body({
   bots,
   runningCount,
-  pausedAll,
-  onPauseAll,
 }: {
   bots: Bot[];
   runningCount: number;
-  pausedAll: boolean;
-  onPauseAll: () => void;
 }) {
   const T = useT();
   const empty = bots.length === 0;
@@ -161,9 +109,11 @@ function Body({
         }
         actions={
           !empty ? (
-            <Btn variant="outline" size="sm" onClick={onPauseAll} style={{ boxShadow: "0 2px 6px rgba(0,0,0,0.14)" }}>
-              {pausedAll ? "Resume all" : "Pause all"}
-            </Btn>
+            <Link href="/strategies" style={{ textDecoration: "none" }}>
+              <Btn variant="primary" size="sm" icon={Icon.plus} style={{ boxShadow: "0 2px 6px rgba(0,0,0,0.14)" }}>
+                Create bot
+              </Btn>
+            </Link>
           ) : null
         }
       />

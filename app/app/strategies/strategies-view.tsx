@@ -956,10 +956,35 @@ function StrategyTable({
   archiveBusyId: string | null;
 }) {
   const T = useT();
+  const { isMobile } = useBreakpoint();
   const glyphs: Record<OutputKind, [string, string, string]> = {
     bt: ["⎈", T.primary, "Backtest"],
     sig: ["◉", T.deploy, "Signals"],
     bot: ["◇", T.accent, "Bot"],
+  };
+  // Archive (or Restore, for already-archived rows) action button. Shared by
+  // the desktop trailing-column cell and the mobile name-row cell so the busy
+  // state and routing stay identical in both layouts.
+  const renderArchiveBtn = (s: Strategy) => {
+    const isArchived = s.status === "ARCHIVED";
+    const busy = isArchived
+      ? restoreBusyId === s.id
+      : archiveBusy && archiveBusyId === s.id;
+    return (
+      <Btn
+        variant="ghost"
+        size="sm"
+        disabled={busy}
+        title={isArchived ? "Restore" : "Archive"}
+        icon={busy ? undefined : isArchived ? Icon.arrowR : Icon.archive}
+        onClick={() => {
+          if (isArchived) onRestore(s);
+          else onArchive(s);
+        }}
+      >
+        {busy ? "…" : null}
+      </Btn>
+    );
   };
   const cols: Col[] = [
     { label: "name", width: "1.5fr", mono: false, primary: true },
@@ -970,8 +995,10 @@ function StrategyTable({
     { label: "today", align: "right", width: "80px" },
     { label: "updated", align: "right", width: "90px" },
     // Empty-label column auto-flags as mobileFullWidth (see Col docs);
-    // on desktop renders an Archive / Restore action per row.
-    { label: "", align: "right", width: "90px" },
+    // on desktop renders an Archive / Restore action per row. Hidden on mobile
+    // — there the action is folded into the top-right of the name cell instead
+    // of taking a full-width footer row of its own (see ci === 0 below).
+    { label: "", align: "right", width: "90px", hideOnMobile: true },
   ];
   const tableRows: unknown[][] = rows.map((s) => [
     s,
@@ -990,8 +1017,20 @@ function StrategyTable({
       renderCell={(cell, ci) => {
         if (ci === 0) {
           const s = cell as Strategy;
-          return (
-            <Link href={`/strategies/${s.id}`} style={{ display: "inline-flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
+          const nameLink = (
+            <Link
+              href={`/strategies/${s.id}`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 10,
+                textDecoration: "none",
+                // Mobile only: let the link shrink so the name can ellipsis
+                // beside the inline archive button. Desktop keeps its original
+                // intrinsic sizing untouched.
+                ...(isMobile ? { minWidth: 0 } : {}),
+              }}
+            >
               <span
                 style={{
                   fontFamily: T.fontHead,
@@ -999,12 +1038,26 @@ function StrategyTable({
                   color: T.text,
                   fontWeight: 500,
                   letterSpacing: -0.2,
+                  ...(isMobile
+                    ? { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
+                    : {}),
                 }}
               >
                 {s.name}
               </span>
-              {s.pinned && <span style={{ color: T.accent, fontSize: 10 }}>★</span>}
+              {s.pinned && (
+                <span style={{ color: T.accent, fontSize: 10, ...(isMobile ? { flexShrink: 0 } : {}) }}>★</span>
+              )}
             </Link>
+          );
+          if (!isMobile) return nameLink;
+          // Mobile: park the archive/restore action at the top-right of the name
+          // row so it no longer needs a full-width footer row of its own.
+          return (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0 }}>
+              {nameLink}
+              {renderArchiveBtn(s)}
+            </div>
           );
         }
         if (ci === 1) {
@@ -1089,31 +1142,10 @@ function StrategyTable({
         }
         if (ci === 6) return <span style={{ color: T.text3 }}>{cell as string}</span>;
         if (ci === 7) {
-          const s = cell as Strategy;
-          const isArchived = s.status === "ARCHIVED";
-          // Show the busy indicator for whichever in-flight path applies to
-          // this row: restore (per-row id) or archive (modal target id +
-          // global archiveBusy). Previously only restore got feedback, so the
-          // user could click Archive again before the modal closed and have
-          // the row appear stuck/unresponsive.
-          const busy = isArchived
-            ? restoreBusyId === s.id
-            : archiveBusy && archiveBusyId === s.id;
-          return (
-            <Btn
-              variant="ghost"
-              size="sm"
-              disabled={busy}
-              title={isArchived ? "Restore" : "Archive"}
-              icon={busy ? undefined : isArchived ? Icon.arrowR : Icon.archive}
-              onClick={() => {
-                if (isArchived) onRestore(s);
-                else onArchive(s);
-              }}
-            >
-              {busy ? "…" : null}
-            </Btn>
-          );
+          // Desktop trailing action column. The busy indicator covers whichever
+          // in-flight path applies to this row (restore = per-row id, archive =
+          // modal target id + global archiveBusy) — see renderArchiveBtn.
+          return renderArchiveBtn(cell as Strategy);
         }
         return cell as ReactNode;
       }}

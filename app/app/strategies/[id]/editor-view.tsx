@@ -2589,22 +2589,23 @@ function Canvas({
       <div
         style={{
           position: "absolute",
-          // Mobile: the bottom can't fit the wide action bar plus these pills,
-          // so move zoom + status up to the top-left, stacked (status above).
-          // Stacking (not side-by-side) avoids collisions on narrow phones.
+          // Mobile only: the status pill is hidden and the zoom controls move
+          // up to the top-left (where the status pill used to sit) and shrink so
+          // they don't crowd the narrow canvas. Desktop keeps the original
+          // bottom-right placement and full size, with the status pill above.
           ...(isMobile
-            ? { top: 54, left: 12 }
+            ? { top: 12, left: 12 }
             : { bottom: 20, right: drawerOpen ? 412 : 24 }),
           display: "flex",
           alignItems: "center",
-          gap: 2,
-          padding: "4px 6px",
+          gap: isMobile ? 1 : 2,
+          padding: isMobile ? "2px 4px" : "4px 6px",
           borderRadius: 999,
           background: T.surface2 + "e6",
           backdropFilter: "blur(10px)",
           border: `1px solid ${T.outlineFaint}`,
           fontFamily: T.fontMono,
-          fontSize: 11,
+          fontSize: isMobile ? 10 : 11,
           color: T.text3,
           zIndex: 5,
           userSelect: "none",
@@ -2615,8 +2616,8 @@ function Canvas({
         <span
           style={{
             color: T.text2,
-            padding: "0 8px",
-            minWidth: 40,
+            padding: isMobile ? "0 5px" : "0 8px",
+            minWidth: isMobile ? 32 : 40,
             textAlign: "center",
             fontVariantNumeric: "tabular-nums",
           }}
@@ -2624,41 +2625,42 @@ function Canvas({
           {Math.round(zoom * 100)}%
         </span>
         <ZoomBtn onClick={() => bumpZoom(1.2)} label="+" />
-        <span style={{ width: 1, height: 14, background: T.outlineFaint, margin: "0 4px" }} />
+        <span style={{ width: 1, height: isMobile ? 12 : 14, background: T.outlineFaint, margin: isMobile ? "0 3px" : "0 4px" }} />
         <ZoomBtn onClick={resetView} label="fit" />
       </div>
 
       {/* Phase 4: StatusStrip carries the navigation role the three OutputPins
           used to (Backtest / Live signals / Automate). Sits just above the
-          zoom-controls pill on the right; slides with the drawer same way. */}
-      <div
-        style={{
-          position: "absolute",
-          // Mobile: top-left, above the zoom pill (see zoom pill comment).
-          ...(isMobile
-            ? { top: 12, left: 12 }
-            : { bottom: 60, right: drawerOpen ? 412 : 24 }),
-          zIndex: 5,
-          transition: "right 240ms cubic-bezier(0.4, 0, 0.2, 1)",
-        }}
-      >
-        <StatusStrip
-          strategyId={strategyId}
-          deployed={deployed}
-          backtest={
-            latestBacktest
-              ? {
-                  totalReturnPct: Number(latestBacktest.total_return_pct),
-                  completedAt: latestBacktest.completed_at,
-                }
-              : null
-          }
-          // Bot binding lights up in Phase 6 once the picker modal is wired;
-          // until then we don't surface a ghost "No bot" segment that pads
-          // the strip without doing anything useful.
-          botBinding={null}
-        />
-      </div>
+          zoom-controls pill on the right. Desktop/tablet only — on phones it
+          was removed to free vertical space (zoom takes its top-left slot). */}
+      {!isMobile && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 60,
+            right: drawerOpen ? 412 : 24,
+            zIndex: 5,
+            transition: "right 240ms cubic-bezier(0.4, 0, 0.2, 1)",
+          }}
+        >
+          <StatusStrip
+            strategyId={strategyId}
+            deployed={deployed}
+            backtest={
+              latestBacktest
+                ? {
+                    totalReturnPct: Number(latestBacktest.total_return_pct),
+                    completedAt: latestBacktest.completed_at,
+                  }
+                : null
+            }
+            // Bot binding lights up in Phase 6 once the picker modal is wired;
+            // until then we don't surface a ghost "No bot" segment that pads
+            // the strip without doing anything useful.
+            botBinding={null}
+          />
+        </div>
+      )}
 
       <div
         style={{
@@ -2697,6 +2699,7 @@ function Canvas({
 
 function ZoomBtn({ onClick, label }: { onClick: () => void; label: string }) {
   const T = useT();
+  const { isMobile } = useBreakpoint();
   return (
     <button
       type="button"
@@ -2706,9 +2709,9 @@ function ZoomBtn({ onClick, label }: { onClick: () => void; label: string }) {
         border: "none",
         color: T.text2,
         cursor: "pointer",
-        minWidth: 28,
-        minHeight: 28,
-        padding: "6px 10px",
+        minWidth: isMobile ? 20 : 28,
+        minHeight: isMobile ? 20 : 28,
+        padding: isMobile ? "3px 6px" : "6px 10px",
         borderRadius: 999,
         fontFamily: "inherit",
         fontSize: "inherit",
@@ -2971,6 +2974,7 @@ function InsertSlot({
   branch: "entry" | "exit";
 }) {
   const T = useT();
+  const { isMobile } = useBreakpoint();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [hover, setHover] = useState(false);
 
@@ -2985,7 +2989,11 @@ function InsertSlot({
   }, [autoOpen, onAutoOpenConsumed]);
 
   const showHint = isTreeEmpty && slot.isEmpty;
-  const displayW = showHint ? 280 : Math.max(slot.w, 160);
+  // On mobile the entry/exit gates sit only SPINE_GAP (64px) from the centered
+  // Risk Defaults node, so the wide 280px hint button slides under it. Shrink
+  // the hint there so the side buttons clear the middle box; desktop keeps the
+  // roomier width (it already has ~72px of clearance).
+  const displayW = showHint ? (isMobile ? 190 : 280) : Math.max(slot.w, 160);
   const displayH = showHint ? 64 : slot.h;
   const x = slot.cx - displayW / 2;
   const y = slot.cy - displayH / 2;
