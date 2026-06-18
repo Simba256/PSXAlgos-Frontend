@@ -13,6 +13,11 @@ import { meanReversion } from "./strategies/mean-reversion";
 import { momentumBreakout } from "./strategies/momentum-breakout";
 import { bollingerSqueeze } from "./strategies/bollinger-squeeze";
 import { macdCrossover } from "./strategies/macd-crossover";
+import { rsi } from "./indicators/rsi";
+import { macd } from "./indicators/macd";
+import { smaVsEma } from "./indicators/sma-vs-ema";
+import { bollingerBands } from "./indicators/bollinger-bands";
+import { atr } from "./indicators/atr";
 
 export const ENTRIES: readonly LearnEntry[] = [
   kse100,
@@ -26,6 +31,11 @@ export const ENTRIES: readonly LearnEntry[] = [
   momentumBreakout,
   bollingerSqueeze,
   macdCrossover,
+  rsi,
+  macd,
+  smaVsEma,
+  bollingerBands,
+  atr,
 ];
 
 const BY_SLUG = new Map(ENTRIES.map((e) => [e.slug, e]));
