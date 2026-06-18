@@ -90,8 +90,8 @@ function mapBotStatus(status: string): DashBot["status"] {
 export default async function Home() {
   const session = await auth();
 
-  // Unauthenticated → marketing landing
-  if (!session?.user) {
+  // Unauthenticated (or session missing a user id) → marketing landing
+  if (!session?.user?.id) {
     return (
       <>
         <script
