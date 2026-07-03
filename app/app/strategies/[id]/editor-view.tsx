@@ -4041,14 +4041,34 @@ function ConditionDrawer({
 
   // Popover shared style helper — keeps the inline style objects DRY.
   const { isMobile } = useBreakpoint();
+  // Header "Templates" dropdown — right-aligned to its trigger so a wide panel
+  // grows leftward into the drawer instead of spilling past the right-docked
+  // drawer / window edge.
   const popoverStyle: React.CSSProperties = {
     position: "absolute",
     top: "calc(100% + 6px)",
-    left: 0,
+    right: 0,
     zIndex: 10,
     minWidth: isMobile ? undefined : 280,
     maxWidth: isMobile ? undefined : 360,
     width: isMobile ? "100%" : undefined,
+    background: T.surface2 ?? T.surface,
+    boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 8px 24px rgba(0,0,0,0.18)`,
+    borderRadius: 10,
+    padding: 14,
+  };
+  // Sentence-builder token popovers (indicator / operator / value). Anchored to
+  // the full width of the sentence ROW rather than the individual pill, so a
+  // drawer-width panel always drops straight down and stays inside the drawer.
+  // (Pill-anchored popovers grew sideways off the right-docked drawer and got
+  // clipped by its overflow:hidden.) Relies on the sentence row being
+  // position:relative and the pill wrappers being position:static.
+  const sentencePopoverStyle: React.CSSProperties = {
+    position: "absolute",
+    top: "calc(100% + 8px)",
+    left: 0,
+    right: 0,
+    zIndex: 10,
     background: T.surface2 ?? T.surface,
     boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 8px 24px rgba(0,0,0,0.18)`,
     borderRadius: 10,
@@ -4165,10 +4185,13 @@ function ConditionDrawer({
       {/* ── Body: "Fire when [LHS ▾] [op ▾] [RHS ▾] ." ── */}
       <div className="psx-thin-scroll" style={{ flex: 1, minHeight: 0, overflowX: "hidden", overflowY: "auto", padding: "20px 20px 16px" }}>
 
-        {/* Prose line + token pills — the sentence-as-form */}
+        {/* Prose line + token pills — the sentence-as-form. position:relative so
+            the token popovers below anchor to the full row width (drawer inner
+            width) rather than their individual pill — keeps them inside the drawer. */}
         <div
           aria-live="polite"
           style={{
+            position: "relative",
             display: "flex",
             flexWrap: "wrap",
             alignItems: "center",
@@ -4189,7 +4212,7 @@ function ConditionDrawer({
           </span>
 
           {/* Token 1 — LHS indicator */}
-          <div ref={lhsWrapRef} style={{ position: "relative" }}>
+          <div ref={lhsWrapRef} style={{ position: "static" }}>
             <TokenPill
               label={lhsPillLabel}
               onClick={() => setOpenPopover(openPopover === "lhs" ? null : "lhs")}
@@ -4201,7 +4224,7 @@ function ConditionDrawer({
                 role="dialog"
                 aria-modal="false"
                 aria-label="Indicator settings"
-                style={popoverStyle}
+                style={sentencePopoverStyle}
               >
                 {/* Indicator picker */}
                 <Kicker info={FIELD_INFO.indicator}>indicator</Kicker>
@@ -4301,7 +4324,7 @@ function ConditionDrawer({
           </div>
 
           {/* Token 2 — Operator */}
-          <div ref={opWrapRef} style={{ position: "relative" }}>
+          <div ref={opWrapRef} style={{ position: "static" }}>
             <TokenPill
               label={OPERATOR_PILL[op]}
               onClick={() => setOpenPopover(openPopover === "op" ? null : "op")}
@@ -4313,7 +4336,7 @@ function ConditionDrawer({
                 role="dialog"
                 aria-modal="false"
                 aria-label="Operator picker"
-                style={{ ...popoverStyle, minWidth: 260 }}
+                style={sentencePopoverStyle}
               >
                 {/* Two-tab strip: Compare | Cross */}
                 <div
@@ -4427,7 +4450,7 @@ function ConditionDrawer({
           </div>
 
           {/* Token 3 — RHS value */}
-          <div ref={rhsWrapRef} style={{ position: "relative" }}>
+          <div ref={rhsWrapRef} style={{ position: "static" }}>
             <TokenPill
               label={rhsPillLabel}
               onClick={() => setOpenPopover(openPopover === "rhs" ? null : "rhs")}
@@ -4439,7 +4462,7 @@ function ConditionDrawer({
                 role="dialog"
                 aria-modal="false"
                 aria-label="Comparison value"
-                style={popoverStyle}
+                style={sentencePopoverStyle}
               >
                 {/* Three-tab strip: Number | Indicator | Expression */}
                 <div

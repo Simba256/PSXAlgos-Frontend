@@ -5,6 +5,7 @@ import { type ReactNode } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
 import { EditorialHeader, Kicker, Btn } from "@/components/atoms";
+import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick, clampPx } from "@/components/responsive";
 import { useRouter } from "next/navigation";
 
@@ -201,7 +202,7 @@ export function DashboardView({
           }
         >
           {bots.length === 0 ? (
-            <EmptyNote>No active bots yet. Deploy a strategy to start one.</EmptyNote>
+            <BotsEmpty accent={lines.bots} onCreate={() => router.push("/bots/new")} />
           ) : (
             bots.map((b) => <BotRow key={b.id} bot={b} />)
           )}
@@ -294,7 +295,13 @@ export function DashboardView({
                 </span>
               )}
             </div>
-            <PortfolioChart data={portfolioSeries} />
+            {portfolioSeries.length < 2 ? (
+              // No realized-P&L curve to draw yet → offer a way to log a trade
+              // in place of the chart.
+              <PortfolioEmptyChart onLog={() => router.push("/portfolio")} />
+            ) : (
+              <PortfolioChart data={portfolioSeries} />
+            )}
           </div>
 
           {/* Snapshot highlights */}
@@ -364,7 +371,7 @@ export function DashboardView({
             </div>
           )}
           {signals.length === 0 && (
-            <EmptyNote>No signals have fired today.</EmptyNote>
+            <SignalsEmpty onCreate={() => router.push("/strategies/new")} />
           )}
         </DashCard>
       </div>
@@ -417,6 +424,8 @@ function DashCard({
           overflowY: "auto",
           padding: "0 16px",
           minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
         }}
       >
         {children}
@@ -454,19 +463,109 @@ function CardFooter({ left, right }: { left: ReactNode; right: ReactNode }) {
 
 // ── Shared ─────────────────────────────────────────────────────────────────────
 
-function EmptyNote({ children }: { children: ReactNode }) {
+// Large robot illustration for the empty bots card — a scaled-up version of
+// the bots glyph (Icon.bot), tinted with the card's accent.
+function RobotGlyph({ color, size = 56 }: { color: string; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" aria-hidden focusable={false}>
+      <g
+        fill="none"
+        stroke={color}
+        strokeWidth={0.9}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <rect x="2" y="4.5" width="10" height="7" rx="1.5" />
+        <path d="M7 2v2.5M5 11.5v1M9 11.5v1" />
+      </g>
+      <circle cx="5" cy="8" r="1" fill={color} />
+      <circle cx="9" cy="8" r="1" fill={color} />
+    </svg>
+  );
+}
+
+// ── Empty states (only rendered when a card has no data) ─────────────────────
+
+// Bots card, no bots yet: a robot above a caption, with a Create-a-bot CTA
+// pinned to the bottom of the box.
+function BotsEmpty({ accent, onCreate }: { accent: string; onCreate: () => void }) {
+  const T = useT();
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "20px 0 16px", minHeight: 200 }}>
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 12,
+          textAlign: "center",
+        }}
+      >
+        <RobotGlyph color={accent} />
+        <div style={{ fontFamily: T.fontMono, fontSize: 11.5, color: T.text3, lineHeight: 1.5 }}>
+          No active bots yet.
+          <br />
+          Spin one up to start paper-trading.
+        </div>
+      </div>
+      <Btn variant="primary" size="sm" icon={Icon.plus} onClick={onCreate} style={{ alignSelf: "center" }}>
+        Create a bot
+      </Btn>
+    </div>
+  );
+}
+
+// Portfolio card, no realized P&L yet: a Log-a-trade CTA in place of the chart
+// placeholder text (same dashed frame and height as the chart it replaces).
+function PortfolioEmptyChart({ onLog }: { onLog: () => void }) {
   const T = useT();
   return (
     <div
       style={{
-        padding: "20px 0",
-        fontFamily: T.fontMono,
-        fontSize: 11.5,
-        color: T.text3,
-        lineHeight: 1.5,
+        height: 96,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        border: `1px dashed ${T.outlineVariant}`,
+        borderRadius: 6,
+        padding: "0 14px",
       }}
     >
-      {children}
+      <Btn variant="primary" size="sm" icon={Icon.plus} onClick={onLog}>
+        Log a trade
+      </Btn>
+    </div>
+  );
+}
+
+// Signals card, no signals yet: a caption with a Create-new-strategy CTA pinned
+// to the bottom of the box (signals only flow once a strategy exists).
+function SignalsEmpty({ onCreate }: { onCreate: () => void }) {
+  const T = useT();
+  return (
+    <div
+      style={{
+        marginTop: "auto",
+        borderTop: `1px solid ${T.outlineFaint}`,
+        paddingTop: 16,
+        paddingBottom: 8,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 12,
+        textAlign: "center",
+      }}
+    >
+      <div style={{ fontFamily: T.fontMono, fontSize: 11.5, color: T.text3, lineHeight: 1.5 }}>
+        No signals have fired today.
+        <br />
+        Create a strategy to start generating them.
+      </div>
+      <Btn variant="primary" size="sm" icon={Icon.plus} onClick={onCreate}>
+        Create new strategy
+      </Btn>
     </div>
   );
 }

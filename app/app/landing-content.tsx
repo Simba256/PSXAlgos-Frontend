@@ -50,11 +50,15 @@ export default function LandingContent() {
           gridTemplateColumns: pick(bp, { mobile: "1fr", tablet: "1fr", desktop: "1.15fr 1fr" }),
           gap: pick(bp, { mobile: 32, tablet: 40, desktop: 64 }),
           alignItems: "center",
-          maxWidth: 1400,
-          margin: "0 auto",
+          // No maxWidth: the hero spans the full page width like the sections
+          // below it, so when zoomed out it stays aligned with them instead of
+          // floating centered in a 1400px island.
         }}
       >
-        <div>
+        {/* containerType makes the headline below size to THIS column (cqi),
+            not the viewport, so it always fits at any zoom. minWidth lets the
+            grid track shrink instead of forcing horizontal page overflow. */}
+        <div style={{ containerType: "inline-size", minWidth: 0 }}>
           <div
             style={{
               display: "inline-flex",
@@ -89,7 +93,11 @@ export default function LandingContent() {
           <h1
             style={{
               fontFamily: T.fontHead,
-              fontSize: clampPx(40, 9, 76),
+              // Sized to the text column (cqi), capped at 76px. Scales down on
+              // narrower columns so "Write strategies." never overflows — at
+              // any zoom level, on any width. (Was clampPx(40,9,76), which
+              // stuck at 76px and overran the column on narrow/zoomed views.)
+              fontSize: "clamp(34px, 11cqi, 76px)",
               fontWeight: 500,
               letterSpacing: "-0.03em",
               lineHeight: 1,
