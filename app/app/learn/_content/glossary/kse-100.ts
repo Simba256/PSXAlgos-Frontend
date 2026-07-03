@@ -110,7 +110,7 @@ export const kse100: GlossaryEntry = {
     { slug: "kse-30", label: "KSE-30 Index" },
     { slug: "kmi-30", label: "KMI-30 Index" },
     { slug: "kse-all-share", label: "KSE All-Share Index" },
-    { slug: "t-plus-2-settlement", label: "T+2 Settlement" },
+    { slug: "settlement-cycle", label: "T+1 Settlement" },
   ],
   author: "PSX Algos",
   published: "2026-06-01",

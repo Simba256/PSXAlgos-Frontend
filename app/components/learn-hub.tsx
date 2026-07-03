@@ -14,17 +14,21 @@ export interface HubItem {
 }
 
 const CATEGORY_LABEL: Record<GlossaryCategory, string> = {
+  basics: "Trading basics",
   index: "Indices",
   structure: "Market structure",
   indicator: "Indicators",
+  strategy: "Strategies",
   tax: "Tax & rules",
   account: "Accounts & access",
 };
 
 const CATEGORY_ORDER: GlossaryCategory[] = [
+  "basics",
   "index",
   "structure",
   "indicator",
+  "strategy",
   "tax",
   "account",
 ];
