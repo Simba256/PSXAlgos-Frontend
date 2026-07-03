@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
-import { Btn, DotRow, EditorialHeader, Kicker, Ribbon } from "@/components/atoms";
+import { Btn, EditorialHeader, Kicker } from "@/components/atoms";
+import { Disclosure } from "@/components/disclosure";
+import { useSessionStorage } from "@/components/use-session-storage";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
 import {
@@ -20,25 +22,41 @@ import {
   type RiskControlsValue,
 } from "@/components/risk-controls-section";
 import type { BotCreateBody, BotResponse } from "@/lib/api/bots";
-import type { DefaultRisk, StrategyResponse } from "@/lib/api/strategies";
+import type {
+  DefaultRisk,
+  StrategyResponse,
+  StrategyListResponse,
+  StrategyStatus,
+} from "@/lib/api/strategies";
 import { getAllStocks, type StockResponse } from "@/lib/api/stocks";
 
 interface StrategyPreview {
   name: string;
-  totalReturnPct: number | null;
-  sharpe: number | null;
   status: StrategyResponse["status"];
   // Hybrid exits (Option C): the strategy may carry default risk caps that
-  // bot fields inherit when left null. Threaded through to UniverseAndRiskFields
-  // so the four exit-risk inputs render as InheritableField with ghost +
+  // bot fields inherit when left null. Threaded through to the risk grid so
+  // the four exit-risk inputs render as InheritableField with ghost +
   // override UX. See `docs/EXITS_IMPLEMENTATION_PLAN.md` Phase 5.
   defaultRisk: DefaultRisk | null;
 }
 
-// Computed lazily per-mount so a wizard opened after midnight uses today's
+// Computed lazily per-mount so a form opened after midnight uses today's
 // date instead of the date the module was first evaluated.
 function defaultBotName(): string {
   return `Bot ${new Date().toISOString().slice(0, 10)}`;
+}
+
+function formatPkr(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  return new Intl.NumberFormat("en-PK").format(Math.round(n));
+}
+
+function compactPkr(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  if (n >= 1_000_000)
+    return `${(n / 1_000_000).toLocaleString("en-PK", { maximumFractionDigits: 1 })}M`;
+  if (n >= 1_000) return `${Math.round(n / 1000)}K`;
+  return `${n}`;
 }
 
 // Unwraps the Next proxy / FastAPI error envelope into a single readable
@@ -75,10 +93,17 @@ function formatLaunchError(err: unknown, status: number): string {
   return `Create failed (${status})`;
 }
 
-export default function BotWizardPage() {
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+export default function BotNewPage() {
   const [strategyId, setStrategyId] = useState<number | null>(null);
   const [strategy, setStrategy] = useState<StrategyPreview | null>(null);
+  // The user's strategies, for the in-form picker — so "Create bot" is a
+  // self-contained flow (like /backtest/new) and doesn't require opening a
+  // strategy first. Pre-selected when a strategy_id arrives via the URL
+  // (e.g. the editor's "Spin up bot" pill).
+  const [strategies, setStrategies] = useState<
+    { id: number; name: string; status: StrategyStatus }[]
+  >([]);
+  const [strategiesLoading, setStrategiesLoading] = useState(true);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
   // useTransition's `pending` only flips once the post-fetch router.push
   // runs inside startTransition, so it can't guard the fetch itself.
@@ -91,18 +116,25 @@ export default function BotWizardPage() {
   const { bp, isMobile } = useBreakpoint();
   const padX = pick(bp, PAD.page);
 
-  // Wizard form state — single source of truth for all three stages.
+  // Form state — single source of truth for the whole page.
   const [name, setName] = useState(defaultBotName);
   const [allocatedCapital, setAllocatedCapital] = useState<number>(1_000_000);
-  const [maxPositions, setMaxPositions] = useState<number>(5);
-  const [universeAndRisk, setUniverseAndRisk] = useState<UniverseAndRiskValue>(
-    EMPTY_UNIVERSE_AND_RISK,
-  );
+  // Holds universe scope + the risk guardrails + max_positions. Seeded with
+  // max_positions: 5 so the default matches the old wizard's sizing default
+  // even when the user never opens the "risk caps" disclosure.
+  const [universeAndRisk, setUniverseAndRisk] = useState<UniverseAndRiskValue>({
+    ...EMPTY_UNIVERSE_AND_RISK,
+    max_positions: 5,
+  });
   // B2 — bot-level risk controls. Opt-in; blank fields = control off.
-  // Threaded through to the BotCreate request body in onLaunch.
   const [riskControls, setRiskControls] = useState<RiskControlsValue>(
     EMPTY_RISK_CONTROLS,
   );
+  // Two independent disclosures sit side by side — "risk caps" (the trade
+  // guardrails) on the left, "risk controls" (the opt-in safety nets) on the
+  // right. Separate open keys so each remembers its own state.
+  const [capsOpen, setCapsOpen] = useSessionStorage<boolean>("psx:bot:caps-open", false);
+  const [controlsOpen, setControlsOpen] = useSessionStorage<boolean>("psx:bot:controls-open", false);
 
   // PSX stock universe — fetched once on mount, used for sector + symbol pickers.
   const [stocks, setStocks] = useState<StockResponse[]>([]);
@@ -132,7 +164,7 @@ export default function BotWizardPage() {
     if (Number.isFinite(n) && n > 0) setStrategyId(n);
   }, []);
 
-  // Fetch strategy preview. Failures here are non-fatal (preview shows "—").
+  // Fetch strategy preview. Failures here are non-fatal.
   useEffect(() => {
     if (!strategyId) return;
     let cancelled = false;
@@ -141,17 +173,9 @@ export default function BotWizardPage() {
         const res = await fetch(`/api/strategies/${strategyId}`);
         if (!res.ok || cancelled) return;
         const s = (await res.json()) as StrategyResponse;
-        const lb = s.latest_backtest ?? null;
-        const toNum = (v: number | string | null | undefined): number | null => {
-          if (v === null || v === undefined) return null;
-          const n = typeof v === "number" ? v : Number(v);
-          return Number.isFinite(n) ? n : null;
-        };
         if (cancelled) return;
         setStrategy({
           name: s.name,
-          totalReturnPct: toNum(lb?.total_return_pct),
-          sharpe: toNum(lb?.sharpe_ratio),
           status: s.status,
           defaultRisk: s.exit_rules?.default_risk ?? null,
         });
@@ -176,11 +200,35 @@ export default function BotWizardPage() {
     };
   }, []);
 
+  // Load the user's strategies once for the picker. Non-fatal on failure —
+  // the picker just shows the "no strategies" copy.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/strategies", { cache: "no-store" });
+        if (!res.ok || cancelled) return;
+        const body = (await res.json()) as StrategyListResponse;
+        if (cancelled) return;
+        setStrategies(
+          body.items.map((s) => ({ id: s.id, name: s.name, status: s.status })),
+        );
+      } catch {
+        // swallow — leaves the list empty
+      } finally {
+        if (!cancelled) setStrategiesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function onLaunch() {
     if (submitting) return;
     setSubmitErr(null);
     if (!strategyId) {
-      setSubmitErr("Open a strategy and use 'Spin up bot' to bind one.");
+      setSubmitErr("Pick a strategy to bind this bot to.");
       return;
     }
     if (!name.trim()) {
@@ -188,7 +236,7 @@ export default function BotWizardPage() {
       return;
     }
     if (!Number.isFinite(allocatedCapital) || allocatedCapital <= 0) {
-      setSubmitErr("Allocated capital must be greater than zero.");
+      setSubmitErr("Starting capital must be greater than zero.");
       return;
     }
     // Universe scope guard — surfaces inline rather than letting the
@@ -205,7 +253,7 @@ export default function BotWizardPage() {
       strategy_id: strategyId,
       name: name.trim(),
       allocated_capital: allocatedCapital,
-      max_positions: maxPositions,
+      max_positions: universeAndRisk.max_positions ?? 5,
       universe_scope: universeAndRisk.universe_scope,
       stock_filters: universeAndRisk.stock_filters,
       stock_symbols: universeAndRisk.stock_symbols,
@@ -240,7 +288,6 @@ export default function BotWizardPage() {
           const msg = (err as { error?: string }).error ?? `A bot named "${name.trim()}" already exists — pick a different name.`;
           setSubmitErr(msg);
           setNameError(true);
-          setStep(1);
           setSubmitting(false);
           return;
         }
@@ -257,6 +304,22 @@ export default function BotWizardPage() {
     }
     startTransition(() => router.push(`/bots/${bot.id}`));
   }
+
+  const launching = pending || submitting;
+  const riskActiveCount = (Object.values(riskControls) as Array<number | null>).filter(
+    (v) => v !== null,
+  ).length;
+  const capsSummary = (() => {
+    const parts: string[] = [];
+    if (universeAndRisk.stop_loss_pct != null) parts.push(`stop ${universeAndRisk.stop_loss_pct}%`);
+    if (universeAndRisk.take_profit_pct != null) parts.push(`take ${universeAndRisk.take_profit_pct}%`);
+    if (universeAndRisk.max_positions != null) parts.push(`max ${universeAndRisk.max_positions} pos`);
+    return parts.length ? parts.join(" · ") : "defaults";
+  })();
+  const controlsSummary =
+    riskActiveCount > 0
+      ? `${riskActiveCount} active`
+      : "off";
 
   return (
     <AppFrame route="/bots">
@@ -279,7 +342,6 @@ export default function BotWizardPage() {
           }
           meta={
             <>
-              <span>Step {step} of 3</span>
               <span>
                 Bound to{" "}
                 {strategyId && strategy ? (
@@ -309,140 +371,106 @@ export default function BotWizardPage() {
 
         <div
           style={{
-            padding: `14px ${padX}`,
-            borderBottom: `1px solid ${T.outlineFaint}`,
-            display: "flex",
-            alignItems: isMobile ? "stretch" : "center",
-            flexDirection: isMobile ? "column" : "row",
-            gap: isMobile ? 10 : 0,
-          }}
-        >
-          {(
-            [
-              ["01", "Capital", "starting balance & sizing"],
-              ["02", "Universe", "what to scan"],
-              ["03", "Safety rails", "when to halt"],
-            ] as const
-          ).map(([n, t, d], i) => {
-            const active = i + 1 === step;
-            const done = i + 1 < step;
-            return (
-              <div
-                key={n}
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 14,
-                  opacity: active || done ? 1 : 0.45,
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: T.fontHead,
-                    fontSize: 28,
-                    fontWeight: 300,
-                    fontStyle: "italic",
-                    color: active ? T.accent : done ? T.gain : T.text3,
-                  }}
-                >
-                  {n}
-                </span>
-                <div>
-                  <div style={{ fontFamily: T.fontHead, fontSize: 14, fontWeight: 500 }}>
-                    {t}{" "}
-                    {done && (
-                      <span style={{ color: T.gain, fontSize: 11, marginLeft: 6 }}>✓</span>
-                    )}
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: T.fontMono,
-                      fontSize: 10,
-                      color: T.text3,
-                      textTransform: "uppercase",
-                      letterSpacing: 0.7,
-                      marginTop: 3,
-                    }}
-                  >
-                    {d}
-                  </div>
-                </div>
-                {i < 2 && (
-                  <div
-                    style={{
-                      flex: 1,
-                      height: 1,
-                      background: done ? T.gain + "66" : T.outlineFaint,
-                      marginLeft: 20,
-                    }}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        <div
-          style={{
             flex: 1,
             overflow: "auto",
             padding: pick(bp, {
-              mobile: `24px ${padX} 28px`,
-              desktop: `36px ${padX} 40px`,
+              mobile: `20px ${padX} 28px`,
+              desktop: `28px ${padX} 40px`,
             }),
-            display: "grid",
-            gridTemplateColumns: pick(bp, {
-              mobile: "minmax(0, 1fr)",
-              tablet: "minmax(0, 1fr)",
-              desktop: "minmax(0, 1.1fr) minmax(0, 1fr)",
-            }),
-            gap: pick(bp, { mobile: 28, desktop: 60 }),
+            scrollPaddingBottom: 96,
           }}
         >
-          <div>
-            {step === 1 && (
-              <CapitalStep
-                name={name}
-                onName={(v) => { setName(v); setNameError(false); setSubmitErr(null); }}
-                allocatedCapital={allocatedCapital}
-                onAllocatedCapital={setAllocatedCapital}
-                maxPositions={maxPositions}
-                onMaxPositions={setMaxPositions}
-                nameError={nameError}
-              />
-            )}
-            {step === 2 && (
-              <UniverseAndRiskFields
-                value={universeAndRisk}
-                onChange={setUniverseAndRisk}
-                availableSectors={availableSectors}
-                availableSymbols={availableSymbols}
-                showRisk={false}
-              />
-            )}
-            {step === 3 && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 32,
+              minWidth: 0,
+              maxWidth: 760,
+            }}
+          >
+            <StrategyPickerField
+              strategies={strategies}
+              value={strategyId}
+              loading={strategiesLoading}
+              onChange={(id) => {
+                setStrategyId(id);
+                setSubmitErr(null);
+              }}
+            />
+
+            <NameField
+              name={name}
+              onName={(v) => {
+                setName(v);
+                setNameError(false);
+                setSubmitErr(null);
+              }}
+              nameError={nameError}
+            />
+
+            <CapitalField
+              value={allocatedCapital}
+              onChange={setAllocatedCapital}
+              disabled={launching}
+            />
+
+            <UniverseAndRiskFields
+              value={universeAndRisk}
+              onChange={setUniverseAndRisk}
+              availableSectors={availableSectors}
+              availableSymbols={availableSymbols}
+              showRisk={false}
+              scopeVariant="dropdown"
+              disabled={launching}
+            />
+
+            {/* Risk caps (left) and risk controls (right) — two equal-width
+                disclosures sitting alongside each other, each opening
+                independently into the same bar grid as the backtest form.
+                Stacks to one column on phones. */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: pick(bp, { mobile: "1fr", desktop: "1fr 1fr" }),
+                gap: pick(bp, { mobile: 8, desktop: 24 }),
+                alignItems: "start",
+              }}
+            >
+              <Disclosure
+                label="risk caps"
+                summary={capsSummary}
+                open={capsOpen}
+                onToggle={() => setCapsOpen((v) => !v)}
+                tone="muted"
+              >
                 <UniverseAndRiskFields
                   value={universeAndRisk}
                   onChange={setUniverseAndRisk}
                   availableSectors={availableSectors}
                   availableSymbols={availableSymbols}
                   showUniverse={false}
+                  riskBare
                   strategyDefaults={strategy?.defaultRisk ?? null}
+                  disabled={launching}
                 />
-                <RiskControlsSection value={riskControls} onChange={setRiskControls} />
-              </div>
-            )}
+              </Disclosure>
+
+              <Disclosure
+                label="risk controls"
+                summary={controlsSummary}
+                open={controlsOpen}
+                onToggle={() => setControlsOpen((v) => !v)}
+                tone="muted"
+              >
+                <RiskControlsSection
+                  value={riskControls}
+                  onChange={setRiskControls}
+                  variant="compact"
+                />
+              </Disclosure>
+            </div>
           </div>
-          <Preview
-            step={step}
-            strategy={strategy}
-            name={name}
-            allocatedCapital={allocatedCapital}
-            maxPositions={maxPositions}
-            value={universeAndRisk}
-          />
         </div>
 
         <div
@@ -459,32 +487,21 @@ export default function BotWizardPage() {
             Paper-trading · no real broker connected
           </span>
           <div style={{ flex: 1 }} />
-          {step > 1 && (
-            <Btn variant="ghost" size="md" onClick={() => setStep((s) => (s - 1) as 1 | 2 | 3)}>
-              ← Back
-            </Btn>
-          )}
-          {step < 3 && (
-            <Btn variant="primary" size="md" onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3)}>
-              Continue →
-            </Btn>
-          )}
-          {step === 3 && (
-            <Btn
-              variant="deploy"
-              size="md"
-              icon={Icon.spark}
-              onClick={() => {
-                if (pending || submitting) return;
-                void onLaunch();
-              }}
-              style={
-                pending || submitting ? { opacity: 0.6, cursor: "wait" } : undefined
-              }
-            >
-              {pending || submitting ? "Launching…" : "Launch bot →"}
-            </Btn>
-          )}
+          <Btn
+            variant="deploy"
+            size="md"
+            icon={Icon.spark}
+            onClick={() => {
+              if (launching) return;
+              void onLaunch();
+            }}
+            style={{
+              ...(launching ? { opacity: 0.6, cursor: "wait" } : undefined),
+              ...(isMobile ? { width: "100%", justifyContent: "center" } : undefined),
+            }}
+          >
+            {launching ? "Launching…" : "Launch bot →"}
+          </Btn>
         </div>
         {submitErr && (
           <div
@@ -506,336 +523,254 @@ export default function BotWizardPage() {
   );
 }
 
-function CapitalStep({
-  name,
-  onName,
-  allocatedCapital,
-  onAllocatedCapital,
-  maxPositions,
-  onMaxPositions,
-  nameError = false,
+function StrategyPickerField({
+  strategies,
+  value,
+  loading,
+  onChange,
 }: {
-  name: string;
-  onName: (v: string) => void;
-  allocatedCapital: number;
-  onAllocatedCapital: (v: number) => void;
-  maxPositions: number;
-  onMaxPositions: (v: number) => void;
-  nameError?: boolean;
+  strategies: { id: number; name: string; status: StrategyStatus }[];
+  value: number | null;
+  loading: boolean;
+  onChange: (id: number | null) => void;
 }) {
   const T = useT();
-  const presets = [100_000, 500_000, 1_000_000, 5_000_000, 10_000_000];
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+  // No strategies yet — a bot can't exist without one, so point the user at
+  // the strategy builder instead of an empty dropdown.
+  if (!loading && strategies.length === 0) {
+    return (
       <div>
-        <Kicker>bot name</Kicker>
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => onName(e.target.value)}
-          placeholder="e.g. Momentum · live"
-          aria-label="Bot name"
-          style={{
-            marginTop: 10,
-            background: T.surface,
-            color: T.text,
-            border: "none",
-            boxShadow: `0 0 0 1px ${nameError ? T.loss : T.outlineFaint}`,
-            borderRadius: 6,
-            padding: "10px 14px",
-            fontFamily: T.fontSans,
-            fontSize: 15,
-            width: "100%",
-            maxWidth: 420,
-            outline: nameError ? `2px solid ${T.loss}` : "none",
-          }}
-        />
-        {nameError && (
-          <div
-            style={{
-              marginTop: 6,
-              fontSize: 12,
-              color: T.loss,
-              fontFamily: "inherit",
-            }}
-          >
-            This name is already taken — enter a different one.
-          </div>
-        )}
-      </div>
-
-      <div>
-        <Kicker info="Paper money the bot starts with. Used for sizing each trade.">
-          starting capital · PKR
+        <Kicker info="A bot trades one of your strategies. Build a strategy first, then spin up a bot from it.">
+          strategy
         </Kicker>
         <div
           style={{
-            marginTop: 12,
-            fontFamily: T.fontHead,
-            fontSize: "clamp(40px, 10vw, 64px)",
-            fontWeight: 500,
-            letterSpacing: -1.4,
-            color: T.text,
-            lineHeight: 1.05,
+            marginTop: 10,
+            fontFamily: T.fontSans,
+            fontSize: 13,
+            color: T.text3,
+            lineHeight: 1.6,
+            maxWidth: 420,
           }}
         >
+          You don&apos;t have any strategies yet.{" "}
+          <Link href="/strategies/new" style={{ color: T.primaryLight }}>
+            Create one
+          </Link>{" "}
+          first, then come back to launch a bot.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Kicker info="The entry/exit rules this bot will trade. Pick one of your strategies.">
+        strategy
+      </Kicker>
+      <select
+        value={value ?? ""}
+        disabled={loading}
+        aria-label="Strategy to bind"
+        onChange={(e) => onChange(e.target.value ? parseInt(e.target.value, 10) : null)}
+        style={{
+          marginTop: 10,
+          background: T.surface,
+          color: value ? T.text : T.text3,
+          border: "none",
+          boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+          borderRadius: 6,
+          padding: "10px 14px",
+          fontFamily: T.fontSans,
+          fontSize: 15,
+          width: "100%",
+          maxWidth: 420,
+          cursor: loading ? "wait" : "pointer",
+        }}
+      >
+        <option value="">
+          {loading ? "Loading strategies…" : "Select a strategy…"}
+        </option>
+        {strategies.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name}
+            {s.status !== "ACTIVE" ? ` · ${s.status.toLowerCase()}` : ""}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function NameField({
+  name,
+  onName,
+  nameError,
+}: {
+  name: string;
+  onName: (v: string) => void;
+  nameError: boolean;
+}) {
+  const T = useT();
+  return (
+    <div>
+      <Kicker>bot name</Kicker>
+      <input
+        type="text"
+        value={name}
+        onChange={(e) => onName(e.target.value)}
+        placeholder="e.g. Momentum · live"
+        aria-label="Bot name"
+        style={{
+          marginTop: 10,
+          background: T.surface,
+          color: T.text,
+          border: "none",
+          boxShadow: `0 0 0 1px ${nameError ? T.loss : T.outlineFaint}`,
+          borderRadius: 6,
+          padding: "10px 14px",
+          fontFamily: T.fontSans,
+          fontSize: 15,
+          width: "100%",
+          maxWidth: 420,
+          outline: nameError ? `2px solid ${T.loss}` : "none",
+        }}
+      />
+      {nameError && (
+        <div style={{ marginTop: 6, fontSize: 12, color: T.loss }}>
+          This name is already taken — enter a different one.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Starting-capital field — mirrors the backtest "initial capital · pkr"
+// control: a Rs-prefixed text input (formatted with commas when blurred) plus
+// quick-pick preset pills.
+function CapitalField({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  disabled: boolean;
+}) {
+  const T = useT();
+  const presets = [100_000, 500_000, 1_000_000, 5_000_000, 10_000_000];
+  // Local string state so the user can type freely (clearing the input,
+  // typing intermediate states) without the parent committing every keystroke
+  // at sub-1 values.
+  const [text, setText] = useState(String(value));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setText(String(value));
+  }, [value, focused]);
+
+  const displayValue = focused
+    ? text
+    : Number.isFinite(Number(text.replace(/,/g, "")))
+      ? formatPkr(Number(text.replace(/,/g, "")))
+      : text;
+
+  return (
+    <div>
+      <Kicker info="Paper money the bot starts with. Used to size each simulated trade.">
+        starting capital · pkr
+      </Kicker>
+      <div
+        style={{
+          marginTop: 10,
+          display: "flex",
+          alignItems: "center",
+          gap: 14,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ position: "relative" }}>
+          <span
+            aria-hidden
+            style={{
+              position: "absolute",
+              left: 14,
+              top: "50%",
+              transform: "translateY(-50%)",
+              fontFamily: T.fontMono,
+              fontSize: 12,
+              color: T.text3,
+              pointerEvents: "none",
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+            }}
+          >
+            Rs
+          </span>
           <input
-            type="number"
-            value={allocatedCapital}
-            min={1}
-            step={10000}
+            type="text"
+            inputMode="numeric"
             aria-label="Starting capital in PKR"
+            value={displayValue}
+            disabled={disabled}
+            onFocus={() => setFocused(true)}
             onChange={(e) => {
-              const n = parseFloat(e.target.value);
-              if (Number.isFinite(n) && n > 0) onAllocatedCapital(n);
+              const raw = e.target.value.replace(/,/g, "");
+              setText(raw);
+              const n = parseFloat(raw);
+              if (Number.isFinite(n) && n > 0) onChange(n);
+            }}
+            onBlur={() => {
+              setFocused(false);
+              const n = parseFloat(text.replace(/,/g, ""));
+              if (Number.isFinite(n) && n > 0) {
+                onChange(n);
+                setText(String(n));
+              }
             }}
             style={{
-              background: "transparent",
+              background: T.surface,
               color: T.text,
               border: "none",
-              outline: "none",
-              padding: 0,
-              fontFamily: T.fontHead,
-              fontSize: "inherit",
-              fontWeight: 500,
-              letterSpacing: -1.4,
-              width: "100%",
-              maxWidth: 360,
+              boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+              borderRadius: 6,
+              padding: "10px 14px 10px 38px",
+              fontFamily: T.fontMono,
+              fontSize: 14,
+              fontVariantNumeric: "tabular-nums",
+              width: 220,
+              opacity: disabled ? 0.6 : 1,
             }}
           />
         </div>
-        <div style={{ marginTop: 14, display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {presets.map((amount) => {
-            const active = allocatedCapital === amount;
-            const label = amount >= 1_000_000 ? `${amount / 1_000_000}M` : `${amount / 1000}K`;
+            const active = value === amount;
             return (
               <button
                 key={amount}
                 type="button"
-                onClick={() => onAllocatedCapital(amount)}
+                onClick={() => onChange(amount)}
+                disabled={disabled}
                 aria-pressed={active}
                 style={{
                   fontFamily: T.fontMono,
                   fontSize: 11,
-                  padding: "6px 14px",
+                  padding: "6px 12px",
                   borderRadius: 999,
                   background: active ? T.primary : "transparent",
                   color: active ? "#fff" : T.text2,
                   border: `1px solid ${active ? T.primary : T.outlineFaint}`,
-                  cursor: "pointer",
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.5 : 1,
                 }}
               >
-                {label}
+                {compactPkr(amount)}
               </button>
             );
           })}
         </div>
       </div>
-
-      <div>
-        <Kicker info="Cap on how many positions the bot can hold open at the same time.">
-          max concurrent positions
-        </Kicker>
-        <input
-          type="number"
-          value={maxPositions}
-          min={1}
-          max={20}
-          step={1}
-          aria-label="Max concurrent positions"
-          onChange={(e) => {
-            const n = parseInt(e.target.value, 10);
-            if (Number.isFinite(n) && n >= 1 && n <= 20) onMaxPositions(n);
-          }}
-          style={{
-            marginTop: 10,
-            background: T.surface,
-            color: T.text,
-            border: "none",
-            boxShadow: `0 0 0 1px ${T.outlineFaint}`,
-            borderRadius: 6,
-            padding: "10px 14px",
-            fontFamily: T.fontMono,
-            fontSize: 14,
-            width: 140,
-          }}
-        />
-      </div>
-
-      <div
-        style={{
-          padding: 14,
-          background: T.surfaceLow,
-          borderRadius: 6,
-          fontSize: 12.5,
-          color: T.text3,
-          lineHeight: 1.6,
-        }}
-      >
-        Paper money — no real broker is connected. The bot simulates a portfolio so you can see
-        how the strategy would have performed.
-      </div>
-    </div>
-  );
-}
-
-function Preview({
-  step,
-  strategy,
-  name,
-  allocatedCapital,
-  maxPositions,
-  value,
-}: {
-  step: 1 | 2 | 3;
-  strategy: StrategyPreview | null;
-  name: string;
-  allocatedCapital: number;
-  maxPositions: number;
-  value: UniverseAndRiskValue;
-}) {
-  const T = useT();
-  const fmtPct = (n: number | null): string =>
-    n === null ? "—" : `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
-  const fmtPctOrDash = (n: number | null | undefined): string =>
-    n == null ? "—" : `${n}%`;
-  const fmtNumOrDash = (n: number | null | undefined): string =>
-    n == null ? "—" : String(n);
-  // Effective-value resolver mirrors the backend's risk_inheritance service:
-  // override (form value) takes precedence; otherwise fall back to the
-  // strategy default. Returns the value plus whether it's inherited so the
-  // preview can render an "inherit" hint without lying about the active cap.
-  const eff = (
-    formValue: number | null | undefined,
-    strategyDefault: number | null | undefined,
-  ): { v: number | null; inherited: boolean } => {
-    if (formValue != null) return { v: formValue, inherited: false };
-    if (strategyDefault != null) return { v: strategyDefault, inherited: true };
-    return { v: null, inherited: false };
-  };
-  const stopLoss = eff(value.stop_loss_pct, strategy?.defaultRisk?.stop_loss_pct);
-  const takeProfit = eff(value.take_profit_pct, strategy?.defaultRisk?.take_profit_pct);
-  const trailingStop = eff(value.trailing_stop_pct, strategy?.defaultRisk?.trailing_stop_pct);
-  const maxHoldingDays = eff(value.max_holding_days, strategy?.defaultRisk?.max_holding_days);
-  const backtestColor =
-    strategy?.totalReturnPct == null
-      ? T.text3
-      : strategy.totalReturnPct >= 0
-      ? T.gain
-      : T.loss;
-
-  const filters = value.stock_filters ?? {};
-  const sectors = filters.sectors ?? [];
-  const symbols = value.stock_symbols ?? [];
-  const universeSummary = (() => {
-    // Sectors and explicit tickers compose under union semantics on the
-    // backend (B048) — both can be set and they're merged, not exclusive.
-    const parts: string[] = [];
-    if (sectors.length > 0) {
-      parts.push(sectors.length === 1 ? sectors[0] : `${sectors.length} sectors`);
-    }
-    if (symbols.length > 0) {
-      parts.push(`${symbols.length} ticker${symbols.length === 1 ? "" : "s"}`);
-    }
-    if (parts.length === 0) return "—";
-    return parts.join(" + ");
-  })();
-
-  return (
-    <div>
-      <Ribbon kicker="preview · your bot" />
-      <div style={{ marginTop: 14 }}>
-        <DotRow label="Name" value={name || "—"} bold />
-        <DotRow
-          label="Strategy"
-          value={strategy?.name ?? "—"}
-          color={strategy ? T.primaryLight : T.text3}
-        />
-        <DotRow
-          label="Last backtest"
-          value={fmtPct(strategy?.totalReturnPct ?? null)}
-          color={backtestColor}
-        />
-        <DotRow
-          label="Sharpe"
-          value={strategy?.sharpe == null ? "—" : strategy.sharpe.toFixed(2)}
-          color={strategy?.sharpe == null ? T.text3 : T.text2}
-        />
-        <DotRow
-          label="Starting capital"
-          value={`PKR ${allocatedCapital.toLocaleString()}`}
-        />
-        <DotRow label="Max concurrent" value={`${maxPositions} positions`} />
-        <DotRow
-          label="Universe"
-          value={universeSummary}
-          color={universeSummary === "—" ? T.text3 : T.text2}
-        />
-        <DotRow
-          label="Stop loss"
-          value={
-            stopLoss.v == null
-              ? "—"
-              : `${fmtPctOrDash(stopLoss.v)}${stopLoss.inherited ? " · inherited" : ""}`
-          }
-          color={stopLoss.v != null && step >= 3 ? (stopLoss.inherited ? T.text3 : T.loss) : T.text3}
-        />
-        <DotRow
-          label="Take profit"
-          value={
-            takeProfit.v == null
-              ? "—"
-              : `${fmtPctOrDash(takeProfit.v)}${takeProfit.inherited ? " · inherited" : ""}`
-          }
-          color={takeProfit.v != null && step >= 3 ? (takeProfit.inherited ? T.text3 : T.gain) : T.text3}
-        />
-        <DotRow
-          label="Trailing stop"
-          value={
-            trailingStop.v == null
-              ? "—"
-              : `${fmtPctOrDash(trailingStop.v)}${trailingStop.inherited ? " · inherited" : ""}`
-          }
-          color={trailingStop.v != null && step >= 3 ? T.text2 : T.text3}
-        />
-        <DotRow
-          label="Max holding days"
-          value={
-            maxHoldingDays.v == null
-              ? "—"
-              : `${fmtNumOrDash(maxHoldingDays.v)}${maxHoldingDays.inherited ? " · inherited" : ""}`
-          }
-          color={maxHoldingDays.v != null && step >= 3 ? T.text2 : T.text3}
-        />
-      </div>
-      {step === 3 && (
-        <div
-          style={{
-            marginTop: 28,
-            padding: 16,
-            background: T.deploy + "11",
-            borderRadius: 6,
-            border: `1px solid ${T.deploy}55`,
-          }}
-        >
-          <div
-            style={{
-              fontFamily: T.fontMono,
-              fontSize: 10.5,
-              color: T.deploy,
-              letterSpacing: 0.7,
-              textTransform: "uppercase",
-              marginBottom: 6,
-            }}
-          >
-            Ready to launch
-          </div>
-          <div style={{ fontSize: 13, color: T.text2, lineHeight: 1.55 }}>
-            Bot will start on the next market open. You can pause at any time from the dashboard.
-          </div>
-        </div>
-      )}
     </div>
   );
 }

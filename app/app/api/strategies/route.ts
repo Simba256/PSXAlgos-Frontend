@@ -30,6 +30,34 @@ function nextAvailableName(desired: string, taken: Set<string>): string {
   return `${base} (${Date.now()})`;
 }
 
+// List the signed-in user's strategies. Used by the bot wizard (/bots/new) to
+// populate its strategy picker client-side, mirroring the server-fetched list
+// the backtest wizard (/backtest/new) uses — so "Create bot" is self-contained
+// and doesn't require landing on a strategy first.
+export async function GET() {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  const jwt = signBackendJwt({
+    sub: session.user.id,
+    email: session.user.email,
+  });
+  try {
+    // page_size 100 covers every plan tier (Pro+ caps at 50).
+    const list = await getStrategies(jwt, { page: 1, page_size: 100 });
+    return NextResponse.json(list);
+  } catch (err) {
+    if (err instanceof ApiError) {
+      return NextResponse.json(
+        { error: err.message, detail: err.body },
+        { status: err.status },
+      );
+    }
+    return NextResponse.json({ error: "server error" }, { status: 500 });
+  }
+}
+
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {

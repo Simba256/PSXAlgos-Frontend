@@ -152,6 +152,8 @@ export function UniverseAndRiskFields({
   showRisk = true,
   disabled = false,
   strategyDefaults = null,
+  scopeVariant = "radio",
+  riskBare = false,
 }: {
   value: UniverseAndRiskValue;
   onChange: (next: UniverseAndRiskValue) => void;
@@ -162,6 +164,19 @@ export function UniverseAndRiskFields({
   /** Render the risk guardrail block. Default true. */
   showRisk?: boolean;
   disabled?: boolean;
+  /**
+   * How the universe scope is picked. "radio" (default) shows the stacked
+   * radio cards used by the strategy deploy modal. "dropdown" renders a
+   * single `<select>` — matches the "stocks" picker on the backtest form so
+   * the bot-create page reads identically.
+   */
+  scopeVariant?: "radio" | "dropdown";
+  /**
+   * When true the risk-guardrail grid renders bare (no "risk · guardrails"
+   * kicker / Section wrapper) so the caller can nest it inside its own
+   * collapsible "risk caps" disclosure. Default false.
+   */
+  riskBare?: boolean;
   /**
    * Strategy-level risk defaults (Option C hybrid exits). When provided, the
    * four exit-risk fields render as InheritableField — ghost when the form
@@ -236,6 +251,72 @@ export function UniverseAndRiskFields({
     });
   }
 
+  // The five guardrail inputs, shared between the standalone Section render
+  // and the `riskBare` path (caller nests this inside its own disclosure).
+  const riskGrid = (
+    <div
+      style={{
+        display: "grid",
+        // Capped max (not 1fr) so each bar keeps a fixed small size instead of
+        // stretching to fill its container — bars look identical whether this
+        // grid is full-width or sitting in a half-width column beside another.
+        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 220px))",
+        gap: 14,
+        maxWidth: 720,
+      }}
+    >
+      <InheritableField
+        label="stop loss %"
+        defaultFromStrategy={strategyDefaults?.stop_loss_pct}
+        value={value.stop_loss_pct ?? null}
+        onChange={(v) => onChange({ ...value, stop_loss_pct: v })}
+        disabled={disabled}
+        unit="%"
+        min={0}
+        max={100}
+      />
+      <InheritableField
+        label="take profit %"
+        defaultFromStrategy={strategyDefaults?.take_profit_pct}
+        value={value.take_profit_pct ?? null}
+        onChange={(v) => onChange({ ...value, take_profit_pct: v })}
+        disabled={disabled}
+        unit="%"
+        min={0}
+        max={100}
+      />
+      <InheritableField
+        label="trailing stop %"
+        defaultFromStrategy={strategyDefaults?.trailing_stop_pct}
+        value={value.trailing_stop_pct ?? null}
+        onChange={(v) => onChange({ ...value, trailing_stop_pct: v })}
+        disabled={disabled}
+        unit="%"
+        min={0}
+        max={100}
+      />
+      <InheritableField
+        label="max holding days"
+        defaultFromStrategy={strategyDefaults?.max_holding_days}
+        value={value.max_holding_days ?? null}
+        onChange={(v) => onChange({ ...value, max_holding_days: v })}
+        disabled={disabled}
+        unit="d"
+        min={1}
+        integer
+      />
+      <NumberInput
+        label="max concurrent positions"
+        value={value.max_positions ?? null}
+        onChange={(v) => onChange({ ...value, max_positions: v })}
+        disabled={disabled}
+        min={1}
+        max={50}
+        integer
+      />
+    </div>
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
       {showUniverse && (
@@ -244,9 +325,15 @@ export function UniverseAndRiskFields({
             kicker="universe · scope"
             info="Pick the universe this run should target. Required — no implicit default."
           >
-            <ScopeRadio scope={scope} onChange={setScope} disabled={disabled} />
-            {scope === null && (
-              <FaintNote>nothing selected — submission blocked until you pick a scope</FaintNote>
+            {scopeVariant === "dropdown" ? (
+              <ScopeDropdown scope={scope} onChange={setScope} disabled={disabled} />
+            ) : (
+              <>
+                <ScopeRadio scope={scope} onChange={setScope} disabled={disabled} />
+                {scope === null && (
+                  <FaintNote>nothing selected — submission blocked until you pick a scope</FaintNote>
+                )}
+              </>
             )}
           </Section>
 
@@ -338,75 +425,19 @@ export function UniverseAndRiskFields({
         </>
       )}
 
-      {showRisk && (
-        <Section
-          kicker="risk · guardrails"
-          info={
-            strategyDefaults
-              ? "The strategy authored defaults for these — leave a field on Inherit to follow the strategy, or click Override to set a per-instance cap."
-              : "Hard caps applied per trade. Leave blank for none."
-          }
-        >
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-              gap: 14,
-              maxWidth: 720,
-            }}
+      {showRisk &&
+        (riskBare ? riskGrid : (
+          <Section
+            kicker="risk · guardrails"
+            info={
+              strategyDefaults
+                ? "The strategy authored defaults for these — leave a field on Inherit to follow the strategy, or click Override to set a per-instance cap."
+                : "Hard caps applied per trade. Leave blank for none."
+            }
           >
-            <InheritableField
-              label="stop loss %"
-              defaultFromStrategy={strategyDefaults?.stop_loss_pct}
-              value={value.stop_loss_pct ?? null}
-              onChange={(v) => onChange({ ...value, stop_loss_pct: v })}
-              disabled={disabled}
-              unit="%"
-              min={0}
-              max={100}
-            />
-            <InheritableField
-              label="take profit %"
-              defaultFromStrategy={strategyDefaults?.take_profit_pct}
-              value={value.take_profit_pct ?? null}
-              onChange={(v) => onChange({ ...value, take_profit_pct: v })}
-              disabled={disabled}
-              unit="%"
-              min={0}
-              max={100}
-            />
-            <InheritableField
-              label="trailing stop %"
-              defaultFromStrategy={strategyDefaults?.trailing_stop_pct}
-              value={value.trailing_stop_pct ?? null}
-              onChange={(v) => onChange({ ...value, trailing_stop_pct: v })}
-              disabled={disabled}
-              unit="%"
-              min={0}
-              max={100}
-            />
-            <InheritableField
-              label="max holding days"
-              defaultFromStrategy={strategyDefaults?.max_holding_days}
-              value={value.max_holding_days ?? null}
-              onChange={(v) => onChange({ ...value, max_holding_days: v })}
-              disabled={disabled}
-              unit="d"
-              min={1}
-              integer
-            />
-            <NumberInput
-              label="max concurrent positions"
-              value={value.max_positions ?? null}
-              onChange={(v) => onChange({ ...value, max_positions: v })}
-              disabled={disabled}
-              min={1}
-              max={50}
-              integer
-            />
-          </div>
-        </Section>
-      )}
+            {riskGrid}
+          </Section>
+        ))}
     </div>
   );
 }
@@ -426,6 +457,35 @@ function stripSectors(filters: StockFilters): StockFilters | null {
   return allEmpty ? null : next;
 }
 
+// Scope choices + helper copy, shared by the radio-card and dropdown
+// variants so the wording can't drift between the two.
+const SCOPE_OPTIONS: Array<{
+  value: UniverseScope;
+  label: string;
+  hint: string;
+}> = [
+  {
+    value: "all_active",
+    label: "All active stocks",
+    hint: "Every PSX symbol that's active today. Numeric filters still apply.",
+  },
+  {
+    value: "by_sector",
+    label: "By sector",
+    hint: "Active stocks in the sectors you pick.",
+  },
+  {
+    value: "by_ticker",
+    label: "By ticker",
+    hint: "Only the exact symbols you list. Lets you include delisted names in backtests.",
+  },
+  {
+    value: "by_sector_and_ticker",
+    label: "By sector + extra tickers",
+    hint: "Combine sectors with additional explicit tickers. Numeric filters trim the sector side; explicit tickers come through unfiltered.",
+  },
+];
+
 function ScopeRadio({
   scope,
   onChange,
@@ -436,39 +496,13 @@ function ScopeRadio({
   disabled: boolean;
 }) {
   const T = useT();
-  const options: Array<{
-    value: UniverseScope;
-    label: string;
-    hint: string;
-  }> = [
-    {
-      value: "all_active",
-      label: "All active stocks",
-      hint: "Every PSX symbol that's active today. Numeric filters still apply.",
-    },
-    {
-      value: "by_sector",
-      label: "By sector",
-      hint: "Active stocks in the sectors you pick.",
-    },
-    {
-      value: "by_ticker",
-      label: "By ticker",
-      hint: "Only the exact symbols you list. Lets you include delisted names in backtests.",
-    },
-    {
-      value: "by_sector_and_ticker",
-      label: "By sector + extra tickers",
-      hint: "Combine sectors with additional explicit tickers. Numeric filters trim the sector side; explicit tickers come through unfiltered.",
-    },
-  ];
   return (
     <div
       role="radiogroup"
       aria-label="Universe scope"
       style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 540 }}
     >
-      {options.map((opt) => {
+      {SCOPE_OPTIONS.map((opt) => {
         const active = scope === opt.value;
         return (
           <button
@@ -523,6 +557,85 @@ function ScopeRadio({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+// Dropdown scope picker — the single-`<select>` variant used on the
+// bot-create form so it reads identically to the backtest "stocks" field.
+// Shares SCOPE_OPTIONS with ScopeRadio. Renders the selected scope's hint
+// (or the "nothing picked" note) underneath, matching the radio variant's
+// affordances.
+function ScopeDropdown({
+  scope,
+  onChange,
+  disabled,
+}: {
+  scope: UniverseScope | null;
+  onChange: (next: UniverseScope) => void;
+  disabled: boolean;
+}) {
+  const T = useT();
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 380 }}>
+      <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+        <select
+          value={scope ?? ""}
+          disabled={disabled}
+          aria-label="Universe scope"
+          onChange={(e) => {
+            const v = e.target.value as UniverseScope;
+            if (v) onChange(v);
+          }}
+          style={{
+            width: "100%",
+            appearance: "none",
+            WebkitAppearance: "none",
+            padding: "9px 36px 9px 12px",
+            borderRadius: 8,
+            border: `1px solid ${scope ? T.outlineVariant : T.outlineFaint}`,
+            background: T.surface,
+            color: scope ? T.text : T.text3,
+            fontFamily: "inherit",
+            fontSize: 13.5,
+            cursor: disabled ? "not-allowed" : "pointer",
+            opacity: disabled ? 0.6 : 1,
+            outline: "none",
+          }}
+        >
+          <option value="" disabled>
+            pick scope…
+          </option>
+          {SCOPE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        <svg
+          aria-hidden
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ position: "absolute", right: 12, pointerEvents: "none", color: T.text3 }}
+        >
+          <path d="M2 4l4 4 4-4" />
+        </svg>
+      </div>
+      {scope ? (
+        <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3, lineHeight: 1.4 }}>
+          {SCOPE_OPTIONS.find((o) => o.value === scope)?.hint}
+        </span>
+      ) : (
+        <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
+          nothing picked — submission blocked until you choose
+        </span>
+      )}
     </div>
   );
 }

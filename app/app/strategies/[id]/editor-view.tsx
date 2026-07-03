@@ -361,6 +361,7 @@ export function EditorView({
   const [flash, setFlash] = useState<string | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const T = useT();
+  const { isMobile } = useBreakpoint();
 
   // Lock page scroll while the editor is mounted — the canvas handles its own scrolling.
   useEffect(() => {
@@ -1146,17 +1147,20 @@ export function EditorView({
             aria-label={libraryOpen ? "Close template library" : "Open template library"}
             style={{
               position: "absolute",
-              left: libraryOpen ? 280 : 0,
+              // Desktop: tab rides the 280px panel's right edge. Mobile: the
+              // panel is full-width, so when open the tab hugs the screen's
+              // right edge instead of floating mid-content.
+              left: libraryOpen ? (isMobile ? "calc(100% - 18px)" : 280) : 0,
               top: "50%",
               transform: "translateY(-50%)",
               zIndex: 20,
               width: 18,
               height: 52,
-              background: libraryOpen ? "transparent" : "transparent",
+              background: "transparent",
               border: `1px solid ${T.outlineFaint}`,
-              borderLeft: libraryOpen ? "none" : undefined,
-              borderRight: libraryOpen ? undefined : "none",
-              borderRadius: libraryOpen ? "0 8px 8px 0" : "0 8px 8px 0",
+              borderLeft: libraryOpen && !isMobile ? "none" : undefined,
+              borderRight: !libraryOpen || isMobile ? "none" : undefined,
+              borderRadius: libraryOpen && isMobile ? "8px 0 0 8px" : "0 8px 8px 0",
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
@@ -1943,6 +1947,7 @@ function Canvas({
     selection.source === source;
   const T = useT();
   const isTouch = useTouchPointer();
+  const { isMobile } = useBreakpoint();
   const [pan, setPan] = useState({ x: 40, y: 20 });
   const [zoom, setZoom] = useState(1);
   const [isDragging, setIsDragging] = useState(false);
@@ -2125,7 +2130,7 @@ function Canvas({
     // (402px+402px on a 1500px canvas left a visible dead zone in the
     // middle). The bezier control-point offset (80px in pushWire) gives the
     // wire a gentle sweep at this gap.
-    const SPINE_GAP = 160;
+    const SPINE_GAP = isMobile ? 64 : 160;
     const ROOT_TO_OUTPUT_GAP = SPINE_GAP;
     const RISK_NODE_W = RiskDefaultsNode.WIDTH;
     const RISK_TO_EXIT_GAP = SPINE_GAP;
@@ -2234,7 +2239,7 @@ function Canvas({
           // right pin → exit root, so it reads as a junction (governs both
           // entry- and exit-driven trades) rather than a one-sided dead-end.
           // Spine gap — see resetView for rationale.
-          const SPINE_GAP = 160;
+          const SPINE_GAP = isMobile ? 64 : 160;
           const ROOT_TO_OUTPUT_GAP = SPINE_GAP;
           const RISK_NODE_W = RiskDefaultsNode.WIDTH;
           const RISK_TO_EXIT_GAP = SPINE_GAP;
@@ -2317,11 +2322,13 @@ function Canvas({
             opts: { id: string; dashed: boolean; color?: string; width?: number },
           ) => {
             // Cubic-bezier with both control points at midX. midX is offset
-            // 80px from `from` toward `to` (sign-aware), so mirrored exit
+            // up to 80px from `from` toward `to` (sign-aware), so mirrored exit
             // wires get a symmetric curve flowing leftward instead of an
-            // overshoot to the right.
+            // overshoot to the right. Clamp the offset to the wire's own length
+            // so the shorter mobile spine wires curve cleanly instead of
+            // overshooting past `to` (no-op on desktop where wires are ≥ 80px).
             const direction = Math.sign(to.x - from.x) || 1;
-            const midX = from.x + 80 * direction;
+            const midX = from.x + Math.min(80, Math.abs(to.x - from.x)) * direction;
             wires.push({
               id: opts.id,
               d: `M ${from.x} ${from.y} C ${midX} ${from.y} ${midX} ${to.y} ${to.x} ${to.y}`,
@@ -2582,18 +2589,23 @@ function Canvas({
       <div
         style={{
           position: "absolute",
-          bottom: 20,
-          right: drawerOpen ? 412 : 24,
+          // Mobile only: the status pill is hidden and the zoom controls move
+          // up to the top-left (where the status pill used to sit) and shrink so
+          // they don't crowd the narrow canvas. Desktop keeps the original
+          // bottom-right placement and full size, with the status pill above.
+          ...(isMobile
+            ? { top: 12, left: 12 }
+            : { bottom: 20, right: drawerOpen ? 412 : 24 }),
           display: "flex",
           alignItems: "center",
-          gap: 2,
-          padding: "4px 6px",
+          gap: isMobile ? 1 : 2,
+          padding: isMobile ? "2px 4px" : "4px 6px",
           borderRadius: 999,
           background: T.surface2 + "e6",
           backdropFilter: "blur(10px)",
           border: `1px solid ${T.outlineFaint}`,
           fontFamily: T.fontMono,
-          fontSize: 11,
+          fontSize: isMobile ? 10 : 11,
           color: T.text3,
           zIndex: 5,
           userSelect: "none",
@@ -2604,8 +2616,8 @@ function Canvas({
         <span
           style={{
             color: T.text2,
-            padding: "0 8px",
-            minWidth: 40,
+            padding: isMobile ? "0 5px" : "0 8px",
+            minWidth: isMobile ? 32 : 40,
             textAlign: "center",
             fontVariantNumeric: "tabular-nums",
           }}
@@ -2613,39 +2625,42 @@ function Canvas({
           {Math.round(zoom * 100)}%
         </span>
         <ZoomBtn onClick={() => bumpZoom(1.2)} label="+" />
-        <span style={{ width: 1, height: 14, background: T.outlineFaint, margin: "0 4px" }} />
+        <span style={{ width: 1, height: isMobile ? 12 : 14, background: T.outlineFaint, margin: isMobile ? "0 3px" : "0 4px" }} />
         <ZoomBtn onClick={resetView} label="fit" />
       </div>
 
       {/* Phase 4: StatusStrip carries the navigation role the three OutputPins
           used to (Backtest / Live signals / Automate). Sits just above the
-          zoom-controls pill on the right; slides with the drawer same way. */}
-      <div
-        style={{
-          position: "absolute",
-          bottom: 60,
-          right: drawerOpen ? 412 : 24,
-          zIndex: 5,
-          transition: "right 240ms cubic-bezier(0.4, 0, 0.2, 1)",
-        }}
-      >
-        <StatusStrip
-          strategyId={strategyId}
-          deployed={deployed}
-          backtest={
-            latestBacktest
-              ? {
-                  totalReturnPct: Number(latestBacktest.total_return_pct),
-                  completedAt: latestBacktest.completed_at,
-                }
-              : null
-          }
-          // Bot binding lights up in Phase 6 once the picker modal is wired;
-          // until then we don't surface a ghost "No bot" segment that pads
-          // the strip without doing anything useful.
-          botBinding={null}
-        />
-      </div>
+          zoom-controls pill on the right. Desktop/tablet only — on phones it
+          was removed to free vertical space (zoom takes its top-left slot). */}
+      {!isMobile && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 60,
+            right: drawerOpen ? 412 : 24,
+            zIndex: 5,
+            transition: "right 240ms cubic-bezier(0.4, 0, 0.2, 1)",
+          }}
+        >
+          <StatusStrip
+            strategyId={strategyId}
+            deployed={deployed}
+            backtest={
+              latestBacktest
+                ? {
+                    totalReturnPct: Number(latestBacktest.total_return_pct),
+                    completedAt: latestBacktest.completed_at,
+                  }
+                : null
+            }
+            // Bot binding lights up in Phase 6 once the picker modal is wired;
+            // until then we don't surface a ghost "No bot" segment that pads
+            // the strip without doing anything useful.
+            botBinding={null}
+          />
+        </div>
+      )}
 
       <div
         style={{
@@ -2684,6 +2699,7 @@ function Canvas({
 
 function ZoomBtn({ onClick, label }: { onClick: () => void; label: string }) {
   const T = useT();
+  const { isMobile } = useBreakpoint();
   return (
     <button
       type="button"
@@ -2693,9 +2709,9 @@ function ZoomBtn({ onClick, label }: { onClick: () => void; label: string }) {
         border: "none",
         color: T.text2,
         cursor: "pointer",
-        minWidth: 28,
-        minHeight: 28,
-        padding: "6px 10px",
+        minWidth: isMobile ? 20 : 28,
+        minHeight: isMobile ? 20 : 28,
+        padding: isMobile ? "3px 6px" : "6px 10px",
         borderRadius: 999,
         fontFamily: "inherit",
         fontSize: "inherit",
@@ -2958,6 +2974,7 @@ function InsertSlot({
   branch: "entry" | "exit";
 }) {
   const T = useT();
+  const { isMobile } = useBreakpoint();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [hover, setHover] = useState(false);
 
@@ -2972,7 +2989,11 @@ function InsertSlot({
   }, [autoOpen, onAutoOpenConsumed]);
 
   const showHint = isTreeEmpty && slot.isEmpty;
-  const displayW = showHint ? 280 : Math.max(slot.w, 160);
+  // On mobile the entry/exit gates sit only SPINE_GAP (64px) from the centered
+  // Risk Defaults node, so the wide 280px hint button slides under it. Shrink
+  // the hint there so the side buttons clear the middle box; desktop keeps the
+  // roomier width (it already has ~72px of clearance).
+  const displayW = showHint ? (isMobile ? 190 : 280) : Math.max(slot.w, 160);
   const displayH = showHint ? 64 : slot.h;
   const x = slot.cx - displayW / 2;
   const y = slot.cy - displayH / 2;
@@ -4020,14 +4041,34 @@ function ConditionDrawer({
 
   // Popover shared style helper — keeps the inline style objects DRY.
   const { isMobile } = useBreakpoint();
+  // Header "Templates" dropdown — right-aligned to its trigger so a wide panel
+  // grows leftward into the drawer instead of spilling past the right-docked
+  // drawer / window edge.
   const popoverStyle: React.CSSProperties = {
     position: "absolute",
     top: "calc(100% + 6px)",
-    left: 0,
+    right: 0,
     zIndex: 10,
     minWidth: isMobile ? undefined : 280,
     maxWidth: isMobile ? undefined : 360,
     width: isMobile ? "100%" : undefined,
+    background: T.surface2 ?? T.surface,
+    boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 8px 24px rgba(0,0,0,0.18)`,
+    borderRadius: 10,
+    padding: 14,
+  };
+  // Sentence-builder token popovers (indicator / operator / value). Anchored to
+  // the full width of the sentence ROW rather than the individual pill, so a
+  // drawer-width panel always drops straight down and stays inside the drawer.
+  // (Pill-anchored popovers grew sideways off the right-docked drawer and got
+  // clipped by its overflow:hidden.) Relies on the sentence row being
+  // position:relative and the pill wrappers being position:static.
+  const sentencePopoverStyle: React.CSSProperties = {
+    position: "absolute",
+    top: "calc(100% + 8px)",
+    left: 0,
+    right: 0,
+    zIndex: 10,
     background: T.surface2 ?? T.surface,
     boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 8px 24px rgba(0,0,0,0.18)`,
     borderRadius: 10,
@@ -4144,10 +4185,13 @@ function ConditionDrawer({
       {/* ── Body: "Fire when [LHS ▾] [op ▾] [RHS ▾] ." ── */}
       <div className="psx-thin-scroll" style={{ flex: 1, minHeight: 0, overflowX: "hidden", overflowY: "auto", padding: "20px 20px 16px" }}>
 
-        {/* Prose line + token pills — the sentence-as-form */}
+        {/* Prose line + token pills — the sentence-as-form. position:relative so
+            the token popovers below anchor to the full row width (drawer inner
+            width) rather than their individual pill — keeps them inside the drawer. */}
         <div
           aria-live="polite"
           style={{
+            position: "relative",
             display: "flex",
             flexWrap: "wrap",
             alignItems: "center",
@@ -4168,7 +4212,7 @@ function ConditionDrawer({
           </span>
 
           {/* Token 1 — LHS indicator */}
-          <div ref={lhsWrapRef} style={{ position: "relative" }}>
+          <div ref={lhsWrapRef} style={{ position: "static" }}>
             <TokenPill
               label={lhsPillLabel}
               onClick={() => setOpenPopover(openPopover === "lhs" ? null : "lhs")}
@@ -4180,7 +4224,7 @@ function ConditionDrawer({
                 role="dialog"
                 aria-modal="false"
                 aria-label="Indicator settings"
-                style={popoverStyle}
+                style={sentencePopoverStyle}
               >
                 {/* Indicator picker */}
                 <Kicker info={FIELD_INFO.indicator}>indicator</Kicker>
@@ -4280,7 +4324,7 @@ function ConditionDrawer({
           </div>
 
           {/* Token 2 — Operator */}
-          <div ref={opWrapRef} style={{ position: "relative" }}>
+          <div ref={opWrapRef} style={{ position: "static" }}>
             <TokenPill
               label={OPERATOR_PILL[op]}
               onClick={() => setOpenPopover(openPopover === "op" ? null : "op")}
@@ -4292,7 +4336,7 @@ function ConditionDrawer({
                 role="dialog"
                 aria-modal="false"
                 aria-label="Operator picker"
-                style={{ ...popoverStyle, minWidth: 260 }}
+                style={sentencePopoverStyle}
               >
                 {/* Two-tab strip: Compare | Cross */}
                 <div
@@ -4406,7 +4450,7 @@ function ConditionDrawer({
           </div>
 
           {/* Token 3 — RHS value */}
-          <div ref={rhsWrapRef} style={{ position: "relative" }}>
+          <div ref={rhsWrapRef} style={{ position: "static" }}>
             <TokenPill
               label={rhsPillLabel}
               onClick={() => setOpenPopover(openPopover === "rhs" ? null : "rhs")}
@@ -4418,7 +4462,7 @@ function ConditionDrawer({
                 role="dialog"
                 aria-modal="false"
                 aria-label="Comparison value"
-                style={popoverStyle}
+                style={sentencePopoverStyle}
               >
                 {/* Three-tab strip: Number | Indicator | Expression */}
                 <div

@@ -1,9 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppFrame } from "@/components/frame";
 import { useT } from "@/components/theme";
 import {
@@ -12,13 +11,22 @@ import {
   FlashToast,
   Kicker,
   Lede,
-  Ribbon,
   TerminalTable,
   useFlash,
   type Col,
 } from "@/components/atoms";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick, clampPx } from "@/components/responsive";
+
+type StatusFilter = "all" | "running" | "paused" | "archived";
+
+// Bots have no backend "archived" state (their statuses are ACTIVE/PAUSED/
+// STOPPED), so the Archived bucket is tracked client-side: the set of archived
+// bot ids is persisted here and hydrated on mount. Archiving stops the bot;
+// restoring just un-hides it (it stays stopped) — matching how the strategies
+// page restores to a non-live state.
+const ARCHIVE_KEY = "psx:bots:archivedIds";
+const ARCHIVE_SKIP_KEY = "psx:bots:skipArchiveConfirm";
 
 interface Bot {
   id: string;
@@ -34,6 +42,9 @@ interface Bot {
   open: number;
   trades: number;
   uptime: string;
+  // Client-only flag — see ARCHIVE_KEY. Undefined/false = lives in the main
+  // list; true = sits in the Archived bucket, out of the active view.
+  archived?: boolean;
 }
 
 export function BotsView({
@@ -43,66 +54,133 @@ export function BotsView({
   initialBots: Bot[];
   fetchFailed?: boolean;
 }) {
-  const [bots] = useState<Bot[]>(initialBots);
+  const [bots, setBots] = useState<Bot[]>(initialBots);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [archiveTarget, setArchiveTarget] = useState<Bot | null>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  // Whether the user has opted out of the archive-confirm modal. The modal
+  // still appears unconditionally when the bot is running (the stop warning is
+  // load-bearing). Read from localStorage once on mount.
+  const [skipArchiveConfirm, setSkipArchiveConfirm] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const { flash, setFlash } = useFlash();
-  const router = useRouter();
+
+  // Hydrate the archived bucket + skip-confirm preference from localStorage —
+  // the server render can't know either, so the page paints "live" first and
+  // tucks archived bots away on mount.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(ARCHIVE_KEY);
+      if (raw) {
+        const ids = new Set<string>(JSON.parse(raw) as string[]);
+        if (ids.size) {
+          setBots((prev) => prev.map((b) => (ids.has(b.id) ? { ...b, archived: true } : b)));
+        }
+      }
+      setSkipArchiveConfirm(localStorage.getItem(ARCHIVE_SKIP_KEY) === "1");
+    } catch {
+      // Private mode / storage disabled — default to no archived bots.
+    }
+  }, []);
 
   useEffect(() => {
     if (fetchFailed) setFlash("Couldn't load your bots — showing empty list");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchFailed]);
 
-  const runningCount = bots.filter((b) => b.status === "RUNNING").length;
-  const pausedAll = runningCount === 0 && bots.some((b) => b.status === "PAUSED");
+  // Auto-dismiss the inline archive/restore message.
+  useEffect(() => {
+    if (!msg) return;
+    const t = setTimeout(() => setMsg(null), 4000);
+    return () => clearTimeout(t);
+  }, [msg]);
 
-  // Pause-all / resume-all fire one POST per bot via Promise.allSettled.
-  // Partial failures used to be silently swallowed; we now surface the
-  // first concrete error message so the user knows why N of M succeeded.
-  async function bulkAction(
-    targets: Bot[],
-    action: "start" | "pause",
-  ): Promise<{ ok: number; firstErr: string | null }> {
-    const results = await Promise.allSettled(
-      targets.map((b) =>
-        fetch(`/api/bots/${b.id}/${action}`, { method: "POST" }).then((r) => {
-          if (!r.ok) throw new Error(`${b.name}: ${r.status}`);
-          return b.id;
-        }),
-      ),
-    );
-    const ok = results.filter((r) => r.status === "fulfilled").length;
-    const firstRejected = results.find((r) => r.status === "rejected");
-    const firstErr =
-      firstRejected && firstRejected.status === "rejected"
-        ? String((firstRejected.reason as Error)?.message ?? firstRejected.reason)
-        : null;
-    return { ok, firstErr };
+  function persistArchived(mutate: (ids: Set<string>) => void) {
+    try {
+      const raw = localStorage.getItem(ARCHIVE_KEY);
+      const ids = new Set<string>(raw ? (JSON.parse(raw) as string[]) : []);
+      mutate(ids);
+      localStorage.setItem(ARCHIVE_KEY, JSON.stringify([...ids]));
+    } catch {
+      // Storage disabled — the change still applies in-session via React state.
+    }
   }
 
-  const handlePauseAll = async () => {
-    if (pausedAll) {
-      const targets = bots.filter((b) => b.status === "PAUSED");
-      const { ok, firstErr } = await bulkAction(targets, "start");
-      const msg = `Resumed ${ok} of ${targets.length} paused bot${targets.length === 1 ? "" : "s"}`;
-      setFlash(ok < targets.length && firstErr ? `${msg} · ${firstErr}` : msg);
-      router.refresh();
-    } else if (runningCount > 0) {
-      const targets = bots.filter((b) => b.status === "RUNNING");
-      const { ok, firstErr } = await bulkAction(targets, "pause");
-      const msg = `Paused ${ok} of ${targets.length} running bot${targets.length === 1 ? "" : "s"}`;
-      setFlash(ok < targets.length && firstErr ? `${msg} · ${firstErr}` : msg);
-      router.refresh();
+  async function performArchive(b: Bot) {
+    if (archiveBusy) return;
+    setArchiveBusy(true);
+    try {
+      // Archiving takes the bot out of active rotation, so stop it first. A bot
+      // that's already stopped just moves to the bucket — no redundant call.
+      if (b.status !== "STOPPED") {
+        const res = await fetch(`/api/bots/${b.id}/stop`, { method: "POST" });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? `Request failed (${res.status})`);
+        }
+      }
+      setBots((prev) =>
+        prev.map((r) => (r.id === b.id ? { ...r, archived: true, status: "STOPPED" } : r)),
+      );
+      persistArchived((ids) => ids.add(b.id));
+      setMsg({ kind: "ok", text: `archived "${b.name}"` });
+      setArchiveTarget(null);
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : "archive failed" });
+    } finally {
+      setArchiveBusy(false);
     }
-  };
+  }
+
+  // Restore just un-hides the bot — it stays stopped (start it again from its
+  // page if you want it trading). No backend call: the bot is already stopped.
+  function performRestore(b: Bot) {
+    setBots((prev) => prev.map((r) => (r.id === b.id ? { ...r, archived: false } : r)));
+    persistArchived((ids) => ids.delete(b.id));
+    setMsg({ kind: "ok", text: `restored "${b.name}"` });
+  }
+
+  const liveBots = bots.filter((b) => !b.archived);
 
   return (
     <AppFrame route="/bots">
       <Body
         bots={bots}
-        runningCount={runningCount}
-        pausedAll={pausedAll}
-        onPauseAll={handlePauseAll}
+        liveBots={liveBots}
+        statusFilter={statusFilter}
+        setStatusFilter={setStatusFilter}
+        msg={msg}
+        onArchive={(b) => {
+          // Bypass the modal only when the user opted out AND the bot isn't
+          // running — a running bot being stopped is always worth a confirm.
+          if (skipArchiveConfirm && b.status !== "RUNNING") {
+            void performArchive(b);
+            return;
+          }
+          setArchiveTarget(b);
+        }}
+        onRestore={performRestore}
+        archiveBusy={archiveBusy}
+        archiveBusyId={archiveTarget?.id ?? null}
       />
+      {archiveTarget && (
+        <ArchiveConfirmModal
+          bot={archiveTarget}
+          busy={archiveBusy}
+          skipConfirm={skipArchiveConfirm}
+          onSkipConfirmChange={(v) => {
+            setSkipArchiveConfirm(v);
+            try {
+              if (v) localStorage.setItem(ARCHIVE_SKIP_KEY, "1");
+              else localStorage.removeItem(ARCHIVE_SKIP_KEY);
+            } catch {
+              // Storage disabled — preference still applies in-session.
+            }
+          }}
+          onCancel={() => setArchiveTarget(null)}
+          onConfirm={() => performArchive(archiveTarget)}
+        />
+      )}
       {flash && <FlashToast message={flash} />}
     </AppFrame>
   );
@@ -110,19 +188,32 @@ export function BotsView({
 
 function Body({
   bots,
-  runningCount,
-  pausedAll,
-  onPauseAll,
+  liveBots,
+  statusFilter,
+  setStatusFilter,
+  msg,
+  onArchive,
+  onRestore,
+  archiveBusy,
+  archiveBusyId,
 }: {
   bots: Bot[];
-  runningCount: number;
-  pausedAll: boolean;
-  onPauseAll: () => void;
+  liveBots: Bot[];
+  statusFilter: StatusFilter;
+  setStatusFilter: (s: StatusFilter) => void;
+  msg: { kind: "ok" | "err"; text: string } | null;
+  onArchive: (b: Bot) => void;
+  onRestore: (b: Bot) => void;
+  archiveBusy: boolean;
+  archiveBusyId: string | null;
 }) {
   const T = useT();
+  // Page-level empty state only when the user owns no bots at all. If every bot
+  // is archived, we still render Populated so the Archived filter is reachable.
   const empty = bots.length === 0;
-  const totalEquity = bots.reduce((s, b) => s + b.equity, 0);
-  const todayTotal = bots.reduce((s, b) => s + b.today, 0);
+  const runningCount = liveBots.filter((b) => b.status === "RUNNING").length;
+  const totalEquity = liveBots.reduce((s, b) => s + b.equity, 0);
+  const todayTotal = liveBots.reduce((s, b) => s + b.today, 0);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
@@ -135,7 +226,7 @@ function Body({
             {empty ? (
               <span style={{ color: T.text3, fontWeight: 400, fontSize: "0.7em" }}>no bots yet</span>
             ) : (
-              `${bots.length} total`
+              `${liveBots.length} total`
             )}
           </>
         }
@@ -160,31 +251,129 @@ function Body({
           )
         }
         actions={
-          !empty ? (
-            <Btn variant="outline" size="sm" onClick={onPauseAll} style={{ boxShadow: "0 2px 6px rgba(0,0,0,0.14)" }}>
-              {pausedAll ? "Resume all" : "Pause all"}
-            </Btn>
-          ) : null
+          <>
+            {msg && (
+              <span
+                style={{
+                  fontFamily: T.fontMono,
+                  fontSize: 11,
+                  color: msg.kind === "ok" ? T.gain : T.loss,
+                }}
+              >
+                {msg.text}
+              </span>
+            )}
+            {!empty ? (
+              <Link href="/bots/new" style={{ textDecoration: "none" }}>
+                <Btn variant="primary" size="sm" icon={Icon.plus} style={{ boxShadow: "0 2px 6px rgba(0,0,0,0.14)" }}>
+                  Create bot
+                </Btn>
+              </Link>
+            ) : null}
+          </>
         }
       />
 
-      {empty ? <EmptyState /> : <Populated bots={bots} />}
+      {empty ? (
+        <EmptyState />
+      ) : (
+        <Populated
+          bots={bots}
+          liveBots={liveBots}
+          statusFilter={statusFilter}
+          setStatusFilter={setStatusFilter}
+          onArchive={onArchive}
+          onRestore={onRestore}
+          archiveBusy={archiveBusy}
+          archiveBusyId={archiveBusyId}
+        />
+      )}
     </div>
   );
 }
 
-function Populated({ bots }: { bots: Bot[] }) {
+function Populated({
+  bots,
+  liveBots,
+  statusFilter,
+  setStatusFilter,
+  onArchive,
+  onRestore,
+  archiveBusy,
+  archiveBusyId,
+}: {
+  bots: Bot[];
+  liveBots: Bot[];
+  statusFilter: StatusFilter;
+  setStatusFilter: (s: StatusFilter) => void;
+  onArchive: (b: Bot) => void;
+  onRestore: (b: Bot) => void;
+  archiveBusy: boolean;
+  archiveBusyId: string | null;
+}) {
   const T = useT();
-  const { bp } = useBreakpoint();
+  const { bp, isMobile } = useBreakpoint();
   const padX = pick(bp, PAD.page);
-  // Lede card values — all derived from the actual bots list. Previously
-  // hardcoded with example numbers that survived the scaffold.
-  const totalEquity = bots.reduce((s, b) => s + b.equity, 0);
-  const totalStart = bots.reduce((s, b) => s + b.start, 0);
+  // Shrink the big stat numbers on phones so "PKR 9.00M" fits on one line
+  // (was wrapping at 40px) and the summary block takes less vertical space —
+  // less scrolling. Scales with viewport so it fits even on narrow (320px)
+  // phones; tablet/desktop keep the original fixed 40px.
+  const ledeSize = pick(bp, { mobile: clampPx(20, 6.5, 30), desktop: "40px" });
+  // Lede card values — all derived from the live (non-archived) bots so the
+  // summary tracks the active portfolio, not retired runners.
+  const totalEquity = liveBots.reduce((s, b) => s + b.equity, 0);
+  const totalStart = liveBots.reduce((s, b) => s + b.start, 0);
   const combinedAbs = totalEquity - totalStart;
   const combinedPct = totalStart > 0 ? (combinedAbs / totalStart) * 100 : 0;
-  const todayTotal = bots.reduce((s, b) => s + b.today, 0);
-  const openTotal = bots.reduce((s, b) => s + b.open, 0);
+  const todayTotal = liveBots.reduce((s, b) => s + b.today, 0);
+  const openTotal = liveBots.reduce((s, b) => s + b.open, 0);
+
+  const archivedBots = bots.filter((b) => b.archived);
+  const counts = {
+    all: liveBots.length,
+    running: liveBots.filter((b) => b.status === "RUNNING").length,
+    paused: liveBots.filter((b) => b.status === "PAUSED").length,
+    archived: archivedBots.length,
+  };
+  const filters: { key: StatusFilter; label: string; count: number }[] = [
+    { key: "all", label: "all", count: counts.all },
+    { key: "running", label: "running", count: counts.running },
+    { key: "paused", label: "paused", count: counts.paused },
+    { key: "archived", label: "archived", count: counts.archived },
+  ];
+
+  // "all" shows every live bot (running/paused/stopped-not-archived); the
+  // status pills narrow within live; "archived" swaps to the bucket.
+  const visible =
+    statusFilter === "all"
+      ? liveBots
+      : statusFilter === "archived"
+      ? archivedBots
+      : liveBots.filter((b) => b.status === (statusFilter.toUpperCase() as Bot["status"]));
+
+  // Archive (or Restore, for already-archived rows) action button. Shared by
+  // the desktop trailing-column cell and the mobile name-row cell so the busy
+  // state stays identical in both layouts.
+  const renderArchiveBtn = (b: Bot) => {
+    const isArchived = !!b.archived;
+    const busy = !isArchived && archiveBusy && archiveBusyId === b.id;
+    return (
+      <Btn
+        variant="ghost"
+        size="sm"
+        disabled={busy}
+        title={isArchived ? "Restore" : "Archive"}
+        icon={busy ? undefined : isArchived ? Icon.arrowR : Icon.archive}
+        onClick={() => {
+          if (isArchived) onRestore(b);
+          else onArchive(b);
+        }}
+      >
+        {busy ? "…" : null}
+      </Btn>
+    );
+  };
+
   const cols: Col[] = [
     { label: "name", width: "1.4fr", mono: false, primary: true },
     { label: "strategy", width: "1.2fr", mono: false, mobileFullWidth: true },
@@ -195,8 +384,11 @@ function Populated({ bots }: { bots: Bot[] }) {
     { label: "open", align: "right", width: "60px" },
     { label: "trades", align: "right", width: "70px" },
     { label: "uptime", align: "right", width: "80px" },
+    // Trailing Archive / Restore action. Hidden on mobile — there it folds into
+    // the top-right of the name cell instead of taking a full-width row.
+    { label: "", align: "right", width: "90px", hideOnMobile: true },
   ];
-  const rows: unknown[][] = bots.map((b) => [
+  const rows: unknown[][] = visible.map((b) => [
     b,
     b.strat,
     b.status,
@@ -206,6 +398,7 @@ function Populated({ bots }: { bots: Bot[] }) {
     b.open,
     b.trades,
     b.uptime,
+    b,
   ]);
 
   return (
@@ -227,7 +420,7 @@ function Populated({ bots }: { bots: Bot[] }) {
             tablet: "repeat(2, 1fr)",
             desktop: "repeat(4, 1fr)",
           }),
-          gap: pick(bp, { mobile: 20, desktop: 36 }),
+          gap: pick(bp, { mobile: "16px 20px", desktop: "36px" }),
           paddingBottom: 24,
           borderBottom: `1px solid ${T.outlineFaint}`,
         }}
@@ -235,61 +428,116 @@ function Populated({ bots }: { bots: Bot[] }) {
         <Lede
           label="Total equity"
           value={`PKR ${(totalEquity / 1_000_000).toFixed(2)}M`}
-          sub={`across ${bots.length} bot${bots.length === 1 ? "" : "s"}`}
+          sub={`across ${liveBots.length} bot${liveBots.length === 1 ? "" : "s"}`}
+          size={ledeSize}
         />
         <Lede
           label="Combined P&L"
           value={`${combinedPct >= 0 ? "+" : ""}${combinedPct.toFixed(2)}%`}
           color={combinedPct >= 0 ? T.gain : T.loss}
           sub={`${combinedAbs >= 0 ? "+" : ""}PKR ${Math.round(combinedAbs).toLocaleString()}`}
+          size={ledeSize}
         />
         <Lede
           label="Today"
           value={`${todayTotal >= 0 ? "+" : ""}PKR ${todayTotal.toLocaleString()}`}
           color={todayTotal >= 0 ? T.gain : T.loss}
           sub="unrealized"
+          size={ledeSize}
         />
         <Lede
           label="Open positions"
           value={String(openTotal)}
           sub={openTotal === 0 ? "no live trades" : "across all bots"}
+          size={ledeSize}
         />
       </div>
 
-      <div style={{ marginTop: 26 }}>
-        <Ribbon
-          kicker="all bots"
-          right={
-            <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
-              sort: <span style={{ color: T.text2 }}>P&amp;L ↓</span>
-            </span>
-          }
-        />
-        <div style={{ marginTop: 8 }}>
+      <div
+        style={{
+          marginTop: 26,
+          display: "flex",
+          alignItems: isMobile ? "stretch" : "center",
+          gap: isMobile ? 10 : 18,
+          paddingBottom: 14,
+          borderBottom: `1px solid ${T.outlineFaint}`,
+          flexDirection: isMobile ? "column" : "row",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", rowGap: 8 }}>
+          <Kicker>filter</Kicker>
+          {filters.map((f) => (
+            <FilterPill
+              key={f.key}
+              active={statusFilter === f.key}
+              onClick={() => setStatusFilter(f.key)}
+              disabled={f.count === 0 && f.key !== "all"}
+            >
+              {f.label} {f.count}
+            </FilterPill>
+          ))}
+        </div>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
+          sort: <span style={{ color: T.text2 }}>P&amp;L ↓</span>
+        </span>
+      </div>
+
+      <div style={{ marginTop: 18 }}>
+        {visible.length === 0 ? (
+          <FilteredEmpty
+            label={filters.find((f) => f.key === statusFilter)?.label ?? "this filter"}
+            archivedCount={statusFilter === "all" ? counts.archived : 0}
+            onReset={() => setStatusFilter("all")}
+            onShowArchived={() => setStatusFilter("archived")}
+          />
+        ) : (
           <TerminalTable
             cols={cols}
             rows={rows}
             renderCell={(cell, ci, ri) => {
               if (ci === 0) {
                 const b = cell as Bot;
-                return (
+                const nameLink = (
                   <Link
                     href={`/bots/${b.id}`}
                     style={{
-                      fontFamily: T.fontHead,
-                      fontSize: 14,
-                      color: T.text,
-                      fontWeight: 500,
-                      letterSpacing: -0.2,
+                      display: "inline-flex",
+                      alignItems: "center",
                       textDecoration: "none",
+                      // Mobile only: let the link shrink so the name can ellipsis
+                      // beside the inline archive button.
+                      ...(isMobile ? { minWidth: 0 } : {}),
                     }}
                   >
-                    {b.name}
+                    <span
+                      style={{
+                        fontFamily: T.fontHead,
+                        fontSize: 14,
+                        color: T.text,
+                        fontWeight: 500,
+                        letterSpacing: -0.2,
+                        ...(isMobile
+                          ? { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
+                          : {}),
+                      }}
+                    >
+                      {b.name}
+                    </span>
                   </Link>
+                );
+                if (!isMobile) return nameLink;
+                // Mobile: park the archive/restore action at the top-right of the
+                // name row so it no longer needs a full-width row of its own.
+                return (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0 }}>
+                    {nameLink}
+                    {renderArchiveBtn(b)}
+                  </div>
                 );
               }
               if (ci === 1) {
-                const b = bots[ri];
+                const b = visible[ri];
                 const name = cell as ReactNode;
                 if (!b || !b.stratId) {
                   // Strategy is gone (soft-deleted on the backend) — show
@@ -372,10 +620,11 @@ function Populated({ bots }: { bots: Bot[] }) {
                 );
               if (ci === 7 || ci === 8)
                 return <span style={{ color: T.text3 }}>{cell as ReactNode}</span>;
+              if (ci === 9) return renderArchiveBtn(cell as Bot);
               return cell as ReactNode;
             }}
           />
-        </div>
+        )}
       </div>
 
       <div
@@ -401,6 +650,237 @@ function Populated({ bots }: { bots: Bot[] }) {
             Browse strategies →
           </Btn>
         </Link>
+      </div>
+    </div>
+  );
+}
+
+function FilterPill({
+  children,
+  active,
+  disabled,
+  onClick,
+}: {
+  children: ReactNode;
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  const T = useT();
+  return (
+    <button
+      type="button"
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      style={{
+        padding: "5px 12px",
+        borderRadius: 999,
+        fontSize: 11.5,
+        fontFamily: T.fontMono,
+        background: active ? T.surface3 : "transparent",
+        color: active ? T.text : disabled ? T.text3 : T.text2,
+        boxShadow: `0 0 0 1px ${active ? T.outlineVariant : T.outlineFaint}`,
+        border: "none",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.5 : 1,
+        transition: "background 120ms ease, color 120ms ease",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function FilteredEmpty({
+  onReset,
+  label,
+  archivedCount,
+  onShowArchived,
+}: {
+  onReset: () => void;
+  label: string;
+  // When > 0, the user is on the "all" pill and every bot they own is archived.
+  // Show a nudge to the archived pill instead of a useless "clear filter" CTA.
+  archivedCount?: number;
+  onShowArchived?: () => void;
+}) {
+  const T = useT();
+  const allArchived = (archivedCount ?? 0) > 0;
+  return (
+    <div
+      style={{
+        padding: "48px 20px",
+        textAlign: "center",
+        color: T.text3,
+        fontFamily: T.fontMono,
+        fontSize: 12,
+      }}
+    >
+      <div style={{ marginBottom: 10 }}>
+        {allArchived ? (
+          <>
+            all {archivedCount} of your bots are{" "}
+            <span style={{ color: T.text2 }}>archived</span>
+          </>
+        ) : (
+          <>
+            no bots match <span style={{ color: T.text2 }}>{label}</span>
+          </>
+        )}
+      </div>
+      {allArchived && onShowArchived ? (
+        <Btn variant="ghost" size="sm" onClick={onShowArchived}>
+          view archived
+        </Btn>
+      ) : (
+        <Btn variant="ghost" size="sm" onClick={onReset}>
+          clear filter
+        </Btn>
+      )}
+    </div>
+  );
+}
+
+function ArchiveConfirmModal({
+  bot,
+  busy,
+  skipConfirm,
+  onSkipConfirmChange,
+  onCancel,
+  onConfirm,
+}: {
+  bot: Bot;
+  busy: boolean;
+  skipConfirm: boolean;
+  onSkipConfirmChange: (v: boolean) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const T = useT();
+  const isRunning = bot.status === "RUNNING";
+  const titleId = "bot-archive-confirm-title";
+  const cancelWrapRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    // Land focus on Cancel so keyboard users start at the non-destructive
+    // action. Escape also cancels (matches the backdrop click).
+    cancelWrapRef.current?.querySelector("button")?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.55)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+        padding: 24,
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: T.surface,
+          border: `1px solid ${T.outline}`,
+          borderRadius: 8,
+          maxWidth: 460,
+          width: "100%",
+          padding: 24,
+          fontFamily: T.fontSans,
+        }}
+      >
+        <h2
+          id={titleId}
+          style={{
+            margin: 0,
+            fontFamily: T.fontHead,
+            fontSize: 18,
+            fontWeight: 600,
+            color: T.text,
+          }}
+        >
+          Archive this bot?
+        </h2>
+        <p style={{ marginTop: 12, color: T.text2, fontSize: 13, lineHeight: 1.5 }}>
+          <span style={{ color: T.text }}>&ldquo;{bot.name}&rdquo;</span> will move to the Archived
+          bucket, out of your main list. {isRunning ? "It is currently running, so" : "It is already stopped;"}{" "}
+          archiving keeps it out of active rotation. You can restore it any time — it comes back
+          stopped, and you start it again from its page.
+        </p>
+        {isRunning && (
+          <div
+            style={{
+              marginTop: 14,
+              padding: "10px 12px",
+              border: `1px solid ${T.warning}`,
+              borderRadius: 6,
+              background: `${T.warning}11`,
+              color: T.warning,
+              fontSize: 12.5,
+              lineHeight: 1.45,
+            }}
+          >
+            This bot is running. Archiving stops it on the next cycle — it will stop opening and
+            managing positions until you restore it and start it again.
+          </div>
+        )}
+        <div
+          style={{
+            marginTop: 20,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          {isRunning ? (
+            <span style={{ fontSize: 11, color: T.text3 }}>
+              Stop warning shown because this bot is running.
+            </span>
+          ) : (
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 12,
+                color: T.text2,
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={skipConfirm}
+                onChange={(e) => onSkipConfirmChange(e.target.checked)}
+                disabled={busy}
+                style={{ accentColor: T.primary, cursor: busy ? "not-allowed" : "pointer" }}
+              />
+              Don&rsquo;t show this again
+            </label>
+          )}
+          <div style={{ display: "flex", gap: 10 }}>
+            <span ref={cancelWrapRef} style={{ display: "inline-flex" }}>
+              <Btn variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
+                Cancel
+              </Btn>
+            </span>
+            <Btn variant="danger" size="sm" onClick={onConfirm} disabled={busy}>
+              {busy ? "Archiving…" : "Archive"}
+            </Btn>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -451,9 +931,9 @@ function EmptyState() {
           money.
         </p>
         <div style={{ display: "inline-flex", gap: 10 }}>
-          <Link href="/strategies" style={{ textDecoration: "none" }}>
+          <Link href="/bots/new" style={{ textDecoration: "none" }}>
             <Btn variant="primary" size="lg" icon={Icon.plus}>
-              Pick a strategy to bind
+              Create a bot
             </Btn>
           </Link>
         </div>

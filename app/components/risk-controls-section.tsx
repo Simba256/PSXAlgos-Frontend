@@ -43,6 +43,14 @@ export const EMPTY_RISK_CONTROLS: RiskControlsValue = {
 interface RiskControlsSectionProps {
   value: RiskControlsValue;
   onChange: (next: RiskControlsValue) => void;
+  /**
+   * "default" (used standalone on the bot-detail editor) shows the heading +
+   * intro paragraph and stacks full-width rows. "compact" drops the heading /
+   * intro and renders the inputs as small surface-coloured bars matching the
+   * "risk caps" fields, so the create-bot form can sit risk controls in a
+   * collapsible disclosure beside risk caps. Default "default".
+   */
+  variant?: "default" | "compact";
 }
 
 interface FieldConfig {
@@ -110,8 +118,13 @@ const FIELDS: FieldConfig[] = [
   },
 ];
 
-export function RiskControlsSection({ value, onChange }: RiskControlsSectionProps) {
+export function RiskControlsSection({
+  value,
+  onChange,
+  variant = "default",
+}: RiskControlsSectionProps) {
   const T = useT();
+  const compact = variant === "compact";
 
   function handleChange(key: keyof RiskControlsValue, raw: string) {
     if (raw.trim() === "") {
@@ -128,6 +141,81 @@ export function RiskControlsSection({ value, onChange }: RiskControlsSectionProp
   const activeCount = (Object.values(value) as Array<number | null>).filter(
     (v) => v !== null,
   ).length;
+
+  // Compact bars mirror the backtest "risk caps" NumberInput exactly:
+  // surface fill, single-pixel outline via boxShadow, mono tabular numerals.
+  if (compact) {
+    return (
+      <div
+        style={{
+          display: "grid",
+          // Capped max (not 1fr) so each bar keeps a fixed small size instead
+          // of stretching to fill its column — matches the risk-caps bars
+          // whether full-width or in a half-width column.
+          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 220px))",
+          gap: 14,
+          maxWidth: 720,
+        }}
+      >
+        {FIELDS.map((f) => {
+          const v = value[f.key];
+          return (
+            <label
+              key={f.key}
+              htmlFor={`rc-${f.key}`}
+              style={{ display: "flex", flexDirection: "column", gap: 5 }}
+            >
+              <span
+                style={{
+                  fontFamily: T.fontMono,
+                  fontSize: 10,
+                  color: T.text3,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                }}
+              >
+                {f.label} ({f.unit})
+              </span>
+              <input
+                id={`rc-${f.key}`}
+                type="number"
+                inputMode={f.integer ? "numeric" : "decimal"}
+                min={f.min}
+                max={f.max}
+                step={f.step}
+                placeholder="off"
+                value={v === null ? "" : v}
+                onChange={(e) => handleChange(f.key, e.target.value)}
+                style={{
+                  background: T.surface,
+                  color: T.text,
+                  border: "none",
+                  boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+                  borderRadius: 6,
+                  padding: "8px 10px",
+                  fontFamily: T.fontMono,
+                  fontSize: 12.5,
+                  fontVariantNumeric: "tabular-nums",
+                  width: "100%",
+                  outline: "none",
+                }}
+              />
+              <span
+                style={{
+                  fontFamily: T.fontSans,
+                  fontSize: 10.5,
+                  color: T.text3,
+                  lineHeight: 1.4,
+                }}
+              >
+                {f.caption}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 14 }}>
