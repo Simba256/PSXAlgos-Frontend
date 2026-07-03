@@ -97,6 +97,17 @@ const BOTTOM_PRIMARY: BottomTab[] = [
       </svg>
     ),
   },
+  {
+    href: "/leaderboard",
+    label: "Leaderboard",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <rect x="3" y="10" width="4" height="7" rx="1" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+        <rect x="8" y="6" width="4" height="11" rx="1" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+        <rect x="13" y="13" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
 ];
 
 function useBodyScrollLock(locked: boolean) {
