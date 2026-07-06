@@ -157,6 +157,10 @@ interface NumericFilters {
   max_price: number | null;
   min_volume: number | null;
   min_market_cap: number | null;
+  // KMI / KSE-Meezan Shariah compliance. `true` restricts the universe to
+  // compliant stocks; `null` means no constraint. Not counted as a numeric
+  // filter (it's an attribute), but rides the same `stock_filters` payload.
+  is_shariah: boolean | null;
 }
 
 const EMPTY_FILTERS: NumericFilters = {
@@ -164,6 +168,7 @@ const EMPTY_FILTERS: NumericFilters = {
   max_price: null,
   min_volume: null,
   min_market_cap: null,
+  is_shariah: null,
 };
 
 interface RiskCaps {
@@ -215,7 +220,7 @@ function activeRiskCount(r: RiskCaps): number {
 }
 
 function activeFilterCount(f: NumericFilters): number {
-  return [f.min_price, f.max_price, f.min_volume, f.min_market_cap]
+  return [f.min_price, f.max_price, f.min_volume, f.min_market_cap, f.is_shariah]
     .filter((v) => v != null)
     .length;
 }
@@ -468,7 +473,8 @@ export function BacktestNewView({
       numericFilters.min_price != null ||
       numericFilters.max_price != null ||
       numericFilters.min_volume != null ||
-      numericFilters.min_market_cap != null;
+      numericFilters.min_market_cap != null ||
+      numericFilters.is_shariah != null;
     let payloadFilters: Record<string, unknown> | null = null;
     let payloadSymbols: string[] | null = null;
     if (universeScope === "by_sector") {
@@ -1790,12 +1796,20 @@ function UniverseSection({
             onToggle={() => setFiltersOpen((v) => !v)}
             tone="muted"
           >
+            <ShariahCheckbox
+              checked={filters.is_shariah === true}
+              onChange={(on) =>
+                onFilters({ ...filters, is_shariah: on ? true : null })
+              }
+              disabled={disabled}
+            />
             <div
               style={{
                 display: "grid",
                 gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
                 gap: 14,
                 maxWidth: 640,
+                marginTop: 14,
               }}
             >
               <NumberInput
@@ -1832,6 +1846,77 @@ function UniverseSection({
         )}
       </div>
     </Section>
+  );
+}
+
+/** Shariah-compliance toggle — a single clickable card matching the
+ *  scope radio styling. Single-state: checked → true, unchecked → null
+ *  ("non-compliant only" isn't a user-facing option). Sits inside the
+ *  numeric-filters disclosure alongside the price / volume inputs.
+ */
+function ShariahCheckbox({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (on: boolean) => void;
+  disabled: boolean;
+}) {
+  const T = useT();
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 12,
+        padding: "12px 14px",
+        maxWidth: 540,
+        width: "100%",
+        background: checked ? T.surface3 : T.surface,
+        color: T.text,
+        border: "none",
+        boxShadow: `0 0 0 1px ${checked ? T.outlineVariant : T.outlineFaint}`,
+        borderRadius: 8,
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.6 : 1,
+        fontFamily: "inherit",
+        textAlign: "left",
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          marginTop: 2,
+          width: 15,
+          height: 15,
+          borderRadius: 4,
+          border: `2px solid ${checked ? T.text : T.outlineFaint}`,
+          background: checked ? T.text : "transparent",
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        {checked && (
+          <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke={T.surface} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2.5 6.5l2.5 2.5 4.5-5.5" />
+          </svg>
+        )}
+      </span>
+      <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <span style={{ fontSize: 13.5, color: T.text }}>Shariah-compliant only</span>
+        <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3, lineHeight: 1.4 }}>
+          Keeps only stocks on the current KMI / KSE-Meezan list (refreshed quarterly).
+        </span>
+      </span>
+    </button>
   );
 }
 

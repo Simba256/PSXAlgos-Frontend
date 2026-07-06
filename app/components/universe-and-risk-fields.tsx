@@ -27,6 +27,11 @@ export interface StockFilters {
   max_price?: number | null;
   min_volume?: number | null;
   min_market_cap?: number | null;
+  // KMI / KSE-Meezan Shariah compliance. `true` restricts the universe to
+  // compliant stocks; `null`/absent means no constraint. The UI only ever
+  // sets `true` (a checkbox), never `false` — "non-compliant only" isn't a
+  // user-facing option. Strict NULL policy applies on the backend.
+  is_shariah?: boolean | null;
 }
 
 // Mirrors backend UniverseScope (strategy.py).
@@ -129,10 +134,11 @@ export function inferUniverseScope(
     (filters.min_price != null ||
       filters.max_price != null ||
       filters.min_volume != null ||
-      filters.min_market_cap != null)
+      filters.min_market_cap != null ||
+      filters.is_shariah != null)
   ) {
-    // Numeric thresholds but no sectors / no symbols — that's the
-    // shape ``all_active`` allows.
+    // Numeric thresholds or the Shariah filter, but no sectors / no
+    // symbols — that's the shape ``all_active`` allows.
     return "all_active";
   }
   return null;
@@ -198,7 +204,8 @@ export function UniverseAndRiskFields({
       merged.min_price == null &&
       merged.max_price == null &&
       merged.min_volume == null &&
-      merged.min_market_cap == null;
+      merged.min_market_cap == null &&
+      merged.is_shariah == null;
     onChange({ ...value, stock_filters: isEmpty ? null : merged });
   }
 
@@ -379,6 +386,23 @@ export function UniverseAndRiskFields({
             scope === "by_sector" ||
             scope === "by_sector_and_ticker") && (
             <Section
+              kicker="universe · shariah"
+              info="Restrict the universe to Shariah-compliant stocks (KMI / KSE-Meezan list, refreshed quarterly). In by_sector + tickers, explicit tickers bypass this filter."
+            >
+              <CheckboxRow
+                label="Shariah-compliant only"
+                hint="Keeps only stocks on the current KMI compliance list."
+                checked={filters.is_shariah === true}
+                onChange={(on) => patchFilters({ is_shariah: on ? true : null })}
+                disabled={disabled}
+              />
+            </Section>
+          )}
+
+          {(scope === "all_active" ||
+            scope === "by_sector" ||
+            scope === "by_sector_and_ticker") && (
+            <Section
               kicker="universe · numeric filters"
               info="Optional numeric guardrails. Leave blank to skip."
             >
@@ -453,7 +477,8 @@ function stripSectors(filters: StockFilters): StockFilters | null {
     next.min_price == null &&
     next.max_price == null &&
     next.min_volume == null &&
-    next.min_market_cap == null;
+    next.min_market_cap == null &&
+    next.is_shariah == null;
   return allEmpty ? null : next;
 }
 
@@ -1097,6 +1122,82 @@ function SymbolChip({
         ×
       </button>
     </span>
+  );
+}
+
+// Compliance / boolean toggle rendered as a clickable card, styled to match
+// the ScopeRadio cards (tinted surface + 1px ring). Single-state: checked
+// maps to `true`, unchecked to `null` (no "false" affordance).
+function CheckboxRow({
+  label,
+  hint,
+  checked,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (on: boolean) => void;
+  disabled: boolean;
+}) {
+  const T = useT();
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 12,
+        padding: "12px 14px",
+        maxWidth: 540,
+        width: "100%",
+        background: checked ? T.surface3 : T.surface,
+        color: T.text,
+        border: "none",
+        boxShadow: `0 0 0 1px ${checked ? T.outlineVariant : T.outlineFaint}`,
+        borderRadius: 8,
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.6 : 1,
+        fontFamily: "inherit",
+        textAlign: "left",
+        transition: "background 120ms ease, box-shadow 120ms ease",
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          marginTop: 2,
+          width: 15,
+          height: 15,
+          borderRadius: 4,
+          border: `2px solid ${checked ? T.text : T.outlineFaint}`,
+          background: checked ? T.text : "transparent",
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        {checked && (
+          <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke={T.surface} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2.5 6.5l2.5 2.5 4.5-5.5" />
+          </svg>
+        )}
+      </span>
+      <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <span style={{ fontSize: 13.5, color: T.text }}>{label}</span>
+        {hint && (
+          <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3, lineHeight: 1.4 }}>
+            {hint}
+          </span>
+        )}
+      </span>
+    </button>
   );
 }
 
