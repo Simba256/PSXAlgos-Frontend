@@ -24,7 +24,6 @@ import { useBreakpoint, PAD, pick, clampPx } from "@/components/responsive";
 import { drainSignalTrades, type PendingPosition } from "@/lib/signal-log-bridge";
 import {
   fromCSV,
-  todayLabel,
   toCSV,
   type ClosedTrade,
   type CloseReason,
@@ -56,6 +55,13 @@ function formatDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
+}
+
+// YYYY-MM-DD in the user's local timezone — the <input type="date"> value shape.
+function localDateValue(d = new Date()): string {
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
 }
 
 function uiSource(s: JournalSource): TradeSource {
@@ -262,12 +268,20 @@ export function PortfolioView({
     }
   }, [setFlash]);
 
-  async function handleLog(p: Omit<OpenPosition, "id">): Promise<boolean> {
+  async function handleLog(
+    p: Omit<OpenPosition, "id">,
+    openedAt?: string,
+  ): Promise<boolean> {
     try {
+      const body: OpenPositionCreateBody = {
+        ...buildCreateBody(p),
+        // Only set for backdated trades — omitted, the server stamps "now".
+        ...(openedAt ? { opened_at: openedAt } : {}),
+      };
       const resp = await fetch(`/api/portfolio/positions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(buildCreateBody(p)),
+        body: JSON.stringify(body),
       });
       if (!resp.ok) {
         setFlash(`Could not log ${p.sym}: ${await readError(resp)}`);
@@ -1583,7 +1597,8 @@ function LogTradeModal({
   strategyOptions,
 }: {
   onClose: () => void;
-  onSubmit: (p: Omit<OpenPosition, "id">) => Promise<boolean>;
+  // openedAt: ISO datetime for backdated trades; undefined = opened now.
+  onSubmit: (p: Omit<OpenPosition, "id">, openedAt?: string) => Promise<boolean>;
   symbolOptions: SymbolOption[];
   strategyOptions: StrategyOption[];
 }) {
@@ -1615,6 +1630,8 @@ function LogTradeModal({
   const [entry, setEntry] = useState("");
   const [stop, setStop] = useState("");
   const [target, setTarget] = useState("");
+  // Defaults to today; editable so trades taken earlier can be backfilled.
+  const [tradeDate, setTradeDate] = useState(localDateValue());
   const [source, setSource] = useState<TradeSource>("manual");
   const [strat, setStrat] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -1638,27 +1655,41 @@ function LogTradeModal({
   const rewardPct =
     targetN && entryN ? ((targetN - entryN) / entryN) * 100 : 0;
 
+  const today = localDateValue();
+  const backdated = tradeDate !== "" && tradeDate !== today;
+
   async function submit() {
     if (!sym.trim()) return setError("Symbol is required");
     if (!qtyN || qtyN <= 0) return setError("Quantity must be > 0");
     if (!entryN || entryN <= 0) return setError("Entry price must be > 0");
     if (stopN && stopN >= entryN) return setError("Stop must be below entry");
     if (targetN && targetN <= entryN) return setError("Target must be above entry");
+    if (!tradeDate) return setError("Trade date is required");
+    if (tradeDate > today) return setError("Trade date cannot be in the future");
     if (source === "signal" && !strat.trim()) return setError("Strategy is required for signal trades");
     setError(null);
     setSubmitting(true);
     try {
-      await onSubmit({
-        sym: sym.trim().toUpperCase(),
-        qty: Math.round(qtyN),
-        entry: Number(entryN.toFixed(2)),
-        now: Number(entryN.toFixed(2)),
-        source,
-        strat: source === "signal" ? strat.trim() : null,
-        date: todayLabel(),
-        stop: stopN ? Number(stopN.toFixed(2)) : 0,
-        target: targetN ? Number(targetN.toFixed(2)) : 0,
-      });
+      // Backdated trades pin opened_at to midday local time on the chosen
+      // day (exact fill time isn't journaled); today's trades omit it so
+      // the server stamps the actual submission moment.
+      const openedAt = backdated
+        ? new Date(`${tradeDate}T12:00:00`).toISOString()
+        : undefined;
+      await onSubmit(
+        {
+          sym: sym.trim().toUpperCase(),
+          qty: Math.round(qtyN),
+          entry: Number(entryN.toFixed(2)),
+          now: Number(entryN.toFixed(2)),
+          source,
+          strat: source === "signal" ? strat.trim() : null,
+          date: formatDate(`${tradeDate}T12:00:00`),
+          stop: stopN ? Number(stopN.toFixed(2)) : 0,
+          target: targetN ? Number(targetN.toFixed(2)) : 0,
+        },
+        openedAt,
+      );
     } finally {
       setSubmitting(false);
     }
@@ -1733,6 +1764,18 @@ function LogTradeModal({
             placeholder="optional"
             suffix={targetN && entryN ? `+${rewardPct.toFixed(1)}%` : "PKR"}
             type="number"
+            mono
+          />
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          <ModalInput
+            label="Trade date"
+            value={tradeDate}
+            onChange={setTradeDate}
+            type="date"
+            max={today}
+            suffix={backdated ? "backdated" : "today"}
             mono
           />
         </div>
@@ -2020,15 +2063,17 @@ function ModalInput({
   type = "text",
   mono,
   transform,
+  max,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   suffix?: string;
-  type?: "text" | "number";
+  type?: "text" | "number" | "date";
   mono?: boolean;
   transform?: (v: string) => string;
+  max?: string;
 }) {
   const T = useT();
   const boxStyle: CSSProperties = {
@@ -2050,6 +2095,9 @@ function ModalInput({
     fontSize: 13,
     width: "100%",
     padding: 0,
+    // Native date-picker chrome (calendar icon) follows the color scheme,
+    // not `color` — without this it renders dark-on-dark in dark themes.
+    colorScheme: type === "date" ? T.mode : undefined,
   };
   return (
     <div>
@@ -2059,6 +2107,7 @@ function ModalInput({
           type={type}
           value={value}
           placeholder={placeholder}
+          max={max}
           onChange={(e) => onChange(transform ? transform(e.target.value) : e.target.value)}
           style={inputStyle}
           inputMode={type === "number" ? "decimal" : undefined}
