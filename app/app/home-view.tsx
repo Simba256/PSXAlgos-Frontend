@@ -42,16 +42,6 @@ export interface DashBot {
   spark: number[];
 }
 
-export interface DashPosition {
-  id: string;
-  sym: string;
-  qty: number;
-  entry: number;
-  now: number | null;
-  strat: string | null;
-  date: string;
-}
-
 export interface DashboardViewProps {
   totalStrategies: number;
   deployedStrategies: number;
@@ -70,7 +60,11 @@ export interface DashboardViewProps {
   strategies: DashStrategy[];
   signals: DashSignal[];
   bots: DashBot[];
-  positions: DashPosition[];
+  // Whole-portfolio aggregates, computed in page.tsx over ALL open positions
+  // (unpriced rows excluded, matching /portfolio). Passed pre-aggregated so
+  // this view can't accidentally sum a display-truncated list.
+  totalInvested: number;
+  totalValue: number;
   portfolioSeries: number[];
   buyToday: number;
   sellToday: number;
@@ -98,7 +92,8 @@ export function DashboardView({
   realizedPnl,
   signals,
   bots,
-  positions,
+  totalInvested,
+  totalValue,
   portfolioSeries,
   buyToday,
   sellToday,
@@ -119,12 +114,6 @@ export function DashboardView({
 
   const firstName = userName ? userName.split(" ")[0] : null;
 
-  // Portfolio snapshot derived from open positions
-  const totalInvested = positions.reduce((s, p) => s + p.qty * p.entry, 0);
-  const totalValue = positions.reduce(
-    (s, p) => s + p.qty * (p.now ?? p.entry),
-    0
-  );
   const unrealizedPkr = totalValue - totalInvested;
   const unrealizedPct =
     totalInvested > 0 ? (unrealizedPkr / totalInvested) * 100 : 0;

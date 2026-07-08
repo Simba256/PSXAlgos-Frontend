@@ -5,7 +5,6 @@ import {
   DashboardView,
   type DashStrategy,
   type DashBot,
-  type DashPosition,
 } from "./home-view";
 import { signBackendJwt } from "@/lib/api/jwt";
 import { getStrategies } from "@/lib/api/strategies";
@@ -237,20 +236,23 @@ export default async function Home() {
     }
   });
 
-  // ── Open positions snapshot ─────────────────────────────────────────────────
-
-  const dashPositions: DashPosition[] = openPositions.slice(0, 5).map((p) => ({
-    id: String(p.id),
-    sym: p.symbol,
-    qty: p.quantity,
-    entry: safePct(p.entry_price) ?? 0,
-    now: safePct(p.current_price),
-    strat: p.strategy_name ?? null,
-    date: new Date(p.opened_at).toLocaleDateString("en-GB", {
-      month: "short",
-      day: "2-digit",
-    }),
-  }));
+  // ── Portfolio totals ────────────────────────────────────────────────────────
+  // Aggregated over ALL open positions here in the data layer — the view must
+  // never derive whole-portfolio numbers from a display-truncated list (a
+  // previous .slice(0, 5) here made the card understate a 60-position book).
+  // Convention matches /portfolio: rows with no current_price (no EOD data
+  // yet) are excluded from the aggregate rather than treated as flat-at-entry.
+  // If open positions ever become paginated, source these from an extended
+  // /portfolio/summary instead (see comment in portfolio/page.tsx).
+  let totalInvested = 0;
+  let totalValue = 0;
+  for (const p of openPositions) {
+    const now = safePct(p.current_price);
+    if (now == null) continue;
+    const entry = safePct(p.entry_price) ?? 0;
+    totalInvested += p.quantity * entry;
+    totalValue += p.quantity * now;
+  }
 
   // Cumulative realized-P&L curve for the portfolio's main chart, reconstructed
   // from closed trades (oldest → newest). This is the only honest time series we
@@ -285,7 +287,8 @@ export default async function Home() {
       strategies={dashStrategies}
       signals={dashSignals}
       bots={dashBots}
-      positions={dashPositions}
+      totalInvested={totalInvested}
+      totalValue={totalValue}
       portfolioSeries={portfolioSeries}
       buyToday={buyToday}
       sellToday={sellToday}
