@@ -1728,7 +1728,15 @@ function UniverseSection({
     false,
   );
 
-  const filterCount = activeFilterCount(filters);
+  // Count only the numeric fields here — the Shariah toggle now lives in
+  // its own visible subsection above, so it must not inflate this
+  // collapsed disclosure's summary.
+  const filterCount = [
+    filters.min_price,
+    filters.max_price,
+    filters.min_volume,
+    filters.min_market_cap,
+  ].filter((v) => v != null).length;
   const filterSummary =
     filterCount === 0
       ? "no filters"
@@ -1789,12 +1797,9 @@ function UniverseSection({
         {(scope === "all_active" ||
           scope === "by_sector" ||
           scope === "by_sector_and_ticker") && (
-          <Disclosure
-            label="numeric filters"
-            summary={filterSummary}
-            open={filtersOpen}
-            onToggle={() => setFiltersOpen((v) => !v)}
-            tone="muted"
+          <UniverseSubsection
+            kicker="shariah"
+            info="Restrict the universe to Shariah-compliant stocks (KMI / KSE-Meezan list, refreshed quarterly). In by_sector + tickers, explicit tickers bypass this filter."
           >
             <ShariahCheckbox
               checked={filters.is_shariah === true}
@@ -1803,13 +1808,25 @@ function UniverseSection({
               }
               disabled={disabled}
             />
+          </UniverseSubsection>
+        )}
+
+        {(scope === "all_active" ||
+          scope === "by_sector" ||
+          scope === "by_sector_and_ticker") && (
+          <Disclosure
+            label="numeric filters"
+            summary={filterSummary}
+            open={filtersOpen}
+            onToggle={() => setFiltersOpen((v) => !v)}
+            tone="muted"
+          >
             <div
               style={{
                 display: "grid",
                 gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
                 gap: 14,
                 maxWidth: 640,
-                marginTop: 14,
               }}
             >
               <NumberInput
@@ -1851,8 +1868,9 @@ function UniverseSection({
 
 /** Shariah-compliance toggle — a single clickable card matching the
  *  scope radio styling. Single-state: checked → true, unchecked → null
- *  ("non-compliant only" isn't a user-facing option). Sits inside the
- *  numeric-filters disclosure alongside the price / volume inputs.
+ *  ("non-compliant only" isn't a user-facing option). Sits in the stocks
+ *  section beside the sector / ticker pickers — a first-class universe
+ *  choice, not tucked inside the collapsed numeric-filters disclosure.
  */
 function ShariahCheckbox({
   checked,
