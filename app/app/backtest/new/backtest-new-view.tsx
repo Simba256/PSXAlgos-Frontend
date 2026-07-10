@@ -332,6 +332,7 @@ export function BacktestNewView({
   const [running, setRunning] = useState(false);
   const [progressPct, setProgressPct] = useState<number | null>(null);
   const [loadPct, setLoadPct] = useState<number | null>(null);
+  const [preparePct, setPreparePct] = useState<number | null>(null);
   // Frozen at submit so the progress date-scrubber maps percent-complete
   // onto the range this run actually covers, whatever the form does later.
   const [runInfo, setRunInfo] = useState<{
@@ -561,6 +562,7 @@ export function BacktestNewView({
     setRunning(true);
     setProgressPct(null);
     setLoadPct(null);
+    setPreparePct(null);
     const runStartMs = Date.now();
     setRunInfo({ startedAtMs: runStartMs, rangeStartIso: startDate, rangeEndIso: endDate });
     // Calibration sample for future pre-run estimates. Guarded at ≥3s so
@@ -612,6 +614,7 @@ export function BacktestNewView({
         onProgress: (s) => {
           if (typeof s.progress_pct === "number") setProgressPct(s.progress_pct);
           if (typeof s.load_pct === "number") setLoadPct(s.load_pct);
+          if (typeof s.prepare_pct === "number") setPreparePct(s.prepare_pct);
         },
       });
       if (final.status === "failed") {
@@ -630,6 +633,7 @@ export function BacktestNewView({
       setRunning(false);
       setProgressPct(null);
       setLoadPct(null);
+      setPreparePct(null);
     }
   }
 
@@ -795,7 +799,7 @@ export function BacktestNewView({
                       {running ? "Running…" : "Run backtest"}
                     </Btn>
                     {running && runInfo && (
-                      <RunProgress pct={progressPct} loadPct={loadPct} runInfo={runInfo} />
+                      <RunProgress pct={progressPct} loadPct={loadPct} preparePct={preparePct} runInfo={runInfo} />
                     )}
                   </div>
                 )}
@@ -823,6 +827,7 @@ export function BacktestNewView({
                   running={running}
                   progressPct={progressPct}
                   loadPct={loadPct}
+                  preparePct={preparePct}
                   runInfo={runInfo}
                   secsPerDecision={secsPerDecision}
                   onRun={handleRun}
@@ -903,6 +908,7 @@ function RunRail({
   running,
   progressPct,
   loadPct,
+  preparePct,
   runInfo,
   secsPerDecision,
   onRun,
@@ -926,6 +932,7 @@ function RunRail({
   running: boolean;
   progressPct: number | null;
   loadPct: number | null;
+  preparePct: number | null;
   runInfo: RunInfo | null;
   secsPerDecision: number | null;
   onRun: () => void;
@@ -1152,7 +1159,7 @@ function RunRail({
           {running ? "Running…" : "Run backtest"}
         </Btn>
         {running && runInfo && (
-          <RunProgress pct={progressPct} loadPct={loadPct} runInfo={runInfo} />
+          <RunProgress pct={progressPct} loadPct={loadPct} preparePct={preparePct} runInfo={runInfo} />
         )}
         {!strategy && (
           <div
@@ -1180,20 +1187,23 @@ interface RunInfo {
 }
 
 // Animated run progress rendered as a staged "journey" bar + date scrubber.
-// The engine replays the market day by day; the backend reports two phases
-// through the job status the watcher polls every 5s (`load_pct` during the
-// data fetch, `progress_pct` during the bar loop) — but there is real
-// waiting BEFORE the first report, BETWEEN the two phases (multi-TF
-// indicator stamping), and AFTER the last one (metrics + save). So backend
-// numbers don't map 1:1 onto the bar; they drive the middle of a journey
-// whose gaps advance at a predetermined pace:
+// The engine replays the market day by day; the backend reports three
+// phases through the job status the watcher polls every 5s (`load_pct`
+// during the daily data fetch, `prepare_pct` during the multi-TF indicator
+// stamp, `progress_pct` during the bar loop) — but there is real waiting
+// BEFORE the first report and AFTER the last one (metrics + save). Journey
+// shares are sized by observed wall time: the multi-TF stamp dominates a
+// wide-universe run while the simulation afterwards is near-instant.
 //
-//   0–20   time-based crawl, no backend feedback yet ("starting engine…")
-//   20–50  load_pct 0→100 ("loading market data · X%")
-//   50–55  time-based creep during indicator stamping ("preparing indicators…")
-//   55–80  sim percent 0→100 (date scrubber active)
-//   80–99  time-based crawl while metrics compute + results save
+//   0–10   time-based crawl, no backend feedback yet ("starting engine…")
+//   10–25  load_pct 0→100 ("loading market data")
+//   25–80  prepare_pct 0→100 ("preparing indicators" — the long haul)
+//   80–96  sim percent 0→100 (date scrubber active)
+//   96–99  time-based crawl while metrics compute + results save
 //   100    never shown — completion navigates away
+//
+// Every percentage in the status line is the JOURNEY percent (the bar's
+// actual fill), never a phase-local percent — one number, one bar.
 //
 // Time-based segments use an exponential approach to their ceiling so the
 // bar always moves but never lies past the next milestone. Sim percent is
@@ -1209,10 +1219,12 @@ type RunPhase = "starting" | "loading" | "preparing" | "simulating" | "finalizin
 function RunProgress({
   pct,
   loadPct,
+  preparePct,
   runInfo,
 }: {
   pct: number | null;
   loadPct: number | null;
+  preparePct: number | null;
   runInfo: RunInfo;
 }) {
   const T = useT();
@@ -1265,12 +1277,15 @@ function RunProgress({
   }
 
   // ── Phase resolution ──────────────────────────────────────────────
+  // preparePct arrives once the multi-TF stamp starts reporting; the
+  // loadPct >= 100 fallback covers the beat between load finishing and
+  // the first prepare tick (and older backends that never send it).
   const phase: RunPhase =
     estPct != null && estPct >= 98.5
       ? "finalizing"
       : pct != null
         ? "simulating"
-        : loadPct != null && loadPct >= 100
+        : preparePct != null || (loadPct != null && loadPct >= 100)
           ? "preparing"
           : loadPct != null
             ? "loading"
@@ -1288,19 +1303,24 @@ function RunProgress({
   let journeyPct: number;
   switch (phase) {
     case "starting":
-      journeyPct = creep(0, 20, 6);
+      journeyPct = creep(0, 10, 6);
       break;
     case "loading":
-      journeyPct = 20 + 30 * (Math.min(100, loadPct ?? 0) / 100);
+      journeyPct = 10 + 15 * (Math.min(100, loadPct ?? 0) / 100);
       break;
     case "preparing":
-      journeyPct = creep(50, 5, 6);
+      // Backend-driven when prepare_pct is reporting; a slow creep
+      // otherwise so the bar never freezes mid-journey.
+      journeyPct =
+        preparePct != null
+          ? 25 + 55 * (Math.min(100, preparePct) / 100)
+          : creep(25, 55, 40);
       break;
     case "simulating":
-      journeyPct = 55 + 25 * (Math.min(100, estPct ?? 0) / 100);
+      journeyPct = 80 + 16 * (Math.min(100, estPct ?? 0) / 100);
       break;
     case "finalizing":
-      journeyPct = creep(80, 19, 10);
+      journeyPct = creep(96, 3, 10);
       break;
   }
   maxShownRef.current = Math.max(maxShownRef.current, journeyPct);
@@ -1322,32 +1342,34 @@ function RunProgress({
     : null;
 
   // ── Status line ────────────────────────────────────────────────────
+  // All percentages here are the journey percent (the bar's fill) so the
+  // number on screen always matches the bar — never a phase-local pct.
+  const shown = Math.round(fillPct);
   let label: string;
   switch (phase) {
     case "starting":
-      label = "starting engine…";
+      label = `starting engine · ${shown}%`;
       break;
     case "loading":
-      label = `loading market data · ${loadPct}%`;
+      label = `loading market data · ${shown}%`;
       break;
     case "preparing":
-      label = "preparing indicators…";
+      label = `preparing indicators · ${shown}%`;
       break;
     case "simulating": {
-      const shown = Math.round(fillPct);
       if (cur != null && ratePctPerSec != null) {
         const remaining = (100 - cur.pct) / ratePctPerSec - (elapsedSec - cur.elapsedSec);
         label =
           remaining <= 1
-            ? `${shown}% · almost there…`
-            : `${shown}% · ~${formatDuration(remaining)} left`;
+            ? `simulating · ${shown}% · almost there…`
+            : `simulating · ${shown}% · ~${formatDuration(remaining)} left`;
       } else {
-        label = `${shown}% · estimating time…`;
+        label = `simulating · ${shown}%`;
       }
       break;
     }
     case "finalizing":
-      label = phaseSec < 6 ? "computing metrics…" : "saving results…";
+      label = `${phaseSec < 6 ? "computing metrics" : "saving results"} · ${shown}%`;
       break;
   }
 
