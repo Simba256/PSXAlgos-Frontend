@@ -85,6 +85,8 @@ Hybrid path:
 
 This replaces the old in-component `pollJob()` (1.5s × 30 attempts = 45s budget) which couldn't survive 10yr × all-stocks backtests.
 
+**Run progress UI (2026-07-10):** while a job runs, `backtest-new-view.tsx` renders `RunProgress` (under the rail CTA on desktop, under the mobile CTA bar) — an animated bar + live readout fed by the watcher's `onProgress` callback (`progress_pct` from the 5s poll). States: indeterminate sweep before the first tick ("starting engine…" → "loading market data…"), then a determinate fill with `X% · ~2m 10s left`. Remaining time is anchored at (pct, elapsed-at-pct) so it counts down between polls via a 1s ticker. The rail's "estimated scope" box also shows a pre-run `est. runtime ~N min`, extrapolated from a localStorage calibration (`psx.backtest.secsPerDecision`, 50/50-blended seconds-per-candidate-decision recorded on each finished run; hidden until the first run calibrates it).
+
 ---
 
 ## Component Architecture
