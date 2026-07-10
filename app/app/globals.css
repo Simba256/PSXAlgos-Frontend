@@ -185,12 +185,7 @@ canvas {
 }
 
 /* Backtest run progress (RunProgress in backtest-new-view.tsx):
- * sweep = indeterminate slide while the engine loads data (no ticks yet);
- * shimmer = highlight gliding across the determinate fill. */
-@keyframes psx-progress-sweep {
-  from { left: -35%; }
-  to { left: 100%; }
-}
+ * highlight gliding across the journey bar's fill. */
 @keyframes psx-progress-shimmer {
   from { transform: translateX(-100%); }
   to { transform: translateX(100%); }

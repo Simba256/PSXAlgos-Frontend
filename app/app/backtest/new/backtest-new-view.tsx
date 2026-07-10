@@ -1179,19 +1179,33 @@ interface RunInfo {
   rangeEndIso: string;
 }
 
-// Animated run progress rendered as a date scrubber: the engine replays the
-// market day by day, so simulation percent maps onto the backtest's calendar
-// range and the readout shows the simulation date sweeping from start to
-// end. The backend reports two phases through the job status the watcher
-// polls every 5s: `load_pct` while the engine fetches market data (which
-// dominates wall time on wide universes) and `progress_pct` during the bar
-// loop. Between polls a 1s ticker advances a smoothed sim percent at the
-// rate observed between the last two distinct polls — sim-phase rate only,
-// so a long load phase can't skew it — and the same rate drives a
-// counting-DOWN time-remaining estimate. (Date interpolation is
-// calendar-linear; trading days are near-uniform across the range, so
-// day-level error is invisible here.) Mounted fresh per run (parent renders
-// it only while `running`), so anchors never leak across runs.
+// Animated run progress rendered as a staged "journey" bar + date scrubber.
+// The engine replays the market day by day; the backend reports two phases
+// through the job status the watcher polls every 5s (`load_pct` during the
+// data fetch, `progress_pct` during the bar loop) — but there is real
+// waiting BEFORE the first report, BETWEEN the two phases (multi-TF
+// indicator stamping), and AFTER the last one (metrics + save). So backend
+// numbers don't map 1:1 onto the bar; they drive the middle of a journey
+// whose gaps advance at a predetermined pace:
+//
+//   0–20   time-based crawl, no backend feedback yet ("starting engine…")
+//   20–50  load_pct 0→100 ("loading market data · X%")
+//   50–55  time-based creep during indicator stamping ("preparing indicators…")
+//   55–80  sim percent 0→100 (date scrubber active)
+//   80–99  time-based crawl while metrics compute + results save
+//   100    never shown — completion navigates away
+//
+// Time-based segments use an exponential approach to their ceiling so the
+// bar always moves but never lies past the next milestone. Sim percent is
+// smoothed between polls at the rate observed between the last two distinct
+// polls (delta rate — never pct ÷ total-elapsed, which the load phase would
+// skew); the same rate drives the counting-down time-remaining estimate.
+// The sim date is a calendar-linear interpolation of the run's range —
+// trading days are near-uniform across it, so day-level error is invisible.
+// Mounted fresh per run (parent renders it only while `running`), so no
+// state leaks across runs.
+type RunPhase = "starting" | "loading" | "preparing" | "simulating" | "finalizing";
+
 function RunProgress({
   pct,
   loadPct,
@@ -1209,6 +1223,14 @@ function RunProgress({
     prev: { pct: number; elapsedSec: number } | null;
     cur: { pct: number; elapsedSec: number } | null;
   }>({ prev: null, cur: null });
+  // When the current phase was entered — drives the time-based segments.
+  const phaseRef = useRef<{ phase: RunPhase; atMs: number }>({
+    phase: "starting",
+    atMs: runInfo.startedAtMs,
+  });
+  // Monotonic guard: the journey bar never moves backwards, even across
+  // phase transitions.
+  const maxShownRef = useRef(0);
 
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 1000);
@@ -1232,8 +1254,8 @@ function RunProgress({
       : null;
 
   // Smoothed sim percent: advance from the last polled value at the
-  // observed rate, capped at 99 so the bar never claims done before the
-  // job is. Snaps back onto the real value at every poll via the anchor.
+  // observed rate, capped at 99 so it never claims done before the job is.
+  // Snaps back onto the real value at every poll via the anchor.
   let estPct: number | null = null;
   if (pct != null) {
     estPct =
@@ -1242,38 +1264,92 @@ function RunProgress({
         : pct;
   }
 
-  // Simulation date: calendar-linear interpolation of the run's range.
+  // ── Phase resolution ──────────────────────────────────────────────
+  const phase: RunPhase =
+    estPct != null && estPct >= 98.5
+      ? "finalizing"
+      : pct != null
+        ? "simulating"
+        : loadPct != null && loadPct >= 100
+          ? "preparing"
+          : loadPct != null
+            ? "loading"
+            : "starting";
+  if (phaseRef.current.phase !== phase) {
+    phaseRef.current = { phase, atMs: Date.now() };
+  }
+  const phaseSec = (Date.now() - phaseRef.current.atMs) / 1000;
+
+  // Exponential approach: covers `span` toward the ceiling with time
+  // constant `tau` — always moving, never arriving.
+  const creep = (floor: number, span: number, tau: number) =>
+    floor + span * (1 - Math.exp(-phaseSec / tau));
+
+  let journeyPct: number;
+  switch (phase) {
+    case "starting":
+      journeyPct = creep(0, 20, 6);
+      break;
+    case "loading":
+      journeyPct = 20 + 30 * (Math.min(100, loadPct ?? 0) / 100);
+      break;
+    case "preparing":
+      journeyPct = creep(50, 5, 6);
+      break;
+    case "simulating":
+      journeyPct = 55 + 25 * (Math.min(100, estPct ?? 0) / 100);
+      break;
+    case "finalizing":
+      journeyPct = creep(80, 19, 10);
+      break;
+  }
+  maxShownRef.current = Math.max(maxShownRef.current, journeyPct);
+  const fillPct = maxShownRef.current;
+
+  // ── Simulation date (scrubber center) ─────────────────────────────
   const rangeStartMs = parseISO(runInfo.rangeStartIso).getTime();
   const rangeEndMs = parseISO(runInfo.rangeEndIso).getTime();
   const rangeValid =
     Number.isFinite(rangeStartMs) && Number.isFinite(rangeEndMs) && rangeEndMs > rangeStartMs;
   const simDate =
-    estPct != null && rangeValid
-      ? new Date(rangeStartMs + (estPct / 100) * (rangeEndMs - rangeStartMs))
-      : null;
+    rangeValid && phase === "finalizing"
+      ? new Date(rangeEndMs)
+      : rangeValid && phase === "simulating" && estPct != null
+        ? new Date(rangeStartMs + (estPct / 100) * (rangeEndMs - rangeStartMs))
+        : null;
   const simLabel = simDate
     ? simDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
     : null;
 
+  // ── Status line ────────────────────────────────────────────────────
   let label: string;
-  if (pct == null) {
-    if (loadPct == null) {
-      label = elapsedSec < 6 ? "starting engine…" : "loading market data…";
-    } else {
+  switch (phase) {
+    case "starting":
+      label = "starting engine…";
+      break;
+    case "loading":
       label = `loading market data · ${loadPct}%`;
+      break;
+    case "preparing":
+      label = "preparing indicators…";
+      break;
+    case "simulating": {
+      const shown = Math.round(fillPct);
+      if (cur != null && ratePctPerSec != null) {
+        const remaining = (100 - cur.pct) / ratePctPerSec - (elapsedSec - cur.elapsedSec);
+        label =
+          remaining <= 1
+            ? `${shown}% · almost there…`
+            : `${shown}% · ~${formatDuration(remaining)} left`;
+      } else {
+        label = `${shown}% · estimating time…`;
+      }
+      break;
     }
-  } else if (cur != null && ratePctPerSec != null) {
-    const remaining = (100 - cur.pct) / ratePctPerSec - (elapsedSec - cur.elapsedSec);
-    label =
-      remaining <= 1
-        ? `${Math.round(estPct ?? pct)}% · finishing up…`
-        : `${Math.round(estPct ?? pct)}% · ~${formatDuration(remaining)} left`;
-  } else {
-    label = `${pct}% · estimating time…`;
+    case "finalizing":
+      label = phaseSec < 6 ? "computing metrics…" : "saving results…";
+      break;
   }
-
-  // Bar fill: sim percent once simulating, load percent while loading.
-  const fillPct = estPct ?? loadPct;
 
   return (
     <div
@@ -1291,47 +1367,32 @@ function RunProgress({
           overflow: "hidden",
         }}
       >
-        {fillPct == null ? (
+        <span
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: 0,
+            width: `${Math.max(2, Math.min(100, fillPct))}%`,
+            borderRadius: 999,
+            background: T.primary,
+            // Pre-simulation phases render dimmed so the switch to the
+            // full-strength sim fill reads as the run getting real.
+            opacity: phase === "simulating" || phase === "finalizing" ? 1 : 0.55,
+            transition: "width 1s linear, opacity 0.6s ease",
+            overflow: "hidden",
+          }}
+        >
           <span
             style={{
               position: "absolute",
-              top: 0,
-              bottom: 0,
-              width: "35%",
-              borderRadius: 999,
-              background: `linear-gradient(90deg, transparent, ${T.primary}, transparent)`,
-              animation: "psx-progress-sweep 1.4s ease-in-out infinite",
+              inset: 0,
+              background:
+                "linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent)",
+              animation: "psx-progress-shimmer 1.8s ease-in-out infinite",
             }}
           />
-        ) : (
-          <span
-            style={{
-              position: "absolute",
-              top: 0,
-              bottom: 0,
-              left: 0,
-              width: `${Math.max(2, Math.min(100, fillPct))}%`,
-              borderRadius: 999,
-              background: T.primary,
-              // Load phase renders dimmed so the switch to the full-strength
-              // sim fill (which restarts near 0) reads as a new phase, not
-              // the bar losing progress.
-              opacity: estPct == null ? 0.55 : 1,
-              transition: "width 1s linear",
-              overflow: "hidden",
-            }}
-          >
-            <span
-              style={{
-                position: "absolute",
-                inset: 0,
-                background:
-                  "linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent)",
-                animation: "psx-progress-shimmer 1.8s ease-in-out infinite",
-              }}
-            />
-          </span>
-        )}
+        </span>
       </div>
 
       {/* Date scrubber: range endpoints anchored at the edges, the live
