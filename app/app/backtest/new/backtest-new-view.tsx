@@ -18,7 +18,12 @@ import {
   useFlash,
 } from "@/components/atoms";
 import { Disclosure } from "@/components/disclosure";
-import { SectorPicker } from "@/components/universe-and-risk-fields";
+import {
+  CheckboxRow,
+  ScopeDropdown,
+  SectorPicker,
+  SymbolPicker,
+} from "@/components/universe-and-risk-fields";
 import { useSessionStorage } from "@/components/use-session-storage";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
@@ -1748,10 +1753,10 @@ function UniverseSection({
       hint="Pick the stocks this run targets. Required — the run button stays disabled until you choose."
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-        <ScopePicker
+        <ScopeDropdown
           scope={scope}
           onChange={onScope}
-          totalActive={totalActive}
+          allActiveCount={totalActive}
           disabled={disabled}
         />
 
@@ -1781,7 +1786,7 @@ function UniverseSection({
                 : "Add the exact tickers this run targets. Explicit tickers bypass the active-stock gate so backtests can include delisted names."
             }
           >
-            <SymbolPickerInline
+            <SymbolPicker
               available={availableSymbols}
               selected={tickers}
               onAdd={(sym) => {
@@ -1802,7 +1807,9 @@ function UniverseSection({
             kicker="shariah"
             info="Restrict the universe to Shariah-compliant stocks (KMI / KSE-Meezan list, refreshed quarterly). In by_sector + tickers, explicit tickers bypass this filter."
           >
-            <ShariahCheckbox
+            <CheckboxRow
+              label="Shariah-compliant only"
+              hint="Keeps only stocks on the current KMI / KSE-Meezan list (refreshed quarterly)."
               checked={filters.is_shariah === true}
               onChange={(on) =>
                 onFilters({ ...filters, is_shariah: on ? true : null })
@@ -1864,194 +1871,6 @@ function UniverseSection({
         )}
       </div>
     </Section>
-  );
-}
-
-/** Shariah-compliance toggle — a single clickable card matching the
- *  scope radio styling. Single-state: checked → true, unchecked → null
- *  ("non-compliant only" isn't a user-facing option). Sits in the stocks
- *  section beside the sector / ticker pickers — a first-class universe
- *  choice, not tucked inside the collapsed numeric-filters disclosure.
- */
-function ShariahCheckbox({
-  checked,
-  onChange,
-  disabled,
-}: {
-  checked: boolean;
-  onChange: (on: boolean) => void;
-  disabled: boolean;
-}) {
-  const T = useT();
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 12,
-        padding: "12px 14px",
-        maxWidth: 540,
-        width: "100%",
-        background: checked ? T.surface3 : T.surface,
-        color: T.text,
-        border: "none",
-        boxShadow: `0 0 0 1px ${checked ? T.outlineVariant : T.outlineFaint}`,
-        borderRadius: 8,
-        cursor: disabled ? "not-allowed" : "pointer",
-        opacity: disabled ? 0.6 : 1,
-        fontFamily: "inherit",
-        textAlign: "left",
-      }}
-    >
-      <span
-        aria-hidden="true"
-        style={{
-          marginTop: 2,
-          width: 15,
-          height: 15,
-          borderRadius: 4,
-          border: `2px solid ${checked ? T.text : T.outlineFaint}`,
-          background: checked ? T.text : "transparent",
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        {checked && (
-          <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke={T.surface} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2.5 6.5l2.5 2.5 4.5-5.5" />
-          </svg>
-        )}
-      </span>
-      <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <span style={{ fontSize: 13.5, color: T.text }}>Shariah-compliant only</span>
-        <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3, lineHeight: 1.4 }}>
-          Keeps only stocks on the current KMI / KSE-Meezan list (refreshed quarterly).
-        </span>
-      </span>
-    </button>
-  );
-}
-
-/** Scope picker — three radio cards. Nothing selected by default; the
- *  parent form blocks submission until the user picks. Closes the
- *  audit-discoverable "silently backtested against all 500 stocks"
- *  bug by requiring an explicit choice.
- */
-function ScopePicker({
-  scope,
-  onChange,
-  totalActive,
-  disabled,
-}: {
-  scope: "all_active" | "by_sector" | "by_ticker" | "by_sector_and_ticker" | null;
-  onChange: (next: "all_active" | "by_sector" | "by_ticker" | "by_sector_and_ticker") => void;
-  totalActive: number;
-  disabled: boolean;
-}) {
-  const T = useT();
-  const options: Array<{
-    value: "all_active" | "by_sector" | "by_ticker" | "by_sector_and_ticker";
-    label: string;
-    hint: string;
-  }> = [
-    {
-      value: "all_active",
-      label: "All active stocks",
-      hint: `Every PSX symbol that's active today (${totalActive.toLocaleString("en-PK")}). Numeric filters still apply.`,
-    },
-    {
-      value: "by_sector",
-      label: "By sector",
-      hint: "Active stocks in the sectors you pick.",
-    },
-    {
-      value: "by_ticker",
-      label: "By ticker",
-      hint: "Only the exact tickers you list. Backtests may include delisted names.",
-    },
-    {
-      value: "by_sector_and_ticker",
-      label: "By sector + extra tickers",
-      hint: "Combine sectors with additional explicit tickers. Numeric filters trim the sector side; explicit tickers come through unfiltered.",
-    },
-  ];
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 380 }}>
-      <div
-        style={{
-          position: "relative",
-          display: "flex",
-          alignItems: "center",
-        }}
-      >
-        <select
-          value={scope ?? ""}
-          disabled={disabled}
-          onChange={(e) => {
-            const v = e.target.value as "all_active" | "by_sector" | "by_ticker" | "by_sector_and_ticker";
-            if (v) onChange(v);
-          }}
-          style={{
-            width: "100%",
-            appearance: "none",
-            WebkitAppearance: "none",
-            padding: "9px 36px 9px 12px",
-            borderRadius: 8,
-            border: `1px solid ${scope ? T.outlineVariant : T.outlineFaint}`,
-            background: T.surface,
-            color: scope ? T.text : T.text3,
-            fontFamily: "inherit",
-            fontSize: 13.5,
-            cursor: disabled ? "not-allowed" : "pointer",
-            opacity: disabled ? 0.6 : 1,
-            outline: "none",
-          }}
-        >
-          <option value="" disabled>pick scope…</option>
-          {options.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
-        </select>
-        <svg
-          aria-hidden
-          width="12" height="12" viewBox="0 0 12 12"
-          fill="none" stroke="currentColor" strokeWidth="1.6"
-          strokeLinecap="round" strokeLinejoin="round"
-          style={{
-            position: "absolute",
-            right: 12,
-            pointerEvents: "none",
-            color: T.text3,
-          }}
-        >
-          <path d="M2 4l4 4 4-4" />
-        </svg>
-      </div>
-      {scope && (
-        <span
-          style={{
-            fontFamily: T.fontMono,
-            fontSize: 11,
-            color: T.text3,
-            lineHeight: 1.4,
-          }}
-        >
-          {options.find((o) => o.value === scope)?.hint}
-        </span>
-      )}
-      {scope === null && (
-        <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
-          nothing picked — run blocked until you choose
-        </span>
-      )}
-    </div>
   );
 }
 
@@ -2300,215 +2119,3 @@ function NumberInput({
   );
 }
 
-/* ────────── Inline symbol picker (kept inline because the universe-mode
-    surface owns its UI state separately from the shared component). ───── */
-
-function SymbolPickerInline({
-  available,
-  selected,
-  onAdd,
-  onRemove,
-  disabled,
-}: {
-  available: { symbol: string; name?: string | null }[];
-  selected: string[];
-  onAdd: (sym: string) => void;
-  onRemove: (sym: string) => void;
-  disabled: boolean;
-}) {
-  const T = useT();
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false);
-  const [highlight, setHighlight] = useState(0);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-
-  const matches = useMemo(() => {
-    const q = query.trim().toUpperCase();
-    if (!q) return [];
-    const exclude = new Set(selected);
-    const starts: typeof available = [];
-    const contains: typeof available = [];
-    for (const opt of available) {
-      if (exclude.has(opt.symbol)) continue;
-      const sym = opt.symbol.toUpperCase();
-      const name = (opt.name ?? "").toUpperCase();
-      if (sym.startsWith(q)) starts.push(opt);
-      else if (sym.includes(q) || name.includes(q)) contains.push(opt);
-      if (starts.length + contains.length >= 8) break;
-    }
-    return [...starts, ...contains].slice(0, 8);
-  }, [query, available, selected]);
-
-  useEffect(() => {
-    setHighlight((h) => Math.min(h, Math.max(0, matches.length - 1)));
-  }, [matches.length]);
-
-  useEffect(() => {
-    if (!open) return;
-    function onDocClick(e: MouseEvent) {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open]);
-
-  function commit(sym: string) {
-    onAdd(sym);
-    setQuery("");
-    setHighlight(0);
-  }
-
-  function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setOpen(true);
-      setHighlight((h) => (matches.length === 0 ? 0 : (h + 1) % matches.length));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setOpen(true);
-      setHighlight((h) =>
-        matches.length === 0 ? 0 : (h - 1 + matches.length) % matches.length,
-      );
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      if (matches[highlight]) commit(matches[highlight].symbol);
-      else if (query.trim()) commit(query);
-    } else if (e.key === "Escape") {
-      setOpen(false);
-    }
-  }
-
-  return (
-    <div ref={wrapRef} style={{ position: "relative", maxWidth: 360 }}>
-      <input
-        type="text"
-        value={query}
-        placeholder="search and add a ticker"
-        autoComplete="off"
-        disabled={disabled}
-        onChange={(e) => {
-          setQuery(e.target.value.toUpperCase());
-          setOpen(true);
-        }}
-        onFocus={() => setOpen(true)}
-        onKeyDown={onKey}
-        style={{
-          background: T.surface,
-          color: T.text,
-          border: "none",
-          boxShadow: `0 0 0 1px ${T.outlineFaint}`,
-          borderRadius: 6,
-          padding: "9px 12px",
-          fontFamily: T.fontMono,
-          fontSize: 12.5,
-          width: "100%",
-          opacity: disabled ? 0.6 : 1,
-        }}
-      />
-      {open && matches.length > 0 && (
-        <div
-          role="listbox"
-          style={{
-            position: "absolute",
-            top: "100%",
-            left: 0,
-            right: 0,
-            marginTop: 4,
-            background: T.surface2,
-            borderRadius: 8,
-            boxShadow: `0 0 0 1px ${T.outlineFaint}, 0 12px 32px -12px rgba(0,0,0,0.5)`,
-            maxHeight: 240,
-            overflowY: "auto",
-            zIndex: 10,
-          }}
-        >
-          {matches.map((opt, i) => {
-            const active = i === highlight;
-            return (
-              <div
-                key={opt.symbol}
-                role="option"
-                aria-selected={active}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  commit(opt.symbol);
-                }}
-                onMouseEnter={() => setHighlight(i)}
-                style={{
-                  padding: "8px 12px",
-                  display: "flex",
-                  alignItems: "baseline",
-                  justifyContent: "space-between",
-                  gap: 10,
-                  background: active ? T.surface3 : "transparent",
-                  cursor: "pointer",
-                }}
-              >
-                <span style={{ fontFamily: T.fontMono, fontSize: 13, color: T.text }}>
-                  {opt.symbol}
-                </span>
-                {opt.name && (
-                  <span
-                    style={{
-                      fontFamily: T.fontSans,
-                      fontSize: 11,
-                      color: T.text3,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      maxWidth: "60%",
-                    }}
-                  >
-                    {opt.name}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {selected.length > 0 && (
-        <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {selected.map((sym) => (
-            <span
-              key={sym}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "5px 6px 5px 10px",
-                background: T.surface3,
-                border: `1px solid ${T.outlineFaint}`,
-                borderRadius: 999,
-                fontFamily: T.fontMono,
-                fontSize: 11.5,
-                color: T.text,
-              }}
-            >
-              {sym}
-              <button
-                type="button"
-                onClick={() => onRemove(sym)}
-                disabled={disabled}
-                aria-label={`Remove ${sym}`}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  color: T.text3,
-                  cursor: disabled ? "not-allowed" : "pointer",
-                  fontSize: 13,
-                  padding: "0 4px",
-                  lineHeight: 1,
-                  fontFamily: "inherit",
-                }}
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}

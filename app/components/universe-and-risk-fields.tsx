@@ -587,20 +587,29 @@ function ScopeRadio({
 }
 
 // Dropdown scope picker — the single-`<select>` variant used on the
-// bot-create form so it reads identically to the backtest "stocks" field.
-// Shares SCOPE_OPTIONS with ScopeRadio. Renders the selected scope's hint
+// bot-create form and the backtest form's "stocks" field. Shares
+// SCOPE_OPTIONS with ScopeRadio. Renders the selected scope's hint
 // (or the "nothing picked" note) underneath, matching the radio variant's
 // affordances.
-function ScopeDropdown({
+export function ScopeDropdown({
   scope,
   onChange,
   disabled,
+  allActiveCount,
 }: {
   scope: UniverseScope | null;
   onChange: (next: UniverseScope) => void;
   disabled: boolean;
+  /** When provided, the all_active hint shows the live stock count. */
+  allActiveCount?: number | null;
 }) {
   const T = useT();
+  const hintFor = (value: UniverseScope): string | undefined => {
+    if (value === "all_active" && allActiveCount != null) {
+      return `Every PSX symbol that's active today (${allActiveCount.toLocaleString("en-PK")}). Numeric filters still apply.`;
+    }
+    return SCOPE_OPTIONS.find((o) => o.value === value)?.hint;
+  };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 380 }}>
       <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
@@ -654,7 +663,7 @@ function ScopeDropdown({
       </div>
       {scope ? (
         <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3, lineHeight: 1.4 }}>
-          {SCOPE_OPTIONS.find((o) => o.value === scope)?.hint}
+          {hintFor(scope)}
         </span>
       ) : (
         <span style={{ fontFamily: T.fontMono, fontSize: 11, color: T.text3 }}>
@@ -862,7 +871,8 @@ export function SectorPicker({
 // on Enter or on suggestion click. Doesn't use Combobox because we need a
 // distinct "commit and add chip" event (Combobox's onChange fires on every
 // keystroke, so we couldn't tell a partial typed value apart from a commit).
-function SymbolPicker({
+// Exported: also the ticker field on the backtest form (backtest/new).
+export function SymbolPicker({
   available,
   selected,
   onAdd,
@@ -1140,7 +1150,8 @@ function SymbolChip({
 // Compliance / boolean toggle rendered as a clickable card, styled to match
 // the ScopeRadio cards (tinted surface + 1px ring). Single-state: checked
 // maps to `true`, unchecked to `null` (no "false" affordance).
-function CheckboxRow({
+// Exported: also the Shariah toggle on the backtest form (backtest/new).
+export function CheckboxRow({
   label,
   hint,
   checked,
