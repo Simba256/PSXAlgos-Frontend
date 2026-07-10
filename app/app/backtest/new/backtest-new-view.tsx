@@ -331,6 +331,7 @@ export function BacktestNewView({
 
   const [running, setRunning] = useState(false);
   const [progressPct, setProgressPct] = useState<number | null>(null);
+  const [loadPct, setLoadPct] = useState<number | null>(null);
   // Frozen at submit so the progress date-scrubber maps percent-complete
   // onto the range this run actually covers, whatever the form does later.
   const [runInfo, setRunInfo] = useState<{
@@ -559,6 +560,7 @@ export function BacktestNewView({
 
     setRunning(true);
     setProgressPct(null);
+    setLoadPct(null);
     const runStartMs = Date.now();
     setRunInfo({ startedAtMs: runStartMs, rangeStartIso: startDate, rangeEndIso: endDate });
     // Calibration sample for future pre-run estimates. Guarded at ≥3s so
@@ -609,6 +611,7 @@ export function BacktestNewView({
       const final = await watchBacktestJob(strategyId, started.job_id, {
         onProgress: (s) => {
           if (typeof s.progress_pct === "number") setProgressPct(s.progress_pct);
+          if (typeof s.load_pct === "number") setLoadPct(s.load_pct);
         },
       });
       if (final.status === "failed") {
@@ -626,6 +629,7 @@ export function BacktestNewView({
       setFlash(err instanceof Error ? err.message : "Backtest failed");
       setRunning(false);
       setProgressPct(null);
+      setLoadPct(null);
     }
   }
 
@@ -791,7 +795,7 @@ export function BacktestNewView({
                       {running ? "Running…" : "Run backtest"}
                     </Btn>
                     {running && runInfo && (
-                      <RunProgress pct={progressPct} runInfo={runInfo} />
+                      <RunProgress pct={progressPct} loadPct={loadPct} runInfo={runInfo} />
                     )}
                   </div>
                 )}
@@ -818,6 +822,7 @@ export function BacktestNewView({
                   riskIsDefault={usingDefaultRisk}
                   running={running}
                   progressPct={progressPct}
+                  loadPct={loadPct}
                   runInfo={runInfo}
                   secsPerDecision={secsPerDecision}
                   onRun={handleRun}
@@ -897,6 +902,7 @@ function RunRail({
   riskIsDefault,
   running,
   progressPct,
+  loadPct,
   runInfo,
   secsPerDecision,
   onRun,
@@ -919,6 +925,7 @@ function RunRail({
   riskIsDefault: boolean;
   running: boolean;
   progressPct: number | null;
+  loadPct: number | null;
   runInfo: RunInfo | null;
   secsPerDecision: number | null;
   onRun: () => void;
@@ -1144,7 +1151,9 @@ function RunRail({
         >
           {running ? "Running…" : "Run backtest"}
         </Btn>
-        {running && runInfo && <RunProgress pct={progressPct} runInfo={runInfo} />}
+        {running && runInfo && (
+          <RunProgress pct={progressPct} loadPct={loadPct} runInfo={runInfo} />
+        )}
         {!strategy && (
           <div
             style={{
@@ -1171,21 +1180,35 @@ interface RunInfo {
 }
 
 // Animated run progress rendered as a date scrubber: the engine replays the
-// market day by day, so percent-complete maps onto the backtest's calendar
+// market day by day, so simulation percent maps onto the backtest's calendar
 // range and the readout shows the simulation date sweeping from start to
-// end. The backend flushes `progress_pct` to the job status which the
-// watcher polls every 5s; between polls a 1s ticker advances a smoothed
-// percent at the average observed rate, so the date keeps ticking instead
-// of jumping every 5s. (Interpolation is calendar-linear — trading days are
-// near-uniform across the range, so day-level error is invisible here.)
-// The remaining-time anchor is (pct, elapsed-at-that-pct) so the ETA counts
-// DOWN between polls instead of drifting up with elapsed time. Mounted
-// fresh per run (parent renders it only while `running`), so the anchor
-// never leaks across runs.
-function RunProgress({ pct, runInfo }: { pct: number | null; runInfo: RunInfo }) {
+// end. The backend reports two phases through the job status the watcher
+// polls every 5s: `load_pct` while the engine fetches market data (which
+// dominates wall time on wide universes) and `progress_pct` during the bar
+// loop. Between polls a 1s ticker advances a smoothed sim percent at the
+// rate observed between the last two distinct polls — sim-phase rate only,
+// so a long load phase can't skew it — and the same rate drives a
+// counting-DOWN time-remaining estimate. (Date interpolation is
+// calendar-linear; trading days are near-uniform across the range, so
+// day-level error is invisible here.) Mounted fresh per run (parent renders
+// it only while `running`), so anchors never leak across runs.
+function RunProgress({
+  pct,
+  loadPct,
+  runInfo,
+}: {
+  pct: number | null;
+  loadPct: number | null;
+  runInfo: RunInfo;
+}) {
   const T = useT();
   const [, setTick] = useState(0);
-  const anchor = useRef<{ pct: number; elapsedSec: number } | null>(null);
+  // Last two distinct sim-progress observations; their delta gives the
+  // sim-phase rate (pct/sec) once two polls have landed.
+  const anchors = useRef<{
+    prev: { pct: number; elapsedSec: number } | null;
+    cur: { pct: number; elapsedSec: number } | null;
+  }>({ prev: null, cur: null });
 
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 1000);
@@ -1193,25 +1216,30 @@ function RunProgress({ pct, runInfo }: { pct: number | null; runInfo: RunInfo })
   }, []);
 
   useEffect(() => {
-    if (pct != null && pct > 0) {
-      anchor.current = { pct, elapsedSec: (Date.now() - runInfo.startedAtMs) / 1000 };
+    if (pct != null && pct !== anchors.current.cur?.pct) {
+      anchors.current = {
+        prev: anchors.current.cur,
+        cur: { pct, elapsedSec: (Date.now() - runInfo.startedAtMs) / 1000 },
+      };
     }
   }, [pct, runInfo.startedAtMs]);
 
   const elapsedSec = (Date.now() - runInfo.startedAtMs) / 1000;
+  const { prev, cur } = anchors.current;
+  const ratePctPerSec =
+    prev != null && cur != null && cur.pct > prev.pct && cur.elapsedSec > prev.elapsedSec
+      ? (cur.pct - prev.pct) / (cur.elapsedSec - prev.elapsedSec)
+      : null;
 
-  // Smoothed percent: advance from the last polled pct at the average rate
-  // observed so far, capped at 99 so the bar never claims done before the
+  // Smoothed sim percent: advance from the last polled value at the
+  // observed rate, capped at 99 so the bar never claims done before the
   // job is. Snaps back onto the real value at every poll via the anchor.
   let estPct: number | null = null;
   if (pct != null) {
-    const a = anchor.current;
-    if (a != null && a.elapsedSec > 0) {
-      const ratePctPerSec = a.pct / a.elapsedSec;
-      estPct = Math.min(99, a.pct + ratePctPerSec * Math.max(0, elapsedSec - a.elapsedSec));
-    } else {
-      estPct = pct;
-    }
+    estPct =
+      cur != null && ratePctPerSec != null
+        ? Math.min(99, cur.pct + ratePctPerSec * Math.max(0, elapsedSec - cur.elapsedSec))
+        : pct;
   }
 
   // Simulation date: calendar-linear interpolation of the run's range.
@@ -1229,20 +1257,23 @@ function RunProgress({ pct, runInfo }: { pct: number | null; runInfo: RunInfo })
 
   let label: string;
   if (pct == null) {
-    // No progress ticks yet — the engine is in its data-load phase.
-    label = elapsedSec < 6 ? "starting engine…" : "loading market data…";
-  } else {
-    const a = anchor.current;
-    if (a != null && a.pct >= 3 && a.elapsedSec >= 4) {
-      const remaining = (a.elapsedSec * 100) / a.pct - elapsedSec;
-      label =
-        remaining <= 1
-          ? `${pct}% · finishing up…`
-          : `${pct}% · ~${formatDuration(remaining)} left`;
+    if (loadPct == null) {
+      label = elapsedSec < 6 ? "starting engine…" : "loading market data…";
     } else {
-      label = `${pct}% · estimating time…`;
+      label = `loading market data · ${loadPct}%`;
     }
+  } else if (cur != null && ratePctPerSec != null) {
+    const remaining = (100 - cur.pct) / ratePctPerSec - (elapsedSec - cur.elapsedSec);
+    label =
+      remaining <= 1
+        ? `${Math.round(estPct ?? pct)}% · finishing up…`
+        : `${Math.round(estPct ?? pct)}% · ~${formatDuration(remaining)} left`;
+  } else {
+    label = `${pct}% · estimating time…`;
   }
+
+  // Bar fill: sim percent once simulating, load percent while loading.
+  const fillPct = estPct ?? loadPct;
 
   return (
     <div
@@ -1260,7 +1291,7 @@ function RunProgress({ pct, runInfo }: { pct: number | null; runInfo: RunInfo })
           overflow: "hidden",
         }}
       >
-        {estPct == null ? (
+        {fillPct == null ? (
           <span
             style={{
               position: "absolute",
@@ -1279,9 +1310,13 @@ function RunProgress({ pct, runInfo }: { pct: number | null; runInfo: RunInfo })
               top: 0,
               bottom: 0,
               left: 0,
-              width: `${Math.max(2, Math.min(100, estPct))}%`,
+              width: `${Math.max(2, Math.min(100, fillPct))}%`,
               borderRadius: 999,
               background: T.primary,
+              // Load phase renders dimmed so the switch to the full-strength
+              // sim fill (which restarts near 0) reads as a new phase, not
+              // the bar losing progress.
+              opacity: estPct == null ? 0.55 : 1,
               transition: "width 1s linear",
               overflow: "hidden",
             }}

@@ -650,6 +650,10 @@ export interface BacktestJobStatus {
   progress_pct?: number | null;
   bars_done?: number | null;
   total_bars?: number | null;
+  // "loading" (data fetch — dominates wall time on wide universes) or
+  // "simulating" (bar loop). load_pct accompanies "loading".
+  phase?: "loading" | "simulating" | null;
+  load_pct?: number | null;
 }
 
 export async function startBacktest(
