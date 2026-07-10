@@ -331,7 +331,13 @@ export function BacktestNewView({
 
   const [running, setRunning] = useState(false);
   const [progressPct, setProgressPct] = useState<number | null>(null);
-  const [runStartedAtMs, setRunStartedAtMs] = useState(0);
+  // Frozen at submit so the progress date-scrubber maps percent-complete
+  // onto the range this run actually covers, whatever the form does later.
+  const [runInfo, setRunInfo] = useState<{
+    startedAtMs: number;
+    rangeStartIso: string;
+    rangeEndIso: string;
+  } | null>(null);
   // Loaded in an effect: localStorage isn't available during SSR render.
   const [secsPerDecision, setSecsPerDecision] = useState<number | null>(null);
   useEffect(() => {
@@ -554,7 +560,7 @@ export function BacktestNewView({
     setRunning(true);
     setProgressPct(null);
     const runStartMs = Date.now();
-    setRunStartedAtMs(runStartMs);
+    setRunInfo({ startedAtMs: runStartMs, rangeStartIso: startDate, rangeEndIso: endDate });
     // Calibration sample for future pre-run estimates. Guarded at ≥3s so
     // trivially small (often cached) runs don't skew the stored rate.
     const decisionsAtRun = tradingDays * universeSize;
@@ -784,8 +790,8 @@ export function BacktestNewView({
                     >
                       {running ? "Running…" : "Run backtest"}
                     </Btn>
-                    {running && (
-                      <RunProgress pct={progressPct} startedAtMs={runStartedAtMs} />
+                    {running && runInfo && (
+                      <RunProgress pct={progressPct} runInfo={runInfo} />
                     )}
                   </div>
                 )}
@@ -812,7 +818,7 @@ export function BacktestNewView({
                   riskIsDefault={usingDefaultRisk}
                   running={running}
                   progressPct={progressPct}
-                  runStartedAtMs={runStartedAtMs}
+                  runInfo={runInfo}
                   secsPerDecision={secsPerDecision}
                   onRun={handleRun}
                 />
@@ -891,7 +897,7 @@ function RunRail({
   riskIsDefault,
   running,
   progressPct,
-  runStartedAtMs,
+  runInfo,
   secsPerDecision,
   onRun,
 }: {
@@ -913,7 +919,7 @@ function RunRail({
   riskIsDefault: boolean;
   running: boolean;
   progressPct: number | null;
-  runStartedAtMs: number;
+  runInfo: RunInfo | null;
   secsPerDecision: number | null;
   onRun: () => void;
 }) {
@@ -1138,7 +1144,7 @@ function RunRail({
         >
           {running ? "Running…" : "Run backtest"}
         </Btn>
-        {running && <RunProgress pct={progressPct} startedAtMs={runStartedAtMs} />}
+        {running && runInfo && <RunProgress pct={progressPct} runInfo={runInfo} />}
         {!strategy && (
           <div
             style={{
@@ -1158,14 +1164,25 @@ function RunRail({
   );
 }
 
-// Animated progress bar + live time-remaining readout for a running job.
-// The backend flushes `progress_pct` to the job status which the watcher
-// polls every 5s; between polls a 1s ticker keeps the countdown moving.
-// The remaining-time anchor is (pct, elapsed-at-that-pct) so the estimate
-// counts DOWN between polls instead of drifting up with elapsed time.
-// Mounted fresh per run (parent renders it only while `running`), so the
-// anchor never leaks across runs.
-function RunProgress({ pct, startedAtMs }: { pct: number | null; startedAtMs: number }) {
+interface RunInfo {
+  startedAtMs: number;
+  rangeStartIso: string;
+  rangeEndIso: string;
+}
+
+// Animated run progress rendered as a date scrubber: the engine replays the
+// market day by day, so percent-complete maps onto the backtest's calendar
+// range and the readout shows the simulation date sweeping from start to
+// end. The backend flushes `progress_pct` to the job status which the
+// watcher polls every 5s; between polls a 1s ticker advances a smoothed
+// percent at the average observed rate, so the date keeps ticking instead
+// of jumping every 5s. (Interpolation is calendar-linear — trading days are
+// near-uniform across the range, so day-level error is invisible here.)
+// The remaining-time anchor is (pct, elapsed-at-that-pct) so the ETA counts
+// DOWN between polls instead of drifting up with elapsed time. Mounted
+// fresh per run (parent renders it only while `running`), so the anchor
+// never leaks across runs.
+function RunProgress({ pct, runInfo }: { pct: number | null; runInfo: RunInfo }) {
   const T = useT();
   const [, setTick] = useState(0);
   const anchor = useRef<{ pct: number; elapsedSec: number } | null>(null);
@@ -1177,11 +1194,39 @@ function RunProgress({ pct, startedAtMs }: { pct: number | null; startedAtMs: nu
 
   useEffect(() => {
     if (pct != null && pct > 0) {
-      anchor.current = { pct, elapsedSec: (Date.now() - startedAtMs) / 1000 };
+      anchor.current = { pct, elapsedSec: (Date.now() - runInfo.startedAtMs) / 1000 };
     }
-  }, [pct, startedAtMs]);
+  }, [pct, runInfo.startedAtMs]);
 
-  const elapsedSec = (Date.now() - startedAtMs) / 1000;
+  const elapsedSec = (Date.now() - runInfo.startedAtMs) / 1000;
+
+  // Smoothed percent: advance from the last polled pct at the average rate
+  // observed so far, capped at 99 so the bar never claims done before the
+  // job is. Snaps back onto the real value at every poll via the anchor.
+  let estPct: number | null = null;
+  if (pct != null) {
+    const a = anchor.current;
+    if (a != null && a.elapsedSec > 0) {
+      const ratePctPerSec = a.pct / a.elapsedSec;
+      estPct = Math.min(99, a.pct + ratePctPerSec * Math.max(0, elapsedSec - a.elapsedSec));
+    } else {
+      estPct = pct;
+    }
+  }
+
+  // Simulation date: calendar-linear interpolation of the run's range.
+  const rangeStartMs = parseISO(runInfo.rangeStartIso).getTime();
+  const rangeEndMs = parseISO(runInfo.rangeEndIso).getTime();
+  const rangeValid =
+    Number.isFinite(rangeStartMs) && Number.isFinite(rangeEndMs) && rangeEndMs > rangeStartMs;
+  const simDate =
+    estPct != null && rangeValid
+      ? new Date(rangeStartMs + (estPct / 100) * (rangeEndMs - rangeStartMs))
+      : null;
+  const simLabel = simDate
+    ? simDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    : null;
+
   let label: string;
   if (pct == null) {
     // No progress ticks yet — the engine is in its data-load phase.
@@ -1203,7 +1248,7 @@ function RunProgress({ pct, startedAtMs }: { pct: number | null; startedAtMs: nu
     <div
       role="status"
       aria-live="polite"
-      style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}
+      style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 5 }}
     >
       <div
         style={{
@@ -1215,7 +1260,7 @@ function RunProgress({ pct, startedAtMs }: { pct: number | null; startedAtMs: nu
           overflow: "hidden",
         }}
       >
-        {pct == null ? (
+        {estPct == null ? (
           <span
             style={{
               position: "absolute",
@@ -1234,10 +1279,10 @@ function RunProgress({ pct, startedAtMs }: { pct: number | null; startedAtMs: nu
               top: 0,
               bottom: 0,
               left: 0,
-              width: `${Math.max(2, Math.min(100, pct))}%`,
+              width: `${Math.max(2, Math.min(100, estPct))}%`,
               borderRadius: 999,
               background: T.primary,
-              transition: "width 1.2s ease",
+              transition: "width 1s linear",
               overflow: "hidden",
             }}
           >
@@ -1253,6 +1298,55 @@ function RunProgress({ pct, startedAtMs }: { pct: number | null; startedAtMs: nu
           </span>
         )}
       </div>
+
+      {/* Date scrubber: range endpoints anchored at the edges, the live
+          simulation date sweeping between them. */}
+      {rangeValid && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "baseline",
+            justifyContent: "space-between",
+            gap: 8,
+          }}
+        >
+          <span
+            style={{
+              fontFamily: T.fontMono,
+              fontSize: 9,
+              color: T.text3,
+              letterSpacing: 0.4,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {formatPickerLabel(runInfo.rangeStartIso)}
+          </span>
+          <span
+            style={{
+              fontFamily: T.fontMono,
+              fontSize: 11.5,
+              color: simLabel ? T.primaryLight : T.text3,
+              fontVariantNumeric: "tabular-nums",
+              letterSpacing: 0.4,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {simLabel ? `⏵ ${simLabel}` : "· · ·"}
+          </span>
+          <span
+            style={{
+              fontFamily: T.fontMono,
+              fontSize: 9,
+              color: T.text3,
+              letterSpacing: 0.4,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {formatPickerLabel(runInfo.rangeEndIso)}
+          </span>
+        </div>
+      )}
+
       <span
         style={{
           fontFamily: T.fontMono,
