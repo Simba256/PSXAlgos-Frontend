@@ -1,7 +1,7 @@
 # PSX UI — Frontend
 
 > FastAPI backend → Next.js 15 frontend. Active repo; `psx-trading-view/` is legacy.
-> Last updated: 2026-05-28 (new `/contact` page + `/api/contact` form route via Resend; Feedback button added across MarketingNav / TopNav / MobileDrawer)
+> Last updated: 2026-07-10 (backtest form now reuses the shared universe pickers — see Component Architecture → Universe pickers; `multi-select-popover.tsx` deleted. Prior: new `/contact` page + `/api/contact` form route via Resend; Feedback button added across MarketingNav / TopNav / MobileDrawer)
 
 ---
 
@@ -125,6 +125,17 @@ Generic table primitive used throughout the app.
 getRowBackground?: (rowIndex: number) => string | undefined
 ```
 Allows callers to supply a per-row background color. Used by `backtest-view.tsx` to highlight the focused trade row.
+
+### Universe pickers — `app/components/universe-and-risk-fields.tsx`
+
+Single home for all universe-selection UI. `UniverseAndRiskFields` is the composite used by bot-create (dropdown variant) and strategy deploy (radio variant); the backtest form (`backtest/new`) keeps its own layout but composes the same exported pieces (consolidated 2026-07-10 — it previously carried near-verbatim local copies, so fixes had to land twice):
+
+- `ScopeDropdown` — `<select>` scope picker; optional `allActiveCount` prop shows the live stock count in the all_active hint (backtest form passes it)
+- `SectorPicker` / `SymbolPicker` — identical search-and-add interaction: type or focus → compact anchored suggestion list → tap to add a chip; the list **closes after each add** (mobile: keeps the form reachable) and reopens on tap/typing
+- `CheckboxRow` — card-style boolean toggle (Shariah filter)
+- `ScopeRadio`, `validateUniverseSelection`, `inferUniverseScope` — scope cards + shared validation/scope-inference helpers
+
+`multi-select-popover.tsx` was deleted 2026-07-10 (stay-open checkbox popover trapped mobile users; sector selection moved to `SectorPicker`).
 
 ---
 
