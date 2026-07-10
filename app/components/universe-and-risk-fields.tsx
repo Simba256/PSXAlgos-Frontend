@@ -728,10 +728,15 @@ export function SectorPicker({
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
 
+  // Close after each add — mirrors the ticker picker, where the list
+  // vanishes on commit (its empty-query matches are []). Without this the
+  // list re-shows the default suggestions after every selection and, on
+  // mobile with the keyboard up, never visibly leaves the screen.
   function commit(name: string) {
     onAdd(name);
     setQuery("");
     setHighlight(0);
+    setOpen(false);
   }
 
   function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -768,6 +773,9 @@ export function SectorPicker({
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
+        // Focus alone can't reopen after a commit (the input keeps focus
+        // when a suggestion is tapped), so a tap on the input reopens.
+        onClick={() => setOpen(true)}
         onKeyDown={onKey}
         style={{
           background: T.surface,
