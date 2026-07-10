@@ -652,10 +652,13 @@ export interface BacktestJobStatus {
   total_bars?: number | null;
   // "loading" (daily data fetch), "preparing" (multi-TF indicator stamp —
   // the longest phase on wide universes), or "simulating" (bar loop).
-  // load_pct accompanies "loading", prepare_pct accompanies "preparing".
+  // load_pct accompanies "loading"; prepare_pct + prepare_stage accompany
+  // "preparing" — prepare_stage names the pass currently running
+  // ("1W:candles" / "1W:indicators" / "1M:candles" / "1M:indicators").
   phase?: "loading" | "preparing" | "simulating" | null;
   load_pct?: number | null;
   prepare_pct?: number | null;
+  prepare_stage?: string | null;
 }
 
 export async function startBacktest(

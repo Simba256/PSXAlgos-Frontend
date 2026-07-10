@@ -333,6 +333,7 @@ export function BacktestNewView({
   const [progressPct, setProgressPct] = useState<number | null>(null);
   const [loadPct, setLoadPct] = useState<number | null>(null);
   const [preparePct, setPreparePct] = useState<number | null>(null);
+  const [prepareStage, setPrepareStage] = useState<string | null>(null);
   // Frozen at submit so the progress date-scrubber maps percent-complete
   // onto the range this run actually covers, whatever the form does later.
   const [runInfo, setRunInfo] = useState<{
@@ -563,6 +564,7 @@ export function BacktestNewView({
     setProgressPct(null);
     setLoadPct(null);
     setPreparePct(null);
+    setPrepareStage(null);
     const runStartMs = Date.now();
     setRunInfo({ startedAtMs: runStartMs, rangeStartIso: startDate, rangeEndIso: endDate });
     // Calibration sample for future pre-run estimates. Guarded at ≥3s so
@@ -615,6 +617,7 @@ export function BacktestNewView({
           if (typeof s.progress_pct === "number") setProgressPct(s.progress_pct);
           if (typeof s.load_pct === "number") setLoadPct(s.load_pct);
           if (typeof s.prepare_pct === "number") setPreparePct(s.prepare_pct);
+          if (typeof s.prepare_stage === "string") setPrepareStage(s.prepare_stage);
         },
       });
       if (final.status === "failed") {
@@ -634,6 +637,7 @@ export function BacktestNewView({
       setProgressPct(null);
       setLoadPct(null);
       setPreparePct(null);
+      setPrepareStage(null);
     }
   }
 
@@ -799,7 +803,7 @@ export function BacktestNewView({
                       {running ? "Running…" : "Run backtest"}
                     </Btn>
                     {running && runInfo && (
-                      <RunProgress pct={progressPct} loadPct={loadPct} preparePct={preparePct} runInfo={runInfo} />
+                      <RunProgress pct={progressPct} loadPct={loadPct} preparePct={preparePct} prepareStage={prepareStage} runInfo={runInfo} />
                     )}
                   </div>
                 )}
@@ -828,6 +832,7 @@ export function BacktestNewView({
                   progressPct={progressPct}
                   loadPct={loadPct}
                   preparePct={preparePct}
+                  prepareStage={prepareStage}
                   runInfo={runInfo}
                   secsPerDecision={secsPerDecision}
                   onRun={handleRun}
@@ -909,6 +914,7 @@ function RunRail({
   progressPct,
   loadPct,
   preparePct,
+  prepareStage,
   runInfo,
   secsPerDecision,
   onRun,
@@ -933,6 +939,7 @@ function RunRail({
   progressPct: number | null;
   loadPct: number | null;
   preparePct: number | null;
+  prepareStage: string | null;
   runInfo: RunInfo | null;
   secsPerDecision: number | null;
   onRun: () => void;
@@ -1159,7 +1166,7 @@ function RunRail({
           {running ? "Running…" : "Run backtest"}
         </Btn>
         {running && runInfo && (
-          <RunProgress pct={progressPct} loadPct={loadPct} preparePct={preparePct} runInfo={runInfo} />
+          <RunProgress pct={progressPct} loadPct={loadPct} preparePct={preparePct} prepareStage={prepareStage} runInfo={runInfo} />
         )}
         {!strategy && (
           <div
@@ -1197,7 +1204,9 @@ interface RunInfo {
 //
 //   0–10   time-based crawl, no backend feedback yet ("starting engine…")
 //   10–25  load_pct 0→100 ("loading market data")
-//   25–80  prepare_pct 0→100 ("preparing indicators" — the long haul)
+//   25–80  prepare_pct 0→100 — the long haul, labeled by `prepare_stage`
+//          ("preparing weekly bars" → "… weekly indicators" → "… monthly
+//          bars" → "… monthly indicators"; see PREPARE_STAGE_LABELS)
 //   80–96  sim percent 0→100 (date scrubber active)
 //   96–99  time-based crawl while metrics compute + results save
 //   100    never shown — completion navigates away
@@ -1216,15 +1225,28 @@ interface RunInfo {
 // state leaks across runs.
 type RunPhase = "starting" | "loading" | "preparing" | "simulating" | "finalizing";
 
+// The multi-TF stamp runs four sequential fetch passes; the backend names
+// the one currently running in `prepare_stage` so the long "preparing"
+// wait reads as visible forward motion instead of one static label.
+// Unknown/absent keys (older backend mid-deploy) fall back to the generic.
+const PREPARE_STAGE_LABELS: Record<string, string> = {
+  "1W:candles": "preparing weekly bars",
+  "1W:indicators": "preparing weekly indicators",
+  "1M:candles": "preparing monthly bars",
+  "1M:indicators": "preparing monthly indicators",
+};
+
 function RunProgress({
   pct,
   loadPct,
   preparePct,
+  prepareStage,
   runInfo,
 }: {
   pct: number | null;
   loadPct: number | null;
   preparePct: number | null;
+  prepareStage: string | null;
   runInfo: RunInfo;
 }) {
   const T = useT();
@@ -1354,7 +1376,9 @@ function RunProgress({
       label = `loading market data · ${shown}%`;
       break;
     case "preparing":
-      label = `preparing indicators · ${shown}%`;
+      label = `${
+        (prepareStage != null && PREPARE_STAGE_LABELS[prepareStage]) || "preparing indicators"
+      } · ${shown}%`;
       break;
     case "simulating": {
       if (cur != null && ratePctPerSec != null) {
