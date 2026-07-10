@@ -5,8 +5,12 @@ import type { CSSProperties } from "react";
 import { useT } from "./theme";
 import { Icon } from "./icons";
 
-// cmdk-style popover combobox for multi-select with many options. Used for
-// sector selection (~36 options). Selected items render as chips above the
+// cmdk-style popover combobox for multi-select with many options.
+// CURRENTLY UNUSED — the backtest form's sector field (its only consumer)
+// switched to the shared SectorPicker (universe-and-risk-fields.tsx)
+// because this popover's stay-open checkbox list trapped mobile users.
+// Kept for a future multi-select need; delete if none shows up.
+// Selected items render as chips above the
 // trigger; the popover hosts a search input + checkbox list. Items are
 // NOT reordered on selection (per Linear pattern — reorder disorients).
 //

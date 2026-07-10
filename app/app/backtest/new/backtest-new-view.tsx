@@ -18,7 +18,7 @@ import {
   useFlash,
 } from "@/components/atoms";
 import { Disclosure } from "@/components/disclosure";
-import { MultiSelectPopover } from "@/components/multi-select-popover";
+import { SectorPicker } from "@/components/universe-and-risk-fields";
 import { useSessionStorage } from "@/components/use-session-storage";
 import { Icon } from "@/components/icons";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
@@ -1760,12 +1760,13 @@ function UniverseSection({
             kicker="sectors"
             info="Active stocks in the picked sectors join the universe."
           >
-            <MultiSelectPopover
-              label="sectors"
-              placeholder="pick sectors…"
-              options={availableSectors.map((s) => ({ value: s }))}
+            <SectorPicker
+              available={availableSectors}
               selected={sectors}
-              onChange={onSectors}
+              onAdd={(name) => {
+                if (!sectors.includes(name)) onSectors([...sectors, name]);
+              }}
+              onRemove={(name) => onSectors(sectors.filter((s) => s !== name))}
               disabled={disabled}
             />
           </UniverseSubsection>

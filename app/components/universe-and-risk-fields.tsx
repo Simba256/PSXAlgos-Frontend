@@ -672,7 +672,11 @@ function ScopeDropdown({
 // step feel consistent. Like SymbolPicker, the dropdown only renders when
 // the input has a query — clicking the input opens it so users discover
 // the search affordance.
-function SectorPicker({
+//
+// Exported: also used by the backtest form (backtest/new), which previously
+// used MultiSelectPopover — its stay-open checkbox list trapped mobile
+// users with no obvious way to dismiss it.
+export function SectorPicker({
   available,
   selected,
   onAdd,
