@@ -69,6 +69,51 @@ function tradingDaysBetween(startIso: string, endIso: string): number {
   return Math.round(calendarDays * (252 / 365));
 }
 
+/* ────────── Runtime estimation ────────── */
+
+// Calibration learned from finished runs: wall-clock seconds per candidate
+// decision (trading days × universe size). Blended 50/50 on each completion
+// so the pre-run estimate tracks the deployed backend's real throughput
+// without a hardcoded constant that rots when the engine gets faster.
+const RUNTIME_CALIBRATION_KEY = "psx.backtest.secsPerDecision";
+
+function loadSecsPerDecision(): number | null {
+  try {
+    const raw = localStorage.getItem(RUNTIME_CALIBRATION_KEY);
+    const v = raw == null ? NaN : Number(raw);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeSecsPerDecision(observed: number): void {
+  if (!Number.isFinite(observed) || observed <= 0) return;
+  try {
+    const prev = loadSecsPerDecision();
+    const blended = prev == null ? observed : prev * 0.5 + observed * 0.5;
+    localStorage.setItem(RUNTIME_CALIBRATION_KEY, String(blended));
+  } catch {
+    // localStorage unavailable — pre-run estimates just stay hidden
+  }
+}
+
+// Live countdown format: "42s", "2m 10s".
+function formatDuration(totalSec: number): string {
+  const s = Math.max(0, Math.round(totalSec));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem === 0 ? `${m}m` : `${m}m ${rem}s`;
+}
+
+// Pre-run estimate format — deliberately vague; it's an extrapolation.
+function roughDuration(totalSec: number): string | null {
+  if (!Number.isFinite(totalSec) || totalSec <= 0) return null;
+  if (totalSec < 45) return "under a minute";
+  return `~${Math.max(1, Math.round(totalSec / 60))} min`;
+}
+
 function formatPkr(n: number): string {
   if (!Number.isFinite(n)) return "—";
   return new Intl.NumberFormat("en-PK").format(Math.round(n));
@@ -286,6 +331,12 @@ export function BacktestNewView({
 
   const [running, setRunning] = useState(false);
   const [progressPct, setProgressPct] = useState<number | null>(null);
+  const [runStartedAtMs, setRunStartedAtMs] = useState(0);
+  // Loaded in an effect: localStorage isn't available during SSR render.
+  const [secsPerDecision, setSecsPerDecision] = useState<number | null>(null);
+  useEffect(() => {
+    setSecsPerDecision(loadSecsPerDecision());
+  }, []);
 
   const selectedStrategy = strategies.find((s) => s.id === strategyId) ?? null;
 
@@ -502,6 +553,17 @@ export function BacktestNewView({
 
     setRunning(true);
     setProgressPct(null);
+    const runStartMs = Date.now();
+    setRunStartedAtMs(runStartMs);
+    // Calibration sample for future pre-run estimates. Guarded at ≥3s so
+    // trivially small (often cached) runs don't skew the stored rate.
+    const decisionsAtRun = tradingDays * universeSize;
+    const recordCalibration = () => {
+      const elapsedSec = (Date.now() - runStartMs) / 1000;
+      if (decisionsAtRun > 0 && elapsedSec >= 3) {
+        storeSecsPerDecision(elapsedSec / decisionsAtRun);
+      }
+    };
     try {
       const startRes = await fetch(`/api/strategies/${strategyId}/backtest`, {
         method: "POST",
@@ -533,6 +595,7 @@ export function BacktestNewView({
 
       // Sync mode (Redis off): backend returns the full result inline.
       if (!("job_id" in started)) {
+        recordCalibration();
         router.push(`/backtest?strategy_id=${strategyId}&backtest_id=${started.id}`);
         return;
       }
@@ -545,6 +608,7 @@ export function BacktestNewView({
       if (final.status === "failed") {
         throw new Error(final.error ?? "Backtest failed");
       }
+      recordCalibration();
       if (final.backtest_id) {
         router.push(`/backtest?strategy_id=${strategyId}&backtest_id=${final.backtest_id}`);
       } else {
@@ -718,12 +782,11 @@ export function BacktestNewView({
                       disabled={running || !strategyId || universeScope === null}
                       style={{ width: "100%", justifyContent: "center", boxShadow: `0 4px 16px 2px ${T.primary}99` }}
                     >
-                      {running
-                        ? progressPct !== null
-                          ? `Running… ${progressPct}%`
-                          : "Running…"
-                        : "Run backtest"}
+                      {running ? "Running…" : "Run backtest"}
                     </Btn>
+                    {running && (
+                      <RunProgress pct={progressPct} startedAtMs={runStartedAtMs} />
+                    )}
                   </div>
                 )}
               </div>
@@ -749,6 +812,8 @@ export function BacktestNewView({
                   riskIsDefault={usingDefaultRisk}
                   running={running}
                   progressPct={progressPct}
+                  runStartedAtMs={runStartedAtMs}
+                  secsPerDecision={secsPerDecision}
                   onRun={handleRun}
                 />
               )}
@@ -826,6 +891,8 @@ function RunRail({
   riskIsDefault,
   running,
   progressPct,
+  runStartedAtMs,
+  secsPerDecision,
   onRun,
 }: {
   strategy: StrategyOption | null;
@@ -846,6 +913,8 @@ function RunRail({
   riskIsDefault: boolean;
   running: boolean;
   progressPct: number | null;
+  runStartedAtMs: number;
+  secsPerDecision: number | null;
   onRun: () => void;
 }) {
   const T = useT();
@@ -896,6 +965,12 @@ function RunRail({
   })();
 
   const candidateSignals = tradingDays * Math.max(universeSize, 0);
+  // Pre-run runtime estimate — only once at least one finished run has
+  // calibrated the throughput (secsPerDecision null until then).
+  const estRuntime =
+    secsPerDecision != null && candidateSignals > 0
+      ? roughDuration(candidateSignals * secsPerDecision)
+      : null;
   const canRun = strategy != null && tradingDays > 0 && universeSize > 0 && !running;
 
   return (
@@ -1014,6 +1089,18 @@ function RunRail({
             >
               ~{candidateSignals.toLocaleString("en-PK")} candidate decisions
             </span>
+            {estRuntime && (
+              <span
+                style={{
+                  fontFamily: T.fontMono,
+                  fontSize: 11,
+                  color: T.text2,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                est. runtime {estRuntime}
+              </span>
+            )}
             <span
               style={{
                 fontFamily: T.fontSans,
@@ -1049,12 +1136,9 @@ function RunRail({
             boxShadow: `0 4px 16px 2px ${T.primary}99`,
           }}
         >
-          {running
-            ? progressPct !== null
-              ? `Running… ${progressPct}%`
-              : "Running…"
-            : "Run backtest"}
+          {running ? "Running…" : "Run backtest"}
         </Btn>
+        {running && <RunProgress pct={progressPct} startedAtMs={runStartedAtMs} />}
         {!strategy && (
           <div
             style={{
@@ -1071,6 +1155,117 @@ function RunRail({
         )}
       </div>
     </aside>
+  );
+}
+
+// Animated progress bar + live time-remaining readout for a running job.
+// The backend flushes `progress_pct` to the job status which the watcher
+// polls every 5s; between polls a 1s ticker keeps the countdown moving.
+// The remaining-time anchor is (pct, elapsed-at-that-pct) so the estimate
+// counts DOWN between polls instead of drifting up with elapsed time.
+// Mounted fresh per run (parent renders it only while `running`), so the
+// anchor never leaks across runs.
+function RunProgress({ pct, startedAtMs }: { pct: number | null; startedAtMs: number }) {
+  const T = useT();
+  const [, setTick] = useState(0);
+  const anchor = useRef<{ pct: number; elapsedSec: number } | null>(null);
+
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    if (pct != null && pct > 0) {
+      anchor.current = { pct, elapsedSec: (Date.now() - startedAtMs) / 1000 };
+    }
+  }, [pct, startedAtMs]);
+
+  const elapsedSec = (Date.now() - startedAtMs) / 1000;
+  let label: string;
+  if (pct == null) {
+    // No progress ticks yet — the engine is in its data-load phase.
+    label = elapsedSec < 6 ? "starting engine…" : "loading market data…";
+  } else {
+    const a = anchor.current;
+    if (a != null && a.pct >= 3 && a.elapsedSec >= 4) {
+      const remaining = (a.elapsedSec * 100) / a.pct - elapsedSec;
+      label =
+        remaining <= 1
+          ? `${pct}% · finishing up…`
+          : `${pct}% · ~${formatDuration(remaining)} left`;
+    } else {
+      label = `${pct}% · estimating time…`;
+    }
+  }
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}
+    >
+      <div
+        style={{
+          position: "relative",
+          height: 5,
+          borderRadius: 999,
+          background: T.surface,
+          boxShadow: `0 0 0 1px ${T.outlineFaint}`,
+          overflow: "hidden",
+        }}
+      >
+        {pct == null ? (
+          <span
+            style={{
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              width: "35%",
+              borderRadius: 999,
+              background: `linear-gradient(90deg, transparent, ${T.primary}, transparent)`,
+              animation: "psx-progress-sweep 1.4s ease-in-out infinite",
+            }}
+          />
+        ) : (
+          <span
+            style={{
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              left: 0,
+              width: `${Math.max(2, Math.min(100, pct))}%`,
+              borderRadius: 999,
+              background: T.primary,
+              transition: "width 1.2s ease",
+              overflow: "hidden",
+            }}
+          >
+            <span
+              style={{
+                position: "absolute",
+                inset: 0,
+                background:
+                  "linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent)",
+                animation: "psx-progress-shimmer 1.8s ease-in-out infinite",
+              }}
+            />
+          </span>
+        )}
+      </div>
+      <span
+        style={{
+          fontFamily: T.fontMono,
+          fontSize: 10.5,
+          color: T.text3,
+          letterSpacing: 0.4,
+          textAlign: "center",
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {label}
+      </span>
+    </div>
   );
 }
 

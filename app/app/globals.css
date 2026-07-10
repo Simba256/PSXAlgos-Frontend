@@ -184,6 +184,18 @@ canvas {
   50% { transform: scale(1.45); }
 }
 
+/* Backtest run progress (RunProgress in backtest-new-view.tsx):
+ * sweep = indeterminate slide while the engine loads data (no ticks yet);
+ * shimmer = highlight gliding across the determinate fill. */
+@keyframes psx-progress-sweep {
+  from { left: -35%; }
+  to { left: 100%; }
+}
+@keyframes psx-progress-shimmer {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
 /* Thin scrollbar for sidebars. Firefox uses scrollbar-width; WebKit gets a
  * 4px track via pseudo-elements. */
 .psx-thin-scroll {
