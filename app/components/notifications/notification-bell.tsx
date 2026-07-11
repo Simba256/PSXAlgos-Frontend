@@ -6,6 +6,7 @@ import { useSession } from "next-auth/react";
 import { useT } from "@/components/theme";
 import type { NotificationListResponse, NotificationOut } from "./notification-types";
 import { NotificationItem } from "./notification-item";
+import { PushToggle } from "./push-toggle";
 
 const POLL_INTERVAL_MS = 60_000;
 const DRAWER_LIMIT = 10;
@@ -284,9 +285,13 @@ export function NotificationBell({ size = 26 }: { size?: number }) {
             style={{
               borderTop: `1px solid ${T.outlineFaint}`,
               padding: "10px 14px",
-              textAlign: "center",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
             }}
           >
+            <PushToggle />
             <Link
               href="/notifications"
               onClick={() => setOpen(false)}
@@ -295,6 +300,7 @@ export function NotificationBell({ size = 26 }: { size?: number }) {
                 fontSize: 12,
                 color: T.primaryLight,
                 textDecoration: "none",
+                marginLeft: "auto",
               }}
             >
               View all notifications →

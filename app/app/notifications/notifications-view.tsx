@@ -6,6 +6,7 @@ import { useT } from "@/components/theme";
 import { EditorialHeader } from "@/components/atoms";
 import { useBreakpoint, PAD, pick } from "@/components/responsive";
 import { NotificationItem } from "@/components/notifications/notification-item";
+import { PushToggle } from "@/components/notifications/push-toggle";
 import type {
   NotificationListResponse,
   NotificationOut,
@@ -161,7 +162,8 @@ export function NotificationsView({
             </span>
           }
           actions={
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <PushToggle />
               <button
                 type="button"
                 onClick={() => setUnreadOnly((v) => !v)}
