@@ -270,6 +270,21 @@ Mints a short-lived backend JWT (5 min, HS256, audience `authenticated`) for ope
 
 Consumers: `lib/api/backtest-watcher.ts::watchBacktestJob`.
 
+### Web Push — `app/app/api/push/*`
+
+Browser push notifications for the `user_notifications` feed. Three thin proxies to the Railway backend (`/api/v1/push/*`), each minting a backend JWT off the session like the notifications routes:
+
+- `GET /api/push/public-key` → `{ key: string | null }`. Degrades to `{ key: null }` on no session or backend error — the toggle simply hides.
+- `POST /api/push/subscribe` — body is the browser's `PushSubscription.toJSON()` (`endpoint`, `keys.p256dh`, `keys.auth`); the route attaches `user_agent` server-side. 401 without session, 400 on malformed body.
+- `POST /api/push/unsubscribe` — body `{ endpoint }`. Idempotent.
+
+**Client pieces:**
+- `public/sw.js` — service worker. Displays push payloads (`{title, body, url}` JSON from `backend/app/services/web_push.py`) via `showNotification`; `notificationclick` focuses an existing tab or opens `url` (default `/notifications`). No caching/offline logic.
+- `app/components/notifications/push-client.ts` — browser helpers: `getPushState()` (`unsupported` / `denied` / `available` / `subscribed`), `subscribeToPush()` (permission prompt → SW register → `PushManager.subscribe` with the VAPID key → sync to backend, rolling back the browser subscription if the sync fails), `unsubscribeFromPush()`.
+- `app/components/notifications/push-toggle.tsx` — `PushToggle` pill button. Hidden while state is loading or unsupported (old browser, VAPID unconfigured, iOS Safari outside an installed PWA); shows "Push blocked in browser settings" when denied. Mounted in the notification drawer footer (`notification-bell.tsx`) and the `/notifications` page header actions.
+
+iOS note: Web Push on iOS ≥16.4 only works when the site is installed to the home screen (the manifest at `public/manifest.webmanifest` makes it installable); Safari tabs report unsupported and the toggle stays hidden.
+
 ### `POST /api/contact` — `app/app/api/contact/route.ts`
 
 Public contact-form sender. Does NOT forward to the Railway backend — sends email directly via Resend.
