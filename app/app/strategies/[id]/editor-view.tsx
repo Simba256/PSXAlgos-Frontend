@@ -1140,7 +1140,11 @@ export function EditorView({
               onApply={applyPreset}
             />
           )}
-          {/* Sidebar toggle tab — always visible on the left edge */}
+          {/* Sidebar toggle tab — rides the left edge. On mobile the entry
+              drawer rail owns that edge, so the tab only renders while the
+              library is open (as its close affordance); opening goes through
+              the "Templates" chip in MobileListView's header instead. */}
+          {(!isMobile || libraryOpen) && (
           <button
             type="button"
             onClick={() => setLibraryOpen((v) => !v)}
@@ -1176,6 +1180,7 @@ export function EditorView({
               <path d={libraryOpen ? "M5 1L1 6l4 5" : "M2 1l4 5-4 5"} />
             </svg>
           </button>
+          )}
           {isMobile ? (
             // Phones swap the pan/zoom node graph for a scrollable list of
             // buy/sell conditions — the graph is unnavigable on a small
@@ -1193,6 +1198,7 @@ export function EditorView({
               riskDefaults={riskDefaults}
               onRiskDefaultsChange={handleRiskDefaultsChange}
               latestBacktest={initialStrategy.latest_backtest ?? null}
+              onOpenLibrary={() => setLibraryOpen(true)}
             />
           ) : (
             <Canvas
@@ -2720,10 +2726,22 @@ function Canvas({
 // ── Mobile list editor ─────────────────────────────────────────────────────
 // Phone replacement for the pan/zoom Canvas (2026-07-14). The node graph is
 // unusable on a small viewport — nodes land off-screen and pinch navigation
-// fights page gestures — so phones get a vertical list instead: entry
-// conditions, the risk-defaults hub, exit conditions, then the same action
-// bar. Selection and mutation route through the exact handlers Canvas uses,
-// so the drawers/modals owned by EditorView behave identically.
+// fights page gestures — so phones get condition lists instead. Selection
+// and mutation route through the exact handlers Canvas uses, so the
+// drawers/modals owned by EditorView behave identically.
+//
+// 2026-07-15: entry/exit are side drawers, mirroring the canvas's
+// left-entry / right-exit geometry. One panel is open at a time; the other
+// minimizes into a slim vertical rail on its own edge, and tapping the rail
+// slides the panels across. The risk-defaults hub rides at the bottom of
+// both panels (same controlled state, so the two renders never diverge).
+
+function countLeaves(g: ConditionGroup): number {
+  return g.children.reduce(
+    (n, c) => n + (c.kind === "condition" ? 1 : countLeaves(c)),
+    0,
+  );
+}
 
 function MobileListView({
   tree,
@@ -2738,6 +2756,7 @@ function MobileListView({
   riskDefaults,
   onRiskDefaultsChange,
   latestBacktest,
+  onOpenLibrary,
 }: {
   tree: ConditionGroup;
   exitTree: ConditionGroup;
@@ -2760,8 +2779,34 @@ function MobileListView({
     total_return_pct: number | string;
     completed_at: string;
   } | null;
+  onOpenLibrary: () => void;
 }) {
   const T = useT();
+  const [openSide, setOpenSide] = useState<SelSource>("entry");
+
+  const panelStyle = (side: SelSource): React.CSSProperties => ({
+    position: "absolute",
+    inset: 0,
+    overflowY: "auto",
+    WebkitOverflowScrolling: "touch",
+    // Bottom padding clears the floating action bar.
+    padding: "8px 16px 96px",
+    // 104% (not 100%) so card shadows don't peek in from the closed side.
+    transform:
+      openSide === side
+        ? "translateX(0)"
+        : side === "entry"
+          ? "translateX(-104%)"
+          : "translateX(104%)",
+    transition: "transform 260ms cubic-bezier(0.4, 0, 0.2, 1)",
+  });
+
+  const riskCard = (
+    <div style={{ margin: "24px 0 0" }}>
+      <RiskDefaultsNode flow value={riskDefaults} onChange={onRiskDefaultsChange} />
+    </div>
+  );
+
   return (
     <div
       style={{
@@ -2779,74 +2824,121 @@ function MobileListView({
     >
       <div
         style={{
-          flex: 1,
-          overflowY: "auto",
-          WebkitOverflowScrolling: "touch",
-          // Left padding clears the template-library toggle tab on the left
-          // edge; bottom padding clears the floating action bar.
-          padding: "16px 16px 96px 26px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexWrap: "wrap",
+          gap: 8,
+          padding: "10px 12px 8px",
         }}
       >
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
-          <StatusStrip
-            strategyId={strategyId}
-            deployed={deployed}
-            backtest={
-              latestBacktest
-                ? {
-                    totalReturnPct: Number(latestBacktest.total_return_pct),
-                    completedAt: latestBacktest.completed_at,
-                  }
-                : null
-            }
-            botBinding={null}
+        <StatusStrip
+          strategyId={strategyId}
+          deployed={deployed}
+          backtest={
+            latestBacktest
+              ? {
+                  totalReturnPct: Number(latestBacktest.total_return_pct),
+                  completedAt: latestBacktest.completed_at,
+                }
+              : null
+          }
+          botBinding={null}
+        />
+        {/* The library's edge toggle tab is hidden on mobile while closed
+            (the entry rail owns the left edge now) — this chip is the way
+            in; the tab reappears while the library is open, to close it. */}
+        <button
+          type="button"
+          onClick={onOpenLibrary}
+          style={{
+            fontFamily: T.fontMono,
+            fontSize: 11,
+            letterSpacing: 0.4,
+            padding: "5px 12px",
+            borderRadius: 999,
+            border: `1px solid ${T.outlineFaint}`,
+            background: T.surface2 + "e6",
+            color: T.text2,
+            cursor: "pointer",
+          }}
+        >
+          Templates
+        </button>
+      </div>
+
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          position: "relative",
+          overflow: "hidden",
+        }}
+      >
+        {openSide === "exit" && (
+          <MobileSideRail
+            side="left"
+            label="Entry"
+            count={countLeaves(tree)}
+            onClick={() => setOpenSide("entry")}
           />
+        )}
+        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+          <div style={panelStyle("entry")} aria-hidden={openSide !== "entry"}>
+            <MobileSectionHeader
+              label="Entry conditions"
+              group={tree}
+              selected={
+                selection?.kind === "group" &&
+                selection.id === tree.id &&
+                selection.source === "entry"
+              }
+              onSelectRoot={() => onSelect("group", tree.id, "entry")}
+            />
+            <MobileGroupBody
+              group={tree}
+              source="entry"
+              selection={selection}
+              onSelect={onSelect}
+              onAddCondition={onAddCondition}
+              onAddGroup={onAddGroup}
+              emptyLabel="No entry conditions yet — add the first one"
+            />
+            {riskCard}
+          </div>
+          <div style={panelStyle("exit")} aria-hidden={openSide !== "exit"}>
+            <MobileSectionHeader
+              label="Exit conditions"
+              hint="optional · risk defaults below still apply"
+              group={exitTree}
+              selected={
+                selection?.kind === "group" &&
+                selection.id === exitTree.id &&
+                selection.source === "exit"
+              }
+              onSelectRoot={() => onSelect("group", exitTree.id, "exit")}
+            />
+            <MobileGroupBody
+              group={exitTree}
+              source="exit"
+              selection={selection}
+              onSelect={onSelect}
+              onAddCondition={onAddCondition}
+              onAddGroup={onAddGroup}
+              emptyLabel="No exit conditions — exits rely on risk defaults"
+            />
+            {riskCard}
+          </div>
         </div>
-
-        <MobileSectionHeader
-          label="Entry conditions"
-          group={tree}
-          selected={
-            selection?.kind === "group" &&
-            selection.id === tree.id &&
-            selection.source === "entry"
-          }
-          onSelectRoot={() => onSelect("group", tree.id, "entry")}
-        />
-        <MobileGroupBody
-          group={tree}
-          source="entry"
-          selection={selection}
-          onSelect={onSelect}
-          onAddCondition={onAddCondition}
-          onAddGroup={onAddGroup}
-          emptyLabel="No entry conditions yet — add the first one"
-        />
-
-        <div style={{ margin: "24px 0" }}>
-          <RiskDefaultsNode flow value={riskDefaults} onChange={onRiskDefaultsChange} />
-        </div>
-
-        <MobileSectionHeader
-          label="Exit conditions"
-          hint="optional · risk defaults above still apply"
-          group={exitTree}
-          selected={
-            selection?.kind === "group" &&
-            selection.id === exitTree.id &&
-            selection.source === "exit"
-          }
-          onSelectRoot={() => onSelect("group", exitTree.id, "exit")}
-        />
-        <MobileGroupBody
-          group={exitTree}
-          source="exit"
-          selection={selection}
-          onSelect={onSelect}
-          onAddCondition={onAddCondition}
-          onAddGroup={onAddGroup}
-          emptyLabel="No exit conditions — exits rely on risk defaults"
-        />
+        {openSide === "entry" && (
+          <MobileSideRail
+            side="right"
+            label="Exit"
+            count={countLeaves(exitTree)}
+            onClick={() => setOpenSide("exit")}
+          />
+        )}
       </div>
 
       {/* Same floating action bar the Canvas anchors bottom-center. */}
@@ -2882,6 +2974,75 @@ function MobileListView({
         </Link>
       </div>
     </div>
+  );
+}
+
+// Minimized drawer handle. A slim full-height edge strip with a vertical
+// label and the side's leaf count — tapping it opens that side and sends
+// the current panel to its own rail.
+function MobileSideRail({
+  side,
+  label,
+  count,
+  onClick,
+}: {
+  side: "left" | "right";
+  label: string;
+  count: number;
+  onClick: () => void;
+}) {
+  const T = useT();
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`Open ${label.toLowerCase()} conditions`}
+      style={{
+        width: 34,
+        flexShrink: 0,
+        border: "none",
+        borderLeft: side === "right" ? `1px solid ${T.outlineFaint}` : undefined,
+        borderRight: side === "left" ? `1px solid ${T.outlineFaint}` : undefined,
+        background: T.surfaceLow,
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 10,
+        color: T.text2,
+        padding: "12px 0",
+      }}
+    >
+      {/* Chevron points toward the center — the direction the panel slides
+          in from when the rail is tapped. */}
+      <svg
+        width="7"
+        height="12"
+        viewBox="0 0 7 12"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d={side === "left" ? "M2 1l4 5-4 5" : "M5 1L1 6l4 5"} />
+      </svg>
+      <span
+        style={{
+          writingMode: "vertical-rl",
+          fontFamily: T.fontMono,
+          fontSize: 10,
+          letterSpacing: 1.6,
+          textTransform: "uppercase",
+          userSelect: "none",
+        }}
+      >
+        {label}
+        {count > 0 ? ` · ${count}` : ""}
+      </span>
+    </button>
   );
 }
 
