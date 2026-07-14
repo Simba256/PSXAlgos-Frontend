@@ -1176,23 +1176,43 @@ export function EditorView({
               <path d={libraryOpen ? "M5 1L1 6l4 5" : "M2 1l4 5-4 5"} />
             </svg>
           </button>
-          <Canvas
-            tree={tree}
-            exitTree={exitTree}
-            selection={selection}
-            onSelect={onSelect}
-            drawerOpen={selection !== null || creating !== null}
-            deployed={deployed}
-            onDeploy={handleDeploy}
-            onAddCondition={handleAddCondition}
-            onAddGroup={handleAddGroup}
-            pendingPicker={pendingPicker}
-            consumePendingPicker={consumePendingPicker}
-            strategyId={initialStrategy.id}
-            riskDefaults={riskDefaults}
-            onRiskDefaultsChange={handleRiskDefaultsChange}
-            latestBacktest={initialStrategy.latest_backtest ?? null}
-          />
+          {isMobile ? (
+            // Phones swap the pan/zoom node graph for a scrollable list of
+            // buy/sell conditions — the graph is unnavigable on a small
+            // touch viewport. Same handlers, same drawers.
+            <MobileListView
+              tree={tree}
+              exitTree={exitTree}
+              selection={selection}
+              onSelect={onSelect}
+              deployed={deployed}
+              onDeploy={handleDeploy}
+              onAddCondition={handleAddCondition}
+              onAddGroup={handleAddGroup}
+              strategyId={initialStrategy.id}
+              riskDefaults={riskDefaults}
+              onRiskDefaultsChange={handleRiskDefaultsChange}
+              latestBacktest={initialStrategy.latest_backtest ?? null}
+            />
+          ) : (
+            <Canvas
+              tree={tree}
+              exitTree={exitTree}
+              selection={selection}
+              onSelect={onSelect}
+              drawerOpen={selection !== null || creating !== null}
+              deployed={deployed}
+              onDeploy={handleDeploy}
+              onAddCondition={handleAddCondition}
+              onAddGroup={handleAddGroup}
+              pendingPicker={pendingPicker}
+              consumePendingPicker={consumePendingPicker}
+              strategyId={initialStrategy.id}
+              riskDefaults={riskDefaults}
+              onRiskDefaultsChange={handleRiskDefaultsChange}
+              latestBacktest={initialStrategy.latest_backtest ?? null}
+            />
+          )}
           {creating && (
             <ConditionDrawer
               key="create"
@@ -2694,6 +2714,544 @@ function Canvas({
         </Link>
       </div>
     </div>
+  );
+}
+
+// ── Mobile list editor ─────────────────────────────────────────────────────
+// Phone replacement for the pan/zoom Canvas (2026-07-14). The node graph is
+// unusable on a small viewport — nodes land off-screen and pinch navigation
+// fights page gestures — so phones get a vertical list instead: entry
+// conditions, the risk-defaults hub, exit conditions, then the same action
+// bar. Selection and mutation route through the exact handlers Canvas uses,
+// so the drawers/modals owned by EditorView behave identically.
+
+function MobileListView({
+  tree,
+  exitTree,
+  selection,
+  onSelect,
+  deployed,
+  onDeploy,
+  onAddCondition,
+  onAddGroup,
+  strategyId,
+  riskDefaults,
+  onRiskDefaultsChange,
+  latestBacktest,
+}: {
+  tree: ConditionGroup;
+  exitTree: ConditionGroup;
+  selection: Selection;
+  onSelect: (kind: SelKind, id: CondId, source?: SelSource) => void;
+  deployed: boolean;
+  onDeploy: () => void;
+  onAddCondition: (parentId: CondId, index?: number, source?: SelSource) => void;
+  onAddGroup: (
+    parentId: CondId,
+    index: number,
+    logic: ConditionLogic,
+    source?: SelSource,
+  ) => void;
+  strategyId: number;
+  riskDefaults: DefaultRisk;
+  onRiskDefaultsChange: (next: DefaultRisk) => void;
+  latestBacktest: {
+    id: number;
+    total_return_pct: number | string;
+    completed_at: string;
+  } | null;
+}) {
+  const T = useT();
+  return (
+    <div
+      style={{
+        // Absolutely fill the editor row (like the Canvas does with its
+        // world layer) so the list's content height never propagates into
+        // AppFrame — the frame is min-height sized, and in-flow content
+        // taller than the viewport would grow it past 100dvh with body
+        // scroll locked, leaving the bottom unreachable.
+        position: "absolute",
+        inset: 0,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          WebkitOverflowScrolling: "touch",
+          // Left padding clears the template-library toggle tab on the left
+          // edge; bottom padding clears the floating action bar.
+          padding: "16px 16px 96px 26px",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+          <StatusStrip
+            strategyId={strategyId}
+            deployed={deployed}
+            backtest={
+              latestBacktest
+                ? {
+                    totalReturnPct: Number(latestBacktest.total_return_pct),
+                    completedAt: latestBacktest.completed_at,
+                  }
+                : null
+            }
+            botBinding={null}
+          />
+        </div>
+
+        <MobileSectionHeader
+          label="Entry conditions"
+          group={tree}
+          selected={
+            selection?.kind === "group" &&
+            selection.id === tree.id &&
+            selection.source === "entry"
+          }
+          onSelectRoot={() => onSelect("group", tree.id, "entry")}
+        />
+        <MobileGroupBody
+          group={tree}
+          source="entry"
+          selection={selection}
+          onSelect={onSelect}
+          onAddCondition={onAddCondition}
+          onAddGroup={onAddGroup}
+          emptyLabel="No entry conditions yet — add the first one"
+        />
+
+        <div style={{ margin: "24px 0" }}>
+          <RiskDefaultsNode flow value={riskDefaults} onChange={onRiskDefaultsChange} />
+        </div>
+
+        <MobileSectionHeader
+          label="Exit conditions"
+          hint="optional · risk defaults above still apply"
+          group={exitTree}
+          selected={
+            selection?.kind === "group" &&
+            selection.id === exitTree.id &&
+            selection.source === "exit"
+          }
+          onSelectRoot={() => onSelect("group", exitTree.id, "exit")}
+        />
+        <MobileGroupBody
+          group={exitTree}
+          source="exit"
+          selection={selection}
+          onSelect={onSelect}
+          onAddCondition={onAddCondition}
+          onAddGroup={onAddGroup}
+          emptyLabel="No exit conditions — exits rely on risk defaults"
+        />
+      </div>
+
+      {/* Same floating action bar the Canvas anchors bottom-center. */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: 18,
+          left: "50%",
+          transform: "translateX(-50%)",
+          display: "flex",
+          gap: 8,
+          padding: "6px 16px",
+          background: T.surface2 + "e6",
+          backdropFilter: "blur(10px)",
+          borderRadius: 999,
+          boxShadow: `0 10px 40px -10px rgba(0,0,0,0.6), 0 0 0 1px ${T.outlineFaint}`,
+          alignItems: "center",
+          zIndex: 5,
+        }}
+      >
+        <Link href={`/backtest/new?strategy_id=${strategyId}`} style={{ textDecoration: "none" }}>
+          <Btn variant="outline" size="sm">
+            Backtest
+          </Btn>
+        </Link>
+        <Btn variant="deploy" size="sm" icon={Icon.spark} onClick={onDeploy}>
+          {deployed ? "Pause" : "Deploy"}
+        </Btn>
+        <Link href={`/bots/new?strategy_id=${strategyId}`} style={{ textDecoration: "none" }}>
+          <Btn variant="primary" size="sm" icon={Icon.bot}>
+            + Bot
+          </Btn>
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function MobileSectionHeader({
+  label,
+  hint,
+  group,
+  selected,
+  onSelectRoot,
+}: {
+  label: string;
+  hint?: string;
+  group: ConditionGroup;
+  selected: boolean;
+  onSelectRoot: () => void;
+}) {
+  const T = useT();
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span
+          style={{
+            fontFamily: T.fontMono,
+            fontSize: 10,
+            letterSpacing: 1.2,
+            textTransform: "uppercase",
+            color: T.primary,
+          }}
+        >
+          {label}
+        </span>
+        {/* Root logic chip — same visibility rule as the canvas root gate
+            (only meaningful with 2+ children). Tapping opens the GroupDrawer
+            so AND/OR is editable without the graph. */}
+        {group.children.length >= 2 && (
+          <button
+            type="button"
+            onClick={onSelectRoot}
+            style={{
+              fontFamily: T.fontMono,
+              fontSize: 10,
+              letterSpacing: 0.8,
+              padding: "2px 8px",
+              borderRadius: 999,
+              border: selected ? `1.5px solid ${T.primaryLight}` : `1px solid ${T.outlineFaint}`,
+              background: T.surfaceLow,
+              color: T.text2,
+              cursor: "pointer",
+            }}
+          >
+            {group.logic}
+          </button>
+        )}
+      </div>
+      {hint && (
+        <div
+          style={{
+            marginTop: 3,
+            fontFamily: T.fontMono,
+            fontSize: 10,
+            color: T.text3,
+            letterSpacing: 0.2,
+          }}
+        >
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Recursive list renderer for one group's children. Leaves become tappable
+// rows, nested groups become dashed cards (echoing the canvas GroupBox), and
+// a separator between siblings names the group logic so "and"/"or" reads
+// inline the way describeRoot() would write it.
+function MobileGroupBody({
+  group,
+  source,
+  selection,
+  onSelect,
+  onAddCondition,
+  onAddGroup,
+  emptyLabel,
+}: {
+  group: ConditionGroup;
+  source: SelSource;
+  selection: Selection;
+  onSelect: (kind: SelKind, id: CondId, source?: SelSource) => void;
+  onAddCondition: (parentId: CondId, index?: number, source?: SelSource) => void;
+  onAddGroup: (
+    parentId: CondId,
+    index: number,
+    logic: ConditionLogic,
+    source?: SelSource,
+  ) => void;
+  emptyLabel?: string;
+}) {
+  const T = useT();
+  const sep = group.logic === "AND" ? "and" : "or";
+  return (
+    <div>
+      {group.children.length === 0 && emptyLabel && (
+        <div
+          style={{
+            fontFamily: T.fontMono,
+            fontSize: 11,
+            color: T.text3,
+            padding: "10px 2px",
+          }}
+        >
+          {emptyLabel}
+        </div>
+      )}
+      {group.children.map((child, i) => (
+        <div key={child.id}>
+          {i > 0 && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                margin: "8px 0",
+              }}
+            >
+              <span style={{ flex: 1, height: 1, background: T.outlineFaint }} />
+              <span
+                style={{
+                  fontFamily: T.fontMono,
+                  fontSize: 10,
+                  letterSpacing: 1,
+                  textTransform: "uppercase",
+                  color: T.text3,
+                }}
+              >
+                {sep}
+              </span>
+              <span style={{ flex: 1, height: 1, background: T.outlineFaint }} />
+            </div>
+          )}
+          {child.kind === "condition" ? (
+            <MobileCondRow
+              leaf={child}
+              selected={
+                selection?.kind === "condition" &&
+                selection.id === child.id &&
+                selection.source === source
+              }
+              onClick={() => onSelect("condition", child.id, source)}
+            />
+          ) : (
+            <MobileGroupCard
+              group={child}
+              source={source}
+              selection={selection}
+              onSelect={onSelect}
+              onAddCondition={onAddCondition}
+              onAddGroup={onAddGroup}
+            />
+          )}
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <MobileAddBtn
+          label="+ Condition"
+          onClick={() => onAddCondition(group.id, group.children.length, source)}
+        />
+        <MobileAddBtn
+          label="+ Group"
+          // New nested groups start on the opposite logic — flipping the
+          // gate is the only reason to nest — and the GroupDrawer can
+          // change it afterwards.
+          onClick={() =>
+            onAddGroup(
+              group.id,
+              group.children.length,
+              group.logic === "AND" ? "OR" : "AND",
+              source,
+            )
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
+function MobileGroupCard({
+  group,
+  source,
+  selection,
+  onSelect,
+  onAddCondition,
+  onAddGroup,
+}: {
+  group: ConditionGroup;
+  source: SelSource;
+  selection: Selection;
+  onSelect: (kind: SelKind, id: CondId, source?: SelSource) => void;
+  onAddCondition: (parentId: CondId, index?: number, source?: SelSource) => void;
+  onAddGroup: (
+    parentId: CondId,
+    index: number,
+    logic: ConditionLogic,
+    source?: SelSource,
+  ) => void;
+}) {
+  const T = useT();
+  const selected =
+    selection?.kind === "group" &&
+    selection.id === group.id &&
+    selection.source === source;
+  return (
+    <div
+      style={{
+        borderRadius: 14,
+        border: selected ? `1.5px solid ${T.primaryLight}` : `1px dashed ${T.outlineFaint}`,
+        boxShadow: selected ? `0 0 0 4px ${T.primary}20` : undefined,
+        background: T.surfaceLow + "40",
+        padding: "8px 10px 10px",
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => onSelect("group", group.id, source)}
+        style={{
+          display: "block",
+          width: "100%",
+          textAlign: "left",
+          background: "transparent",
+          border: "none",
+          padding: "2px 2px 8px",
+          fontFamily: T.fontMono,
+          fontSize: 10,
+          color: T.text3,
+          letterSpacing: 0.6,
+          textTransform: "uppercase",
+          cursor: "pointer",
+        }}
+      >
+        group · {group.logic}
+      </button>
+      <MobileGroupBody
+        group={group}
+        source={source}
+        selection={selection}
+        onSelect={onSelect}
+        onAddCondition={onAddCondition}
+        onAddGroup={onAddGroup}
+        emptyLabel="Empty group · always true"
+      />
+    </div>
+  );
+}
+
+function MobileCondRow({
+  leaf,
+  selected,
+  onClick,
+}: {
+  leaf: ConditionLeaf;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  const T = useT();
+  const meta = condToMeta(leaf.cond);
+  // Same kind → tint mapping the canvas CondNode uses.
+  const kindColor: Record<string, string> = {
+    momentum: T.primaryLight,
+    trend: T.accent,
+    volume: "#c7a885",
+  };
+  const color = kindColor[meta.kind] || T.primaryLight;
+  return (
+    <div
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      role="button"
+      tabIndex={0}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        background: T.surfaceLow,
+        borderRadius: 10,
+        padding: "10px 12px",
+        cursor: "pointer",
+        boxShadow: selected
+          ? `0 0 0 2px ${T.primary}, 0 8px 28px -10px rgba(0,0,0,0.6)`
+          : `0 0 0 1px ${T.outlineFaint}, 0 4px 12px -8px rgba(0,0,0,0.5)`,
+      }}
+    >
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: 3,
+          background: color,
+          flexShrink: 0,
+        }}
+      />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontFamily: T.fontHead,
+            fontSize: 14,
+            fontWeight: 500,
+            color: T.text,
+            letterSpacing: -0.2,
+          }}
+        >
+          {meta.indicator}
+        </div>
+        <div
+          style={{
+            fontFamily: T.fontMono,
+            fontSize: 12,
+            marginTop: 2,
+            display: "flex",
+            gap: 6,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          <span style={{ color: T.text3 }}>{meta.op}</span>
+          <span style={{ color: meta.valIsRef ? T.primaryLight : T.accent }}>{meta.val}</span>
+        </div>
+      </div>
+      <svg
+        width="7"
+        height="12"
+        viewBox="0 0 7 12"
+        fill="none"
+        stroke={T.text3}
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+        style={{ flexShrink: 0 }}
+      >
+        <path d="M2 1l4 5-4 5" />
+      </svg>
+    </div>
+  );
+}
+
+function MobileAddBtn({ label, onClick }: { label: string; onClick: () => void }) {
+  const T = useT();
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        fontFamily: T.fontMono,
+        fontSize: 11,
+        letterSpacing: 0.4,
+        padding: "7px 12px",
+        borderRadius: 8,
+        border: `1px dashed ${T.outlineVariant}`,
+        background: "transparent",
+        color: T.text2,
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
   );
 }
 

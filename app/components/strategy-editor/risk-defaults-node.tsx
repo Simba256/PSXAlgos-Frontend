@@ -40,17 +40,23 @@ const FIELDS: FieldDef[] = [
 ];
 
 export function RiskDefaultsNode({
-  x,
-  y,
+  x = 0,
+  y = 0,
   value,
   onChange,
+  flow = false,
 }: {
   // Top-left corner in canvas world coords. The right-side anchor pin sits
-  // along the left edge so wires from the entry root land on it.
-  x: number;
-  y: number;
+  // along the left edge so wires from the entry root land on it. Ignored in
+  // flow mode.
+  x?: number;
+  y?: number;
   value: DefaultRisk;
   onChange: (next: DefaultRisk) => void;
+  // Flow mode: render as a normal block element (full width, no wire pins)
+  // for the mobile list editor, where the hub sits between the entry list
+  // (above) and exit list (below) instead of between two canvas trees.
+  flow?: boolean;
 }) {
   const T = useT();
 
@@ -71,10 +77,11 @@ export function RiskDefaultsNode({
   return (
     <div
       style={{
-        position: "absolute",
-        left: x,
-        top: y,
-        width: NODE_W,
+        position: flow ? "relative" : "absolute",
+        left: flow ? undefined : x,
+        top: flow ? undefined : y,
+        width: flow ? "100%" : NODE_W,
+        boxSizing: "border-box",
         background: T.surfaceLow,
         borderRadius: 10,
         padding: "10px 14px 14px",
@@ -87,11 +94,13 @@ export function RiskDefaultsNode({
       {/* Two pins so the strategy hub bridges entry and exit trees:
           left pin connects from the entry root gate, right pin connects to
           the mirrored exit root gate. Both share NODE_PIN_OFFSET_Y so the
-          spine wire is a clean horizontal pass-through. */}
-      <Pin x={-4} y={NODE_PIN_OFFSET_Y} color={T.primary} />
-      <Pin x={NODE_W - 4} y={NODE_PIN_OFFSET_Y} color={T.primary} />
+          spine wire is a clean horizontal pass-through. Flow mode has no
+          wires, so no pins. */}
+      {!flow && <Pin x={-4} y={NODE_PIN_OFFSET_Y} color={T.primary} />}
+      {!flow && <Pin x={NODE_W - 4} y={NODE_PIN_OFFSET_Y} color={T.primary} />}
       {/* Hub eyebrow — names the card's role on the canvas. The trees on
-          either side feed into / fan out of this anchor. */}
+          either side feed into / fan out of this anchor. In flow mode entry
+          sits above and exit below, so the arrows turn vertical. */}
       <div
         style={{
           display: "flex",
@@ -105,9 +114,9 @@ export function RiskDefaultsNode({
           marginBottom: 8,
         }}
       >
-        <span>← Entry</span>
+        <span>{flow ? "↑ Entry" : "← Entry"}</span>
         <span style={{ fontWeight: 600 }}>Strategy</span>
-        <span>Exit →</span>
+        <span>{flow ? "Exit ↓" : "Exit →"}</span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span

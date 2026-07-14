@@ -143,6 +143,14 @@ Single home for all universe-selection UI. `UniverseAndRiskFields` is the compos
 
 ## Pages Reference
 
+### `/strategies/[id]` — strategy editor (`app/app/strategies/[id]/editor-view.tsx`)
+
+Node-graph strategy editor: entry tree (left) ← Risk Defaults hub → mirrored exit tree (right), rendered on a pan/zoom `Canvas` with wires, gates, and inline `+` insert slots.
+
+**Mobile list editor (2026-07-14):** on phones (`isMobile` from `useBreakpoint`) the `Canvas` is replaced by `MobileListView` — the graph is unnavigable on a small touch viewport (nodes render off-screen, pinch fights page gestures). Vertical scrollable list: `StatusStrip` pill → **Entry conditions** (root AND/OR chip when 2+ children) → `RiskDefaultsNode` in `flow` mode → **Exit conditions** → the same floating Backtest / Deploy / + Bot action bar. Leaves render as tappable rows (`MobileCondRow`, same kind→tint mapping as `CondNode`); nested groups render as dashed cards (`MobileGroupCard`) with a `group · LOGIC` header; `and`/`or` separators between siblings mirror `describeRoot()` reading order. Every group carries `+ Condition` / `+ Group` buttons (new nested groups start on the opposite logic). Selection and mutation route through the exact handlers Canvas uses (`onSelect` / `handleAddCondition` / `handleAddGroup`), so the full-screen `ConditionDrawer` / `GroupDrawer` and all modals behave identically. The list wrapper is `position: absolute; inset: 0` — like the Canvas world layer — so content height never propagates into `AppFrame` (which is `minHeight: 100dvh` and would otherwise grow past the viewport with body scroll locked by the editor).
+
+`RiskDefaultsNode` (`components/strategy-editor/risk-defaults-node.tsx`) accepts `flow?: boolean` — full-width block element, no wire pins, vertical `↑ Entry / Strategy / Exit ↓` eyebrow.
+
 ### `/learn` + `/learn/[slug]` — content layer (GEO)
 
 Public, unauth, SEO/answer-engine-oriented glossary. Built so LLMs and answer engines cite PSX Algos on "what is X" PSX queries. **Content is data, not MDX** — each entry is a typed object, rendered inside the inline-token design system, with JSON-LD generated from the same source of truth (no human-vs-crawler drift).
